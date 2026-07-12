@@ -35,6 +35,8 @@ data/
 *.jpg
 *.jpeg
 *.webp
+!docs/screenshots/
+!docs/screenshots/*.jpg
 *.log
 
 # Editors and operating systems
@@ -42,4 +44,3 @@ data/
 .idea/
 .vscode/
 *.swp
-

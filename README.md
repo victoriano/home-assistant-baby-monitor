@@ -11,6 +11,24 @@ notifications, and optional AI image labels in one admin-only web interface.
 > adult supervision or a certified baby monitor. Cry and image detection can
 > miss events or produce false alarms.
 
+## Preview
+
+![Baby Monitor dashboard showing sleep status and the next rest window](docs/screenshots/dashboard.jpg)
+
+<table>
+  <tr>
+    <td width="68%">
+      <img src="docs/screenshots/rhythm.jpg" alt="Sleep rhythm with sleep and cry event history">
+    </td>
+    <td width="32%">
+      <img src="docs/screenshots/dashboard-mobile.jpg" alt="Responsive Baby Monitor dashboard on mobile">
+    </td>
+  </tr>
+</table>
+
+Screenshots use synthetic demo data. No real child, camera, or Home Assistant
+credentials are included.
+
 ## What it does
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
