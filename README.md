@@ -34,7 +34,7 @@ credentials are included.
 - Lets each household select its own Home Assistant camera or private RTSP URL.
 - Tracks sleep manually and keeps a local history with predictions.
 - Tags frames, sleep sessions, and cries with a configurable home/location so
-  one shared database can preserve history from multiple houses.
+  one history can distinguish records captured in different houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
   stream, then activates one or more selected Home Assistant lights.
 - Restores every light to its previous state after the alert.
@@ -56,6 +56,11 @@ credentials are included.
 
 The App uses Home Assistant Ingress and the Supervisor token automatically. No
 Home Assistant long-lived access token is needed on Home Assistant OS.
+
+This is the supported end-user experience. The App is not registered as a
+baby-specific dashboard or custom Lovelace panel: every household installs the
+same **Baby Monitor** App, optionally enables **Show in sidebar**, and configures
+its own profile, camera, cry source, lights, notifications, and AI provider.
 
 See [the App documentation](baby_monitor/DOCS.md) for detailed setup and
 privacy notes.
@@ -170,12 +175,18 @@ Home Assistant instance, for example `madrid` / `Madrid` and `granada` /
 `Granada`. New frames, sleep sessions, and cry events are tagged with the
 active location and shown that way in history.
 
-To share one history, both deployments must point at the same private `/data`
-directory, but only one Baby Monitor process may write to that SQLite database
-at a time. This works well when one machine moves between homes and only one
-Home Assistant instance is active. Do not mount the live SQLite directory over
-internet file sharing or run concurrent writers; use a proper synchronization
-or server architecture for that scenario.
+Version `0.1.1` can reuse one private `/data` directory only when one machine
+moves between homes and **exactly one** Baby Monitor process is active. This is
+the current Madrid/Granada migration path, not the design for two independent
+Home Assistant OS installations.
+
+Each Home Assistant OS App installation owns an isolated `/data` directory.
+Never mount one live SQLite database into two Apps or place it on an internet
+file share. Concurrent multi-home history will use the optional Household Hub
+sync design in [Multi-home shared history](docs/shared-history.md): each App
+keeps working locally and exchanges location-tagged records and immutable image
+objects over TLS. Sync is not implemented in `0.1.1`; until it is released,
+moving or merging data must be done while all writers are stopped.
 
 Changing location never deletes or moves existing frames. Retention remains a
 separate explicit setting; choose **Forever** if every image must be preserved.
@@ -202,8 +213,9 @@ Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.m
 ## Status
 
 Version `0.1.1` adds multi-home location tags and a non-destructive database
-migration. Camera and AI providers remain optional; core sleep tracking works
-without either.
+migration. It does not yet synchronize two concurrently running App
+installations. Camera and AI providers remain optional; core sleep tracking
+works without either.
 
 ## License
 

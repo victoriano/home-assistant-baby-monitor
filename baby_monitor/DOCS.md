@@ -104,14 +104,15 @@ Estimate storage before choosing indefinite retention. Backups may grow quickly.
 ### Multiple homes and one history
 
 The active Location ID is stored on every new frame, sleep session, and cry
-event. Multiple Home Assistant instances can therefore contribute to the same
-history when they share the same private `/data` directory.
+event. One computer that moves between homes may reuse the same private `/data`
+directory, but only while exactly one Baby Monitor process is running.
 
-Run only one Baby Monitor process against a shared SQLite database at a time.
-This is suitable for one computer that moves between homes. It is not suitable
-for concurrent processes or a live database mounted over an internet file
-share. Switching locations does not delete or move images. Select **Forever**
-under Retention if frames must never be removed automatically.
+Two Home Assistant OS installations have isolated App data and must not share a
+live SQLite database. Concurrent combined history requires the planned
+Household Hub synchronization layer described in
+[Multi-home shared history](../docs/shared-history.md); it is not available in
+version `0.1.1`. Switching locations does not delete or move images. Select
+**Forever** under Retention if frames must never be removed automatically.
 
 ## Data and backups
 
