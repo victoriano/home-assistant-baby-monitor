@@ -132,8 +132,8 @@ def test_migration_is_idempotent_and_preserves_private_images(tmp_path: Path) ->
     source = _legacy_database(tmp_path / "legacy.sqlite3")
     target = tmp_path / "private" / "data"
 
-    first = migrate(source, target, apply=True)
-    second = migrate(source, target, apply=True)
+    first = migrate(source, target, apply=True, location_id="madrid")
+    second = migrate(source, target, apply=True, location_id="madrid")
     database = Database(target)
     frames, total = database.list_frames()
     sleep, sleep_total = database.list_sleep_events()
@@ -152,6 +152,9 @@ def test_migration_is_idempotent_and_preserves_private_images(tmp_path: Path) ->
     assert cry_total == 1
     assert len(list((target / "frames").rglob("*.jpg"))) == 2
     assert {item.label.state for item in frames if item.label} == {"asleep", "uncertain"}
+    assert {item.location_id for item in frames} == {"madrid"}
+    assert sleep[0].location_id == "madrid"
+    assert cry[0].location_id == "madrid"
     assert sleep[0].source == "import"
     assert sleep[0].started_at.isoformat() == "2026-01-01T01:00:00+00:00"
     assert sleep[0].ended_at is not None

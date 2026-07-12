@@ -15,6 +15,7 @@ def utc_now() -> datetime:
 
 
 ENTITY_ID_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+LOCATION_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def validate_entity_id(value: str, domain: str | None = None) -> str:
@@ -22,6 +23,12 @@ def validate_entity_id(value: str, domain: str | None = None) -> str:
         raise ValueError("entity ID must contain only a lowercase domain and object ID")
     if domain is not None and not value.startswith(f"{domain}."):
         raise ValueError(f"entity ID must start with {domain}.")
+    return value
+
+
+def validate_location_id(value: str) -> str:
+    if not LOCATION_ID_PATTERN.fullmatch(value):
+        raise ValueError("location ID must use lowercase letters, numbers, hyphens, or underscores")
     return value
 
 
@@ -92,6 +99,8 @@ class BabyProfile(StrictModel):
     name: str = Field(default="Baby", min_length=1, max_length=80)
     birth_date: date | None = None
     timezone: str = "UTC"
+    location_id: str = "home"
+    location_name: str = Field(default="Home", min_length=1, max_length=80)
 
     @field_validator("timezone")
     @classmethod
@@ -101,6 +110,11 @@ class BabyProfile(StrictModel):
         except ZoneInfoNotFoundError as exc:
             raise ValueError("timezone must be a valid IANA timezone") from exc
         return value
+
+    @field_validator("location_id")
+    @classmethod
+    def valid_location(cls, value: str) -> str:
+        return validate_location_id(value)
 
 
 class HomeAssistantConfigBase(StrictModel):
@@ -363,6 +377,7 @@ class FrameRecord(StrictModel):
     id: str
     captured_at: datetime
     camera_entity_id: str | None = None
+    location_id: str = "home"
     mime_type: str
     size_bytes: int = Field(ge=0)
     sha256: str
@@ -378,6 +393,12 @@ class SleepEventCreate(StrictModel):
     kind: Literal["nap", "night", "unknown"] = "unknown"
     source: Literal["manual", "vision", "import"] = "manual"
     notes: str | None = Field(default=None, max_length=1000)
+    location_id: str = "home"
+
+    @field_validator("location_id")
+    @classmethod
+    def valid_location(cls, value: str) -> str:
+        return validate_location_id(value)
 
     @model_validator(mode="after")
     def valid_dates(self) -> SleepEventCreate:
@@ -423,6 +444,12 @@ class CryEventCreate(StrictModel):
     source: Literal["binary_sensor", "audio", "manual", "import"]
     confidence: float | None = Field(default=None, ge=0, le=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    location_id: str = "home"
+
+    @field_validator("location_id")
+    @classmethod
+    def valid_location(cls, value: str) -> str:
+        return validate_location_id(value)
 
     @model_validator(mode="after")
     def valid_dates(self) -> CryEventCreate:

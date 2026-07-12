@@ -41,7 +41,7 @@ def _dt(value: str) -> datetime:
 
 
 class Database:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -82,6 +82,7 @@ class Database:
                     id TEXT PRIMARY KEY,
                     captured_at TEXT NOT NULL,
                     camera_entity_id TEXT,
+                    location_id TEXT NOT NULL DEFAULT 'home',
                     relative_path TEXT,
                     mime_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
@@ -101,6 +102,7 @@ class Database:
                     kind TEXT NOT NULL,
                     source TEXT NOT NULL,
                     notes TEXT,
+                    location_id TEXT NOT NULL DEFAULT 'home',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_sleep_started_at ON sleep_events(started_at DESC);
@@ -112,11 +114,16 @@ class Database:
                     source TEXT NOT NULL,
                     confidence REAL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    location_id TEXT NOT NULL DEFAULT 'home',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_cry_detected_at ON cry_events(detected_at DESC);
                 """
             )
+            for table in ("frames", "sleep_events", "cry_events"):
+                columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if "location_id" not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN location_id TEXT NOT NULL DEFAULT 'home'")
             connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     def ready(self) -> bool:
@@ -132,6 +139,7 @@ class Database:
         mime_type: str,
         captured_at: datetime,
         camera_entity_id: str | None = None,
+        location_id: str = "home",
         label: VisionLabel | None = None,
         provider: str | None = None,
         model: str | None = None,
@@ -161,13 +169,14 @@ class Database:
                 with self._connect() as connection:
                     connection.execute(
                         """INSERT INTO frames
-                        (id, captured_at, camera_entity_id, relative_path, mime_type, size_bytes,
+                        (id, captured_at, camera_entity_id, location_id, relative_path, mime_type, size_bytes,
                          sha256, image_available, label_json, provider, model)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
                         (
                             frame_id,
                             _iso(captured),
                             camera_entity_id,
+                            location_id,
                             str(relative),
                             mime_type,
                             len(image),
@@ -186,6 +195,7 @@ class Database:
             id=frame_id,
             captured_at=captured,
             camera_entity_id=camera_entity_id,
+            location_id=location_id,
             mime_type=mime_type,
             size_bytes=len(image),
             sha256=digest,
@@ -200,6 +210,7 @@ class Database:
             id=row["id"],
             captured_at=_dt(row["captured_at"]),
             camera_entity_id=row["camera_entity_id"],
+            location_id=row["location_id"],
             mime_type=row["mime_type"],
             size_bytes=row["size_bytes"],
             sha256=row["sha256"],
@@ -281,7 +292,8 @@ class Database:
                 raise StorageError("sleep event overlaps an existing event")
             connection.execute(
                 """INSERT INTO sleep_events
-                (id, started_at, ended_at, kind, source, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (id, started_at, ended_at, kind, source, notes, location_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item.id,
                     _iso(item.started_at),
@@ -289,6 +301,7 @@ class Database:
                     item.kind,
                     item.source,
                     item.notes,
+                    item.location_id,
                     _iso(item.created_at),
                 ),
             )
@@ -303,6 +316,7 @@ class Database:
             kind=row["kind"],
             source=row["source"],
             notes=row["notes"],
+            location_id=row["location_id"],
             created_at=_dt(row["created_at"]),
         )
 
@@ -343,6 +357,7 @@ class Database:
                 "kind": values.get("kind", current.kind),
                 "source": current.source,
                 "notes": values.get("notes", current.notes),
+                "location_id": current.location_id,
             }
         )
         with self._lock, self._connect() as connection:
@@ -409,8 +424,8 @@ class Database:
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO cry_events
-                (id, detected_at, ended_at, source, confidence, metadata_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (id, detected_at, ended_at, source, confidence, metadata_json, location_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item.id,
                     _iso(item.detected_at),
@@ -418,6 +433,7 @@ class Database:
                     item.source,
                     item.confidence,
                     json.dumps(item.metadata, separators=(",", ":")),
+                    item.location_id,
                     _iso(item.created_at),
                 ),
             )
@@ -432,6 +448,7 @@ class Database:
             source=row["source"],
             confidence=row["confidence"],
             metadata=json.loads(row["metadata_json"]),
+            location_id=row["location_id"],
             created_at=_dt(row["created_at"]),
         )
 

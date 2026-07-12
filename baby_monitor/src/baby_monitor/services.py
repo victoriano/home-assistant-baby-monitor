@@ -63,6 +63,7 @@ class FrameService:
                 mime_type=mime_type,
                 captured_at=utc_now(),
                 camera_entity_id=config.camera.entity_id,
+                location_id=config.baby.location_id,
             )
             if label and config.ai.provider != AIProviderName.DISABLED:
                 # A private frame remains useful even when an optional AI
@@ -128,6 +129,7 @@ class FrameService:
                             kind=kind,
                             source="vision",
                             notes="Started after two consecutive image labels.",
+                            location_id=settings.baby.location_id,
                         )
                     )
                 except StorageError:
@@ -192,6 +194,7 @@ class CryAlertService:
                     source=source,
                     confidence=confidence,
                     metadata=metadata or {},
+                    location_id=self.settings.get().baby.location_id,
                 )
             )
             await self._activate_lights_locked()

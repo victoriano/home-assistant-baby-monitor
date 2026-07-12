@@ -19,7 +19,8 @@ Open **Settings** in the App and configure only the features you need.
 ### Baby profile
 
 Set a display name, optional birth date, and IANA timezone such as
-`Europe/Madrid`. One baby profile is supported in the first release.
+`Europe/Madrid`. Use a stable Location ID and a readable Location name when the
+same history follows the baby between homes. One baby profile is supported.
 
 ### Home Assistant
 
@@ -100,6 +101,18 @@ history does not silently change.
 
 Estimate storage before choosing indefinite retention. Backups may grow quickly.
 
+### Multiple homes and one history
+
+The active Location ID is stored on every new frame, sleep session, and cry
+event. Multiple Home Assistant instances can therefore contribute to the same
+history when they share the same private `/data` directory.
+
+Run only one Baby Monitor process against a shared SQLite database at a time.
+This is suitable for one computer that moves between homes. It is not suitable
+for concurrent processes or a live database mounted over an internet file
+share. Switching locations does not delete or move images. Select **Forever**
+under Retention if frames must never be removed automatically.
+
 ## Data and backups
 
 The App stores its database, frames, settings, encryption key, and encrypted
@@ -163,8 +176,12 @@ baby-monitor-migrate-legacy --source /private/path/legacy.sqlite3
 baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/new-data \
+  --location-id madrid \
   --apply
 ```
+
+Use a lowercase Location ID containing letters, numbers, underscores, or
+hyphens. The import copies the location onto every migrated frame and event.
 
 The target must be private and outside a Git worktree. Stop Baby Monitor before
 copying the migrated target into `/data`, retain a backup, start the App, and

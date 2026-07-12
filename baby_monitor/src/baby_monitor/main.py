@@ -75,6 +75,7 @@ def _frame(frame: Any) -> dict[str, Any]:
         "id": frame.id,
         "capturedAt": frame.captured_at,
         "cameraEntityId": frame.camera_entity_id,
+        "locationId": frame.location_id,
         "imageUrl": f"api/v1/frames/{frame.id}/image" if frame.image_available else "",
         "imageAvailable": frame.image_available,
         "mimeType": frame.mime_type,
@@ -94,6 +95,7 @@ def _sleep(event: Any) -> dict[str, Any]:
         "kind": event.kind,
         "source": event.source,
         "notes": event.notes,
+        "locationId": event.location_id,
         "createdAt": event.created_at,
     }
 
@@ -106,6 +108,7 @@ def _cry(event: Any) -> dict[str, Any]:
         "source": event.source,
         "confidence": event.confidence,
         "metadata": event.metadata,
+        "locationId": event.location_id,
         "createdAt": event.created_at,
     }
 
@@ -150,7 +153,7 @@ def create_app(
 
     app = FastAPI(
         title="Baby Monitor for Home Assistant",
-        version="0.1.0",
+        version="0.1.1",
         docs_url=f"{API_PREFIX}/docs" if runtime != "home_assistant_app" else None,
         redoc_url=None,
         openapi_url=f"{API_PREFIX}/openapi.json" if runtime != "home_assistant_app" else None,
@@ -488,7 +491,8 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/sleep", status_code=201)
     async def add_sleep(event: SleepEventCreate) -> dict[str, Any]:
-        return _sleep(database.add_sleep_event(event))
+        located = event.model_copy(update={"location_id": settings.get().baby.location_id})
+        return _sleep(database.add_sleep_event(located))
 
     @app.patch(f"{API_PREFIX}/sleep/{{event_id}}")
     async def patch_sleep(event_id: str, update: SleepEventPatch) -> dict[str, Any]:
@@ -514,6 +518,7 @@ def create_app(
                     kind=payload.kind,
                     source="manual",
                     notes=payload.notes,
+                    location_id=settings.get().baby.location_id,
                 )
             )
         )

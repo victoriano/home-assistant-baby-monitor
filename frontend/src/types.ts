@@ -16,6 +16,8 @@ export interface BabySettings {
   name: string;
   birthDate: string | null;
   timezone: string;
+  locationId: string;
+  locationName: string;
 }
 
 export interface HomeAssistantSettings {
@@ -91,6 +93,8 @@ export interface SettingsPayload {
     name: string;
     birth_date: string | null;
     timezone: string;
+    location_id: string;
+    location_name: string;
   };
   home_assistant: {
     mode: HomeAssistantSettings['mode'];
@@ -160,6 +164,7 @@ export interface FrameRecord {
   id: string;
   capturedAt: string;
   cameraEntityId: string | null;
+  locationId: string;
   imageUrl: string;
   imageAvailable: boolean;
   mimeType: string;
@@ -176,6 +181,7 @@ export interface SleepEvent {
   kind: SleepKind;
   source: 'manual' | 'vision' | 'automatic' | 'import';
   notes: string | null;
+  locationId: string;
 }
 
 export interface CryEvent {
@@ -184,6 +190,7 @@ export interface CryEvent {
   endedAt: string | null;
   source: 'binary_sensor' | 'audio' | 'manual' | 'import';
   confidence: number | null;
+  locationId: string;
 }
 
 export interface PageResult<T> {
@@ -250,6 +257,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     name: '',
     birthDate: null,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    locationId: 'home',
+    locationName: 'Home',
   },
   homeAssistant: {
     mode: 'auto',
@@ -341,6 +350,8 @@ export function settingsToPayload(settings: AppSettings, clear: SecretName[] = [
       name: settings.baby.name.trim() || 'Baby',
       birth_date: settings.baby.birthDate || null,
       timezone: settings.baby.timezone.trim() || 'UTC',
+      location_id: settings.baby.locationId.trim() || 'home',
+      location_name: settings.baby.locationName.trim() || 'Home',
     },
     home_assistant: {
       mode: settings.homeAssistant.mode,
