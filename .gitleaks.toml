@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Explicitly synthetic credentials used only by tests and CI"
+regexes = [
+  '''ci-only-not-a-real-secret-00000000''',
+  '''correct-horse-battery-staple-123456789''',
+]

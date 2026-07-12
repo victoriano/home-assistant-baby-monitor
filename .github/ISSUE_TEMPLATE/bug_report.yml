@@ -1,0 +1,56 @@
+name: Bug report
+description: Report reproducible incorrect behavior without sharing private household data
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include camera frames, audio, entity names that reveal private
+        information, tokens, API keys, stream URLs, or `/data` contents.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Home Assistant App
+        - Standalone Docker
+        - Local development
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the actual and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove all credentials, URLs, entity IDs, names, images, and audio.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed household data and secrets from this report.
+          required: true
+        - label: This is not a security vulnerability (those must be reported privately).
+          required: true

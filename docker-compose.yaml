@@ -1,0 +1,41 @@
+name: home-assistant-baby-monitor
+
+services:
+  baby-monitor:
+    image: ghcr.io/victoriano/home-assistant-baby-monitor:0.1.0
+    build:
+      context: .
+      dockerfile: baby_monitor/Dockerfile
+      args:
+        BUILD_VERSION: "0.1.0"
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "${BABY_MONITOR_BIND_ADDRESS:-127.0.0.1}:${BABY_MONITOR_PORT:-8099}:8099"
+    environment:
+      BABY_MONITOR_RUNTIME: standalone
+      BABY_MONITOR_ADMIN_TOKEN: ${BABY_MONITOR_ADMIN_TOKEN:?Set BABY_MONITOR_ADMIN_TOKEN in .env}
+      BABY_MONITOR_COOKIE_SECURE: ${BABY_MONITOR_COOKIE_SECURE:-0}
+      BABY_MONITOR_DATA_DIR: /data
+      BABY_MONITOR_FRONTEND_DIR: /app/frontend-dist
+    volumes:
+      - baby-monitor-data:/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  baby-monitor-data:

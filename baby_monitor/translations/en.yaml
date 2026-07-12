@@ -1,0 +1,2 @@
+network:
+  8099/tcp: Standalone web interface (Ingress is recommended)

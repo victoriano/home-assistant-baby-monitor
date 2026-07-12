@@ -1,0 +1,2 @@
+network:
+  8099/tcp: Interfaz web independiente (se recomienda Ingress)

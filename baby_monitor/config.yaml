@@ -1,0 +1,27 @@
+name: Baby Monitor
+version: "0.1.0"
+slug: baby_monitor
+description: >-
+  Local-first sleep tracking, cry alerts, camera snapshots, and optional AI
+  labels for Home Assistant.
+url: https://github.com/victoriano/home-assistant-baby-monitor
+arch:
+  - aarch64
+  - amd64
+init: false
+stage: experimental
+backup: cold
+homeassistant_api: true
+ingress: true
+ingress_stream: true
+panel_icon: mdi:baby-face-outline
+panel_title: Baby Monitor
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: Standalone web interface (Ingress is recommended)
+environment:
+  BABY_MONITOR_RUNTIME: home_assistant_app
+  BABY_MONITOR_DATA_DIR: /data
+  BABY_MONITOR_FRONTEND_DIR: /app/frontend-dist
+image: ghcr.io/victoriano/home-assistant-baby-monitor

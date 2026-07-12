@@ -1,0 +1,214 @@
+name: Publish multi-architecture image
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: home-assistant-baby-monitor
+  REGISTRY_PREFIX: ghcr.io/victoriano
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(sed -n 's/^version: *"\([^"]*\)"/\1/p' baby_monitor/config.yaml)"
+          python_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)"
+          frontend_version="$(jq -r '.version' frontend/package.json)"
+          frontend_lock_version="$(jq -r '.packages[""].version' frontend/package-lock.json)"
+          if [[ -z "${version}" ]]; then
+            echo 'Could not read version from baby_monitor/config.yaml' >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_TAG}" != "${version}" ]]; then
+            echo "Release tag ${RELEASE_TAG} must equal App version ${version}" >&2
+            exit 1
+          fi
+          if [[ "${python_version}" != "${version}" || "${frontend_version}" != "${version}" || "${frontend_lock_version}" != "${version}" ]]; then
+            echo "Release versions do not agree: App=${version}, Python=${python_version}, frontend=${frontend_version}, frontend lock=${frontend_lock_version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare native build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build, sign, and publish architecture image
+        id: build_image
+        uses: home-assistant/builder/actions/build-image@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          build-args: |
+            BUILD_REVISION=${{ github.sha }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: .
+          file: ./baby_monitor/Dockerfile
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          labels: |
+            io.hass.type=app
+            io.hass.name=Baby Monitor
+            io.hass.description=Local-first baby monitor for Home Assistant
+            io.hass.url=https://github.com/victoriano/home-assistant-baby-monitor
+          push: "true"
+          version: ${{ needs.prepare.outputs.version }}
+
+      - name: Attest architecture image provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          push-to-registry: true
+          subject-digest: ${{ steps.build_image.outputs.digest }}
+          subject-name: ${{ matrix.image }}
+
+  manifest:
+    name: Publish signed multi-architecture manifest
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Publish manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ env.IMAGE_NAME }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          registry-prefix: ${{ env.REGISTRY_PREFIX }}
+
+      - name: Resolve multi-architecture manifest digest
+        id: image
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          name="${REGISTRY_PREFIX}/${IMAGE_NAME}"
+          reference="${name}:${VERSION}"
+          digest="$(docker buildx imagetools inspect "${reference}" | awk '$1 == "Digest:" {print $2; exit}')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Could not resolve digest for ${reference}" >&2
+            exit 1
+          fi
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Attest multi-architecture image provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          push-to-registry: true
+          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-name: ${{ steps.image.outputs.name }}
+
+  sbom:
+    name: Publish ${{ matrix.arch }} SBOM
+    needs:
+      - prepare
+      - manifest
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - aarch64
+    steps:
+      - name: Authenticate to GitHub Container Registry
+        env:
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+        run: echo "${REGISTRY_PASSWORD}" | docker login ghcr.io --username "${REGISTRY_USERNAME}" --password-stdin
+
+      - name: Resolve architecture image digest
+        id: image
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          name="${REGISTRY_PREFIX}/${ARCH}-${IMAGE_NAME}"
+          reference="${name}:${VERSION}"
+          digest="$(docker buildx imagetools inspect "${reference}" | awk '$1 == "Digest:" {print $2; exit}')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Could not resolve digest for ${reference}" >&2
+            exit 1
+          fi
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "reference=${reference}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate and attach SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          artifact-name: ${{ env.IMAGE_NAME }}-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.spdx.json
+          format: spdx-json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          image: ${{ steps.image.outputs.reference }}
+          output-file: ${{ env.IMAGE_NAME }}-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.spdx.json
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          registry-username: ${{ github.actor }}
+          syft-version: v1.46.0
+          upload-artifact: "true"
+          upload-artifact-retention: 90
+          upload-release-assets: "true"
+
+      - name: Attest architecture SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          push-to-registry: true
+          sbom-path: ${{ env.IMAGE_NAME }}-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.spdx.json
+          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-name: ${{ steps.image.outputs.name }}

@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: baby_monitor/src:.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          uv-version: "0.11.28"
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev --no-install-project
+
+      - name: Export locked production dependency set
+        run: >-
+          uv export
+          --locked
+          --no-dev
+          --no-emit-project
+          --format requirements-txt
+          --output-file "${RUNNER_TEMP}/requirements.lock"
+
+      - name: Audit Python dependencies
+        run: >-
+          uv tool run
+          --from pip-audit==2.10.1
+          pip-audit
+          --require-hashes
+          --disable-pip
+          --requirement "${RUNNER_TEMP}/requirements.lock"
+
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Test
+        run: uv run --no-sync pytest --cov=baby_monitor --cov-report=term-missing
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  app-lint:
+    name: Home Assistant App metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Run Home Assistant App linter
+        uses: frenck/action-addon-linter@f995494fd84fae6310d23617e66d0e37de4f14eb # v2.21
+        with:
+          path: ./baby_monitor
+
+  container:
+    name: Container smoke build
+    runs-on: ubuntu-24.04
+    needs:
+      - backend
+      - frontend
+      - app-lint
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: >-
+          docker build
+          --build-arg BUILD_ARCH=amd64
+          --build-arg BUILD_VERSION=0.1.0
+          --file baby_monitor/Dockerfile
+          --tag baby-monitor:ci
+          .
+
+      - name: Start authenticated standalone container
+        run: >-
+          docker run --detach --rm
+          --name baby-monitor-ci
+          --env BABY_MONITOR_RUNTIME=standalone
+          --env BABY_MONITOR_ADMIN_TOKEN=ci-only-not-a-real-secret-00000000
+          --publish 127.0.0.1:8099:8099
+          baby-monitor:ci
+
+      - name: Wait for health
+        run: |
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8099/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs baby-monitor-ci
+          exit 1
+
+      - name: Verify authenticated API boundary
+        run: |
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/api/v1/settings)"
+          test "${status}" = "401"
+          curl --fail --silent \
+            --header 'Authorization: Bearer ci-only-not-a-real-secret-00000000' \
+            http://127.0.0.1:8099/api/v1/settings >/dev/null
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs baby-monitor-ci
+
+      - name: Stop container
+        if: always()
+        run: docker stop baby-monitor-ci || true

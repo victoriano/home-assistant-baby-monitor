@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a generic improvement for all households
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and permissions impact
+      description: Does this require new data, network calls, Home Assistant permissions, or cloud services?
+    validations:
+      required: true
