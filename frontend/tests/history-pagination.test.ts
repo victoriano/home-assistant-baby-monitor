@@ -25,6 +25,7 @@ function sleep(id: string): SleepEvent {
     kind: 'nap',
     source: 'manual',
     notes: null,
+    locationId: 'home',
   };
 }
 
@@ -35,6 +36,7 @@ function cry(id: string): CryEvent {
     endedAt: null,
     source: 'binary_sensor',
     confidence: null,
+    locationId: 'home',
   };
 }
 
@@ -43,6 +45,7 @@ function frame(id: string): FrameRecord {
     id,
     capturedAt: '2026-07-10T23:00:00Z',
     cameraEntityId: 'camera.nursery',
+    locationId: 'home',
     imageUrl: `/api/v1/frames/${id}/image`,
     imageAvailable: true,
     mimeType: 'image/jpeg',

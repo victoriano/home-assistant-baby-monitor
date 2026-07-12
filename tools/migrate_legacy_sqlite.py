@@ -23,7 +23,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 from baby_monitor.database import Database
-from baby_monitor.models import VisionLabel
+from baby_monitor.models import VisionLabel, validate_location_id
 
 IMPORT_NAMESPACE = UUID("130a5548-4e4e-4c00-955f-cb881a99a4fe")
 REQUIRED_COLUMNS = {
@@ -237,6 +237,7 @@ def _import_frames(
     source: sqlite3.Connection,
     target: Database,
     report: ImportReport,
+    location_id: str,
 ) -> None:
     extensions = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
     with sqlite3.connect(target.db_path, timeout=30) as destination:
@@ -268,13 +269,14 @@ def _import_frames(
             destination.execute(
                 """
                 INSERT INTO frames
-                (id, captured_at, camera_entity_id, relative_path, mime_type,
+                (id, captured_at, camera_entity_id, location_id, relative_path, mime_type,
                  size_bytes, sha256, image_available, label_json, provider, model)
-                VALUES (?, ?, NULL, ?, ?, ?, ?, 1, ?, ?, ?)
+                VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     frame_id,
                     captured_at,
+                    location_id,
                     str(relative),
                     mime_type,
                     len(image),
@@ -293,6 +295,7 @@ def _import_sleep_events(
     source: sqlite3.Connection,
     target: Database,
     report: ImportReport,
+    location_id: str,
 ) -> None:
     rows = source.execute(
         """
@@ -326,8 +329,8 @@ def _import_sleep_events(
             cursor = destination.execute(
                 """
                 INSERT OR IGNORE INTO sleep_events
-                (id, started_at, ended_at, kind, source, notes, created_at)
-                VALUES (?, ?, ?, ?, 'import', ?, ?)
+                (id, started_at, ended_at, kind, source, notes, location_id, created_at)
+                VALUES (?, ?, ?, ?, 'import', ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -335,6 +338,7 @@ def _import_sleep_events(
                     ended_at,
                     kind,
                     str(canonical["note"] or "")[:1000] or None,
+                    location_id,
                     _iso(str(canonical["created_at"] or canonical["started_at"])),
                 ),
             )
@@ -348,6 +352,7 @@ def _import_cry_events(
     source: sqlite3.Connection,
     target: Database,
     report: ImportReport,
+    location_id: str,
 ) -> None:
     rows = source.execute(
         """
@@ -373,14 +378,15 @@ def _import_cry_events(
             cursor = destination.execute(
                 """
                 INSERT OR IGNORE INTO cry_events
-                (id, detected_at, ended_at, source, confidence, metadata_json, created_at)
-                VALUES (?, ?, ?, 'import', NULL, ?, ?)
+                (id, detected_at, ended_at, source, confidence, metadata_json, location_id, created_at)
+                VALUES (?, ?, ?, 'import', NULL, ?, ?, ?)
                 """,
                 (
                     event_id,
                     detected_at,
                     ended_at,
                     json.dumps(metadata, separators=(",", ":")),
+                    location_id,
                     created.isoformat().replace("+00:00", "Z"),
                 ),
             )
@@ -395,7 +401,8 @@ def _import_cry_events(
                 report.already_imported += 1
 
 
-def migrate(source_path: Path, target_path: Path | None, *, apply: bool) -> ImportReport:
+def migrate(source_path: Path, target_path: Path | None, *, apply: bool, location_id: str = "home") -> ImportReport:
+    validate_location_id(location_id)
     if not source_path.is_file():
         raise ValueError(f"source database does not exist: {source_path}")
     with _read_only(source_path) as source:
@@ -406,9 +413,9 @@ def migrate(source_path: Path, target_path: Path | None, *, apply: bool) -> Impo
         if target_path is None:
             raise ValueError("--target is required with --apply")
         target = Database(_prepare_private_target(target_path))
-        _import_frames(source, target, report)
-        _import_sleep_events(source, target, report)
-        _import_cry_events(source, target, report)
+        _import_frames(source, target, report, location_id)
+        _import_sleep_events(source, target, report, location_id)
+        _import_cry_events(source, target, report, location_id)
         if not target.ready():
             raise ValueError("target SQLite quick_check failed after import")
         return report
@@ -423,6 +430,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Private Baby Monitor data directory, required with --apply",
     )
     parser.add_argument(
+        "--location-id",
+        default="home",
+        help="Lowercase home/location identifier attached to imported history (default: home)",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Perform the import (without this flag only a plan is printed)",
@@ -433,7 +445,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        report = migrate(args.source, args.target, apply=args.apply)
+        report = migrate(args.source, args.target, apply=args.apply, location_id=args.location_id)
     except (OSError, sqlite3.Error, ValueError) as exc:
         print(f"Migration failed: {exc}", file=sys.stderr)
         return 1

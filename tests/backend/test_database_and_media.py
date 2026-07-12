@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 import struct
 from datetime import timedelta
 from pathlib import Path
@@ -40,6 +41,40 @@ def test_sleep_crud_and_retention_keep_metadata(tmp_path: Path) -> None:
     assert retained.sha256 == frame.sha256
     assert database.get_frame_path(frame.id) is None
     assert database.delete_sleep_event(event.id) is True
+
+
+def test_schema_v2_adds_locations_without_touching_frame_files(tmp_path: Path) -> None:
+    frame_path = tmp_path / "frames" / "legacy.jpg"
+    frame_path.parent.mkdir(parents=True)
+    frame_path.write_bytes(b"preserve-this-image")
+    with sqlite3.connect(tmp_path / "baby_monitor.sqlite3") as connection:
+        connection.executescript(
+            """
+            CREATE TABLE frames (
+                id TEXT PRIMARY KEY, captured_at TEXT NOT NULL, camera_entity_id TEXT,
+                relative_path TEXT, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL, image_available INTEGER NOT NULL DEFAULT 1,
+                label_json TEXT, provider TEXT, model TEXT, purged_at TEXT
+            );
+            CREATE TABLE sleep_events (
+                id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, kind TEXT NOT NULL,
+                source TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE cry_events (
+                id TEXT PRIMARY KEY, detected_at TEXT NOT NULL, ended_at TEXT, source TEXT NOT NULL,
+                confidence REAL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+            );
+            PRAGMA user_version = 1;
+            """
+        )
+    database = Database(tmp_path)
+    assert database.SCHEMA_VERSION == 2
+    assert frame_path.read_bytes() == b"preserve-this-image"
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        for table in ("frames", "sleep_events", "cry_events"):
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            assert "location_id" in columns
 
 
 def test_sleep_events_cannot_overlap(tmp_path: Path) -> None:

@@ -33,6 +33,8 @@ credentials are included.
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
 - Tracks sleep manually and keeps a local history with predictions.
+- Tags frames, sleep sessions, and cries with a configurable home/location so
+  one shared database can preserve history from multiple houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
   stream, then activates one or more selected Home Assistant lights.
 - Restores every light to its previous state after the alert.
@@ -98,7 +100,7 @@ GitHub provenance with:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.1.0 \
+  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.1.1 \
   --repo victoriano/home-assistant-baby-monitor \
   --signer-workflow victoriano/home-assistant-baby-monitor/.github/workflows/release.yaml
 ```
@@ -153,8 +155,30 @@ Git worktree:
 baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/baby-monitor-data \
+  --location-id madrid \
   --apply
 ```
+
+`--location-id` records where the imported events and frames were captured.
+Existing version 1 databases upgrade automatically and keep every image file;
+their previous records receive the backwards-compatible location `home`.
+
+## Use one history across multiple homes
+
+Set a stable **Location ID** and readable **Location name** in Settings for each
+Home Assistant instance, for example `madrid` / `Madrid` and `granada` /
+`Granada`. New frames, sleep sessions, and cry events are tagged with the
+active location and shown that way in history.
+
+To share one history, both deployments must point at the same private `/data`
+directory, but only one Baby Monitor process may write to that SQLite database
+at a time. This works well when one machine moves between homes and only one
+Home Assistant instance is active. Do not mount the live SQLite directory over
+internet file sharing or run concurrent writers; use a proper synchronization
+or server architecture for that scenario.
+
+Changing location never deletes or moves existing frames. Retention remains a
+separate explicit setting; choose **Forever** if every image must be preserved.
 
 Stop the App before replacing its `/data` contents and keep both the source and
 target out of public web roots and repositories.
@@ -177,8 +201,9 @@ Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.m
 
 ## Status
 
-Version `0.1.0` is an initial public release. Camera and AI providers are
-optional; core sleep tracking works without either.
+Version `0.1.1` adds multi-home location tags and a non-destructive database
+migration. Camera and AI providers remain optional; core sleep tracking works
+without either.
 
 ## License
 

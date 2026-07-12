@@ -182,6 +182,8 @@ export function normalizeSettings(value: unknown): AppSettings {
       name,
       birthDate: asNullableString(pick(baby, 'birthDate', 'birth_date')),
       timezone: asString(pick(baby, 'timezone'), defaults.baby.timezone),
+      locationId: asString(pick(baby, 'locationId', 'location_id'), defaults.baby.locationId),
+      locationName: asString(pick(baby, 'locationName', 'location_name'), defaults.baby.locationName),
     },
     homeAssistant: {
       mode: ['auto', 'supervisor', 'standalone'].includes(asString(homeAssistant.mode))
@@ -279,6 +281,7 @@ export function normalizeFrame(value: unknown): FrameRecord {
     id,
     capturedAt: asString(pick(data, 'capturedAt', 'captured_at')),
     cameraEntityId: asNullableString(pick(data, 'cameraEntityId', 'camera_entity_id')),
+    locationId: asString(pick(data, 'locationId', 'location_id'), 'home'),
     imageUrl: rawImageUrl ? resolveAppUrl(rawImageUrl) : id ? apiUrl(`api/v1/frames/${encodeURIComponent(id)}/image`) : '',
     imageAvailable: asBoolean(pick(data, 'imageAvailable', 'image_available'), true),
     mimeType: asString(pick(data, 'mimeType', 'mime_type'), 'image/jpeg'),
@@ -300,6 +303,7 @@ export function normalizeSleep(value: unknown): SleepEvent {
     kind: kind === 'nap' || kind === 'night' ? kind : 'unknown',
     source: source === 'vision' || source === 'import' || source === 'automatic' ? source : 'manual',
     notes: asNullableString(data.notes),
+    locationId: asString(pick(data, 'locationId', 'location_id'), 'home'),
   };
 }
 
@@ -312,6 +316,7 @@ export function normalizeCry(value: unknown): CryEvent {
     endedAt: asNullableString(pick(data, 'endedAt', 'ended_at')),
     source: source === 'rtsp_audio' ? 'audio' : source === 'binary_sensor' || source === 'audio' || source === 'import' ? source : 'manual',
     confidence: data.confidence == null ? null : asNumber(data.confidence),
+    locationId: asString(pick(data, 'locationId', 'location_id'), 'home'),
   };
 }
 

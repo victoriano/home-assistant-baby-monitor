@@ -60,6 +60,7 @@ async def test_cry_alert_preserves_and_restores_selected_lights(tmp_path: Path) 
 def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payload: dict) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     with TestClient(app) as client:
+        ui_settings_payload["baby"].update({"location_id": "granada", "location_name": "Granada"})
         assert client.put("/api/v1/settings", json=ui_settings_payload).status_code == 200
         start = utc_now() - timedelta(hours=1)
         created = client.post(
@@ -73,6 +74,7 @@ def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payloa
             },
         )
         assert created.status_code == 201, created.text
+        assert created.json()["locationId"] == "granada"
         event_id = created.json()["id"]
         assert client.get("/api/v1/sleep").json()["total"] == 1
         assert client.patch(f"/api/v1/sleep/{event_id}", json={"notes": "Corrected"}).json()["notes"] == "Corrected"

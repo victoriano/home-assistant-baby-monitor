@@ -391,6 +391,10 @@ export class BabyMonitorApp extends LitElement {
   private validationError(stage: number | 'all'): string {
     const settings = this.draft;
     if ((stage === 0 || stage === 'all') && !settings.baby.name.trim()) return this.t('requiredName');
+    if ((stage === 0 || stage === 'all')
+      && (!settings.baby.locationName.trim() || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(settings.baby.locationId))) {
+      return this.t('requiredLocation');
+    }
     if (stage === 1 || stage === 'all') {
       const homeAssistantError = this.homeAssistantValidationError();
       if (homeAssistantError) return homeAssistantError;
@@ -896,7 +900,7 @@ export class BabyMonitorApp extends LitElement {
     return html`<div class="moment-list">${events.map((event) => html`
       <article class="moment-row">
         <span class=${`moment-symbol ${event.endedAt ? '' : 'active'}`}>${icon(event.endedAt ? 'moon' : 'waves', 17)}</span>
-        <div class="moment-main"><strong>${this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)}${event.notes ? ` · ${event.notes}` : ''}</small></div>
+        <div class="moment-main"><strong>${this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)} · ${this.t('location')}: ${event.locationId}${event.notes ? ` · ${event.notes}` : ''}</small></div>
         <div class="moment-meta"><strong>${sleepDuration(event.startedAt, event.endedAt)}</strong><small>${event.endedAt ? this.t(event.source === 'vision' ? 'vision' : event.source === 'import' ? 'imported' : event.source === 'automatic' ? 'automatic' : 'manual') : this.t('ongoing')}</small></div>
       </article>
     `)}</div>`;
@@ -966,7 +970,7 @@ export class BabyMonitorApp extends LitElement {
   private renderCryList(): TemplateResult {
     if (!this.cryEvents.length) return html`<div class="empty-state compact-empty">${icon('waves', 24)}<p>${this.t('noCryEvents')}</p></div>`;
     return html`<div class="moment-list">${this.cryEvents.map((event) => html`
-      <article class="moment-row cry-row"><span class="moment-symbol coral">${icon('waves', 17)}</span><div class="moment-main"><strong>${this.t('cryActive')}</strong><small>${formatDateTime(event.detectedAt, this.language)}</small></div><div class="moment-meta"><strong>${event.confidence == null ? '—' : `${Math.round(event.confidence * 100)}%`}</strong><small>${event.source === 'binary_sensor' ? this.t('crySensor') : event.source === 'audio' ? this.t('cryAudio') : this.t('manual')}</small></div></article>
+      <article class="moment-row cry-row"><span class="moment-symbol coral">${icon('waves', 17)}</span><div class="moment-main"><strong>${this.t('cryActive')}</strong><small>${formatDateTime(event.detectedAt, this.language)} · ${this.t('location')}: ${event.locationId}</small></div><div class="moment-meta"><strong>${event.confidence == null ? '—' : `${Math.round(event.confidence * 100)}%`}</strong><small>${event.source === 'binary_sensor' ? this.t('crySensor') : event.source === 'audio' ? this.t('cryAudio') : this.t('manual')}</small></div></article>
     `)}</div>`;
   }
 
@@ -974,7 +978,7 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <article class="frame-card">
         <div class="frame-image">${frame.imageAvailable ? html`<img loading="lazy" src=${frame.imageUrl} alt=${this.t('frameAlt', { time: formatClock(frame.capturedAt, this.language) })}>` : html`<span>${icon('camera', 26)}</span>`}</div>
-        <div class="frame-copy"><span>${formatDateTime(frame.capturedAt, this.language)}</span><strong>${frame.label?.description || this.t('noVisionLabel')}</strong>${frame.label ? html`<small>${this.t('confidence', { value: Math.round(frame.label.confidence * 100) })}</small>` : nothing}</div>
+        <div class="frame-copy"><span>${formatDateTime(frame.capturedAt, this.language)} · ${this.t('location')}: ${frame.locationId}</span><strong>${frame.label?.description || this.t('noVisionLabel')}</strong>${frame.label ? html`<small>${this.t('confidence', { value: Math.round(frame.label.confidence * 100) })}</small>` : nothing}</div>
       </article>
     `;
   }
@@ -1011,6 +1015,10 @@ export class BabyMonitorApp extends LitElement {
         <label class="field"><span>${this.t('birthDate')} <em>${this.t('optional')}</em></span><input type="date" .value=${this.draft.baby.birthDate ?? ''} @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.birthDate = inputValue(event) || null; })}></label>
       </div>
       <label class="field"><span>${this.t('timezone')}</span><input .value=${this.draft.baby.timezone} autocomplete="off" @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.timezone = inputValue(event); })}></label>
+      <div class="field-grid two">
+        <label class="field"><span>${this.t('locationName')}</span><input maxlength="80" autocomplete="off" .value=${this.draft.baby.locationName} @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.locationName = inputValue(event); })}></label>
+        <label class="field"><span>${this.t('locationId')}</span><input maxlength="64" pattern="[a-z0-9][a-z0-9_-]{0,63}" autocomplete="off" .value=${this.draft.baby.locationId} @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.locationId = inputValue(event).toLowerCase(); })}><small>${this.t('locationIdHint')}</small></label>
+      </div>
     `;
     return compact ? html`<div class="compact-section">${content}</div>` : this.renderSettingsCard('profile', 'baby', 'settingsProfile', 'settingsProfileHint', content);
   }
