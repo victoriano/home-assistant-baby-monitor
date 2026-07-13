@@ -1,8 +1,16 @@
-import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
 import { ApiError, api } from './api';
 import { icon } from './icons';
+import {
+  buildRhythmModel,
+  localDateKey,
+  rhythmArcPath,
+  rhythmMarkerPosition,
+  shiftDateKey,
+  type RhythmMode,
+} from './sleep-rhythm';
 import {
   formatBytes,
   formatClock,
@@ -118,6 +126,8 @@ export class BabyMonitorApp extends LitElement {
   @state() private cameraBusy: 'snapshot' | 'label' | '' = '';
   @state() private sleepBusy: 'start' | 'stop' | 'add' | '' = '';
   @state() private manualOpen = false;
+  @state() private rhythmDate = localDateKey(new Date());
+  @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
   @state() private manualForm = {
     startedAt: localDateTime(new Date(Date.now() - 60 * 60_000)),
     endedAt: localDateTime(new Date()),
@@ -1016,6 +1026,123 @@ export class BabyMonitorApp extends LitElement {
     `;
   }
 
+  private rhythmDateValue(dateKey: string): Date {
+    const [year, month, day] = dateKey.split('-').map(Number);
+    return new Date(year, month - 1, day, 12, 0, 0, 0);
+  }
+
+  private rhythmDayKeys(): string[] {
+    const today = localDateKey(new Date());
+    const firstOffset = this.rhythmDate === today ? -6 : -3;
+    return Array.from({ length: 7 }, (_, index) => shiftDateKey(this.rhythmDate, firstOffset + index));
+  }
+
+  private moveRhythmDate(days: number): void {
+    const today = localDateKey(new Date());
+    const next = shiftDateKey(this.rhythmDate, days);
+    this.rhythmDate = next > today ? today : next;
+  }
+
+  private renderDailyRhythm(): TemplateResult {
+    const today = localDateKey(new Date());
+    const model = buildRhythmModel(this.sleepEvents, this.rhythmDate, this.rhythmMode);
+    const selectedDate = this.rhythmDateValue(this.rhythmDate);
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const titleDate = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selectedDate);
+    const coreDate = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric' }).format(selectedDate);
+    const dayKeys = this.rhythmDayKeys();
+    const napCount = model.segments.filter((segment) => segment.event.kind !== 'night').length;
+    const nightCount = model.segments.filter((segment) => segment.event.kind === 'night').length;
+    const averageNap = napCount ? Math.round(model.napMinutes / napCount) : 0;
+    const lastDay = dayKeys.at(-1) ?? this.rhythmDate;
+
+    return html`
+      <section class=${`rhythm-visual-card ${this.rhythmMode}`} aria-label=${this.t('rhythmVisualTitle')}>
+        <header class="rhythm-visual-head">
+          <div>
+            <span class="eyebrow">${this.t(this.rhythmMode === 'night' ? 'rhythmNight' : 'rhythmDay')}</span>
+            <h2>${titleDate}</h2>
+          </div>
+          <div class="rhythm-date-nav">
+            <button class="icon-button small rhythm-prev" aria-label=${this.t('rhythmPreviousDays')} @click=${() => this.moveRhythmDate(-7)}>${icon('chevron', 17)}</button>
+            <button class="text-button rhythm-today" ?disabled=${this.rhythmDate === today} @click=${() => { this.rhythmDate = today; }}>${this.t('rhythmToday')}</button>
+            <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= today} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
+          </div>
+        </header>
+
+        <div class="rhythm-week" aria-label=${this.t('rhythmChooseDay')}>
+          ${dayKeys.map((dateKey) => {
+            const date = this.rhythmDateValue(dateKey);
+            const future = dateKey > today;
+            const selected = dateKey === this.rhythmDate;
+            const isToday = dateKey === today;
+            return html`
+              <button
+                class=${`rhythm-day ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                ?disabled=${future}
+                aria-pressed=${selected}
+                @click=${() => { this.rhythmDate = dateKey; }}
+              >
+                <span>${new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(date)}</span>
+                <strong>${date.getDate()}</strong>
+                <small>${isToday ? this.t('rhythmToday') : new Intl.DateTimeFormat(locale, { month: 'short' }).format(date)}</small>
+              </button>
+            `;
+          })}
+        </div>
+
+        <div class="rhythm-orbit-wrap">
+          <div class="rhythm-orbit" aria-label=${this.t('rhythmRecordedSleep', { duration: formatDuration(model.totalMinutes) })}>
+            <svg class="rhythm-ring" viewBox="0 0 320 320" aria-hidden="true">
+              <circle class="rhythm-ring-track" cx="160" cy="160" r="122"></circle>
+              <circle class="rhythm-ring-inner" cx="160" cy="160" r="82"></circle>
+              <line class="rhythm-midnight-line" x1="160" y1="30" x2="160" y2="56"></line>
+              ${model.segments.map((segment) => svg`
+                <path
+                  class=${`rhythm-arc ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} ${segment.event.endedAt ? '' : 'ongoing'}`}
+                  d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
+                ></path>
+              `)}
+            </svg>
+            ${model.segments.map((segment) => {
+              const position = rhythmMarkerPosition(segment);
+              const label = this.t(segment.event.kind === 'night' ? 'nightSleep' : 'nap');
+              const detail = `${label} · ${formatClock(segment.start.toISOString(), this.language)}–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`;
+              return html`
+                <span class=${`rhythm-marker ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail}>
+                  ${icon('moon', 15)}
+                </span>
+              `;
+            })}
+            <div class="rhythm-core">
+              <small>${this.t(this.rhythmMode === 'night' ? 'rhythmNightTo' : 'rhythmDayOf')}</small>
+              <strong>${coreDate}</strong>
+              <div class="rhythm-mode" role="group" aria-label=${this.t('rhythmMode')}>
+                <button class=${this.rhythmMode === 'night' ? 'active' : ''} aria-pressed=${this.rhythmMode === 'night'} @click=${() => { this.rhythmMode = 'night'; }}>${icon('moon', 18)}<span>${this.t('rhythmNight')}</span></button>
+                <button class=${this.rhythmMode === 'day' ? 'active' : ''} aria-pressed=${this.rhythmMode === 'day'} @click=${() => { this.rhythmMode = 'day'; }}>${icon('sun', 18)}<span>${this.t('rhythmDay')}</span></button>
+              </div>
+            </div>
+            <div class="rhythm-endpoint left"><span>${icon(this.rhythmMode === 'night' ? 'moon' : 'sun', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmBed' : 'rhythmWake')}</small><strong>${model.bedAt && this.rhythmMode === 'night' ? formatClock(model.bedAt.toISOString(), this.language) : model.wakeAt && this.rhythmMode === 'day' ? formatClock(model.wakeAt.toISOString(), this.language) : '—'}</strong></div>
+            <div class="rhythm-endpoint right"><span>${icon(this.rhythmMode === 'night' ? 'sun' : 'moon', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmWake' : 'rhythmBed')}</small><strong>${model.wakeAt && this.rhythmMode === 'night' ? formatClock(model.wakeAt.toISOString(), this.language) : model.bedAt && this.rhythmMode === 'day' ? formatClock(model.bedAt.toISOString(), this.language) : '—'}</strong></div>
+          </div>
+        </div>
+
+        <div class="rhythm-summary">
+          <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${model.segments.length}</b></div>
+          <div class="rhythm-duration-track" aria-hidden="true">
+            ${model.segments.map((segment) => html`<i class=${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
+          </div>
+          <div class="rhythm-stats">
+            <div><span>${this.t('rhythmNaps')}</span><strong>${napCount} · ${formatDuration(model.napMinutes)}</strong></div>
+            <div><span>${this.t('rhythmNightPeriods')}</span><strong>${nightCount} · ${formatDuration(model.nightMinutes)}</strong></div>
+            <div><span>${this.t('rhythmAverageNap')}</span><strong>${formatDuration(averageNap)}</strong></div>
+          </div>
+        </div>
+        ${!model.segments.length ? html`<p class="rhythm-empty">${this.t('rhythmEmptyHint')}</p>` : nothing}
+      </section>
+    `;
+  }
+
   private renderSleepList(events: SleepEvent[]): TemplateResult {
     if (!events.length) return html`<div class="empty-state compact-empty">${icon('moon', 24)}<p>${this.t('noSleepEvents')}</p></div>`;
     return html`<div class="moment-list">${events.map((event) => html`
@@ -1055,6 +1182,7 @@ export class BabyMonitorApp extends LitElement {
           <div class="heading-actions"><button class="button secondary" @click=${() => { this.manualOpen = !this.manualOpen; }}>${icon('plus', 17)} ${this.t('manualTitle')}</button><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
         </section>
         ${this.manualOpen ? this.renderManualForm() : nothing}
+        ${this.renderDailyRhythm()}
         ${this.renderNightRibbon()}
         <section class="history-grid">
           <article class="history-panel" aria-busy=${this.historyPages.sleep.loading}><div class="panel-heading"><span class="panel-icon">${icon('moon', 18)}</span><div><h2>${this.t('sleepTimeline')}</h2><small>${this.historyPages.sleep.total}</small></div></div>${this.sleepEvents.length || (!this.historyPages.sleep.loading && !this.historyPages.sleep.error) ? this.renderSleepList(this.sleepEvents) : nothing}${this.renderHistoryPager('sleep', this.sleepEvents.length)}</article>
