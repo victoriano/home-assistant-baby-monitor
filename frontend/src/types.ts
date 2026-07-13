@@ -239,6 +239,51 @@ export interface RetentionEstimate {
   bytes: number;
 }
 
+export interface HistoryTransferCounts {
+  frames: number;
+  storedImages: number;
+  sleepEvents: number;
+  cryEvents: number;
+}
+
+export interface HistoryTransferExport {
+  archiveId: string;
+  filename: string;
+  createdAt: string;
+  manifestSha256: string;
+  bytes: number;
+  counts: HistoryTransferCounts;
+  downloadUrl: string;
+}
+
+export interface HistoryImportReceipt {
+  format: 'baby-monitor-import-receipt';
+  formatVersion: 1;
+  datasetId: string;
+  generation: number;
+  manifestSha256: string;
+  destinationInstallationId: string;
+  importedAt: string;
+  counts: HistoryTransferCounts;
+}
+
+export interface HistoryTransferStatus {
+  status: 'active' | 'preparing' | 'pending' | 'retired';
+  writable: boolean;
+  datasetId: string;
+  generation: number;
+  outgoing: HistoryTransferExport | null;
+  lastImport: HistoryImportReceipt | null;
+}
+
+export interface HistoryImportResult {
+  ok: boolean;
+  idempotent: boolean;
+  receipt: HistoryImportReceipt;
+  counts: HistoryTransferCounts;
+  status: HistoryTransferStatus;
+}
+
 export interface HealthStatus {
   ok: boolean;
   database: boolean;

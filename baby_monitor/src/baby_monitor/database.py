@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import threading
 from contextlib import suppress
@@ -514,3 +515,113 @@ class Database:
             "cry_events": cry_count,
             "last_frame_at": last_frame,
         }
+
+    def prepare_history_snapshot(self, target_dir: Path) -> tuple[Path, Path]:
+        """Create a point-in-time database and stable frame tree for export.
+
+        Frame files are hard-linked when the filesystem supports it, so a
+        large export does not temporarily duplicate every image before the
+        archive itself is written. The database lock prevents retention from
+        unlinking a frame between the SQLite backup and the hard-link step.
+        """
+
+        snapshot_db = target_dir / "history.sqlite3"
+        snapshot_frames = target_dir / "frames"
+        target_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        snapshot_frames.mkdir(mode=0o700)
+        with self._lock:
+            with self._connect() as source, sqlite3.connect(snapshot_db) as destination:
+                source.backup(destination)
+            os.chmod(snapshot_db, 0o600)
+            with sqlite3.connect(snapshot_db) as snapshot:
+                snapshot.row_factory = sqlite3.Row
+                rows = snapshot.execute(
+                    """SELECT relative_path FROM frames
+                       WHERE image_available = 1 AND relative_path IS NOT NULL"""
+                ).fetchall()
+            frames_root = self.frames_dir.resolve()
+            for row in rows:
+                relative = Path(row["relative_path"])
+                source_path = (self.frames_dir / relative).resolve()
+                if not source_path.is_relative_to(frames_root) or not source_path.is_file():
+                    raise StorageError(f"stored frame is missing or unsafe: {relative}")
+                target_path = snapshot_frames / relative
+                target_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                try:
+                    os.link(source_path, target_path)
+                except OSError:
+                    shutil.copyfile(source_path, target_path)
+                os.chmod(target_path, 0o600)
+        return snapshot_db, snapshot_frames
+
+    def replace_history(self, snapshot_db: Path, snapshot_frames: Path, work_dir: Path) -> None:
+        """Atomically replace history while preserving settings and secrets.
+
+        The caller must fully validate the staged snapshot first. A private
+        rollback directory is kept until the replacement passes SQLite's
+        integrity check, then removed.
+        """
+
+        rollback = work_dir / "rollback"
+        incoming = work_dir / "incoming"
+        rollback.mkdir(parents=True, exist_ok=False, mode=0o700)
+        incoming.mkdir(parents=True, exist_ok=False, mode=0o700)
+        incoming_db = incoming / self.db_path.name
+        incoming_frames = incoming / "frames"
+        os.replace(snapshot_db, incoming_db)
+        os.replace(snapshot_frames, incoming_frames)
+        previous_db = rollback / self.db_path.name
+        previous_frames = rollback / "frames"
+        moved_database = False
+        moved_frames = False
+        installed_database = False
+        installed_frames = False
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                for suffix in ("-wal", "-shm"):
+                    self.db_path.with_name(f"{self.db_path.name}{suffix}").unlink(missing_ok=True)
+                if self.db_path.exists():
+                    os.replace(self.db_path, previous_db)
+                    moved_database = True
+                if self.frames_dir.exists():
+                    os.replace(self.frames_dir, previous_frames)
+                    moved_frames = True
+                os.replace(incoming_db, self.db_path)
+                installed_database = True
+                os.replace(incoming_frames, self.frames_dir)
+                installed_frames = True
+                with self._connect() as connection:
+                    if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise StorageError("imported history failed SQLite integrity_check")
+                self._secure_database_files()
+            except Exception:
+                if installed_database:
+                    self.db_path.unlink(missing_ok=True)
+                if installed_frames:
+                    shutil.rmtree(self.frames_dir, ignore_errors=True)
+                if moved_database and previous_db.exists():
+                    os.replace(previous_db, self.db_path)
+                if moved_frames and previous_frames.exists():
+                    os.replace(previous_frames, self.frames_dir)
+                self._secure_database_files()
+                raise
+        shutil.rmtree(rollback, ignore_errors=True)
+        shutil.rmtree(incoming, ignore_errors=True)
+
+    def clear_history(self, work_dir: Path) -> None:
+        """Replace all history with an empty, current-schema database.
+
+        Settings and encrypted secrets live outside this database and are not
+        affected. ``replace_history`` keeps the destructive step atomic and
+        rolls the previous history back if the empty replacement cannot be
+        installed cleanly.
+        """
+
+        empty_source = work_dir / "empty-source"
+        replacement_work = work_dir / "replacement"
+        empty = Database(empty_source)
+        snapshot_db, snapshot_frames = empty.prepare_history_snapshot(work_dir / "empty-snapshot")
+        replacement_work.mkdir(mode=0o700)
+        self.replace_history(snapshot_db, snapshot_frames, replacement_work)

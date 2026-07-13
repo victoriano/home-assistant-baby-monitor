@@ -138,6 +138,80 @@ describe('ingress-safe URLs', () => {
   });
 });
 
+describe('portable history transfer contract', () => {
+  it('normalizes a prepared export and its integrity metadata', () => {
+    const status = apiTesting.normalizeTransferStatus({
+      status: 'pending',
+      writable: false,
+      datasetId: 'dataset-1',
+      generation: 2,
+      outgoing: {
+        archiveId: 'archive-1',
+        filename: 'baby-monitor-history.zip',
+        manifestSha256: 'abc123',
+        bytes: 1234,
+        counts: { frames: 10, storedImages: 9, sleepEvents: 3, cryEvents: 2 },
+        downloadUrl: 'api/v1/history-transfer/exports/archive-1',
+      },
+    });
+
+    expect(status.status).toBe('pending');
+    expect(status.writable).toBe(false);
+    expect(status.outgoing?.counts).toEqual({ frames: 10, storedImages: 9, sleepEvents: 3, cryEvents: 2 });
+    expect(status.outgoing?.downloadUrl).toContain('history-transfer/exports/archive-1');
+  });
+
+  it('uploads the ZIP as a binary body under the current Ingress base', async () => {
+    document.head.innerHTML = '<base href="http://localhost:8123/api/hassio_ingress/demo/">';
+    const response = new Response(JSON.stringify({
+      ok: true,
+      idempotent: false,
+      counts: { frames: 1, storedImages: 1, sleepEvents: 0, cryEvents: 0 },
+      receipt: {
+        datasetId: 'dataset-1', generation: 1, manifestSha256: 'hash',
+        destinationInstallationId: 'installation-1', importedAt: '2026-07-13T00:00:00Z',
+        counts: { frames: 1, storedImages: 1, sleepEvents: 0, cryEvents: 0 },
+      },
+      status: { status: 'active', writable: true, datasetId: 'dataset-1', generation: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    const file = new File(['zip-bytes'], 'history.zip', { type: 'application/zip' });
+    try {
+      const result = await api.importHistory(file, true);
+      expect(result.receipt.datasetId).toBe('dataset-1');
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(String(url)).toContain('/api/hassio_ingress/demo/api/v1/history-transfer/imports?replace=true');
+      expect(init?.body).toBe(file);
+      expect(new Headers(init?.headers).get('Content-Type')).toBe('application/zip');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('uploads the destination receipt with an explicit source-deletion flag', async () => {
+    document.head.innerHTML = '<base href="http://localhost:8123/api/hassio_ingress/demo/">';
+    const response = new Response(JSON.stringify({
+      ok: true,
+      deleted: true,
+      status: { status: 'retired', writable: false, datasetId: 'dataset-1', generation: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    const receipt = new File(['{"format":"baby-monitor-import-receipt"}'], 'receipt.json', {
+      type: 'application/json',
+    });
+    try {
+      const status = await api.finalizeHistoryExport(receipt, true);
+      expect(status.status).toBe('retired');
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(String(url)).toContain('/api/v1/history-transfer/finalize?delete=true');
+      expect(init?.body).toBe(receipt);
+      expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+});
+
 describe('dashboard normalization', () => {
   it('accepts prediction and current sleep in snake_case', () => {
     const summary = apiTesting.normalizeSummary({

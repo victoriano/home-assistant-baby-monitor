@@ -563,6 +563,26 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
 .safety-note { border-color: rgba(230, 184, 108, 0.14); background: var(--amber-wash); color: var(--amber); }
 .safety-note p { margin: 0; color: var(--oat); font-size: 10px; line-height: 1.55; }
 .retention-impact { margin: -10px 0 0; color: var(--quiet); font-size: 9px; }
+.transfer-block { display: grid; gap: 12px; }
+.transfer-block > div:first-child { display: grid; gap: 5px; }
+.transfer-block > div:first-child > strong { font-size: 12px; }
+.transfer-block p { margin: 0; color: var(--quiet); font-size: 10px; line-height: 1.55; }
+.transfer-block > .button { width: max-content; max-width: 100%; }
+.transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.transfer-summary { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--edge); border-radius: 8px; background: var(--night-deep); }
+.transfer-summary strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-summary small { color: var(--quiet); font-size: 9px; }
+.transfer-divider { height: 1px; background: var(--edge); }
+.import-block input[type="file"], .retire-block input[type="file"] { padding: 8px 10px !important; color: var(--quiet) !important; }
+.import-block input[type="file"]::file-selector-button, .retire-block input[type="file"]::file-selector-button { margin-right: 10px; padding: 7px 9px; border: 1px solid var(--edge-strong); border-radius: 6px; background: var(--slate-soft); color: var(--linen); cursor: pointer; }
+.danger-confirm { border-color: rgba(230, 184, 108, 0.18); background: var(--amber-wash); }
+.retire-block { margin-top: 3px; padding-top: 14px; border-top: 1px solid var(--edge); }
+.destructive-confirm { border-color: rgba(224, 121, 103, 0.24); background: rgba(224, 121, 103, 0.07); }
+.button.danger { width: max-content; border-color: rgba(224, 121, 103, 0.3); background: rgba(224, 121, 103, 0.12); color: var(--coral); }
+.transfer-result { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid rgba(143, 199, 175, 0.18); border-radius: 8px; background: var(--sage-wash); color: var(--sage); }
+.transfer-result > div { display: grid; flex: 1; gap: 3px; }
+.transfer-result strong { color: var(--linen); font-size: 10px; }
+.transfer-result small { color: var(--quiet); font-size: 9px; line-height: 1.45; }
 
 .settings-savebar { position: sticky; z-index: 20; bottom: 18px; display: flex; align-items: center; gap: 14px; width: min(760px, calc(100% - 226px)); margin: 20px 0 0 226px; padding: 11px 12px 11px 15px; border: 1px solid var(--edge-strong); border-radius: 12px; background: rgba(21, 27, 43, 0.94); backdrop-filter: blur(18px); }
 .settings-savebar > div:first-child { display: flex; align-items: center; gap: 9px; min-width: 0; color: var(--sage); }

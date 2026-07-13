@@ -4,6 +4,26 @@ All notable changes to this App are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-13
+
+### Added
+
+- Public Settings flow for verified history export, import, and source
+  retirement between Home Assistant installations.
+- Portable ZIP exports with CSV tables and original images grouped by location
+  and date for use in external analysis tools.
+- Lossless SQLite snapshot, manifest, counts, and SHA-256 validation for every
+  imported image.
+- Destination import receipts that must match the pending export before source
+  history and images can be explicitly deleted.
+
+### Security
+
+- Transfer archives exclude Settings, encryption keys, Home Assistant tokens,
+  AI API keys, and private camera URLs.
+- Archive extraction rejects unsafe paths, duplicate names, symbolic links,
+  unsupported compression, corrupt databases, and mismatched content hashes.
+
 ## [0.1.1] - 2026-07-12
 
 ### Added
