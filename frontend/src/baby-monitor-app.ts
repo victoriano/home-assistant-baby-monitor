@@ -1156,13 +1156,6 @@ export class BabyMonitorApp extends LitElement {
     URL.revokeObjectURL(url);
   }
 
-  private period(): TranslationKey {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'periodMorning';
-    if (hour < 19) return 'periodAfternoon';
-    return 'periodEvening';
-  }
-
   private currentSleep(): SleepEvent | null {
     return this.summary.currentSleep ?? this.sleepEvents.find((event) => !event.endedAt) ?? null;
   }
@@ -1328,19 +1321,8 @@ export class BabyMonitorApp extends LitElement {
     const current = this.currentSleep();
     const sleeping = Boolean(current) || this.summary.state === 'sleeping';
     const stateKey: TranslationKey = sleeping ? 'sleeping' : this.summary.state === 'awake' ? 'awake' : 'unknown';
-    const name = this.settings.baby.name || this.t('dashboardFallbackName');
     return html`
       <main class="page dashboard-page" id="main">
-        <section class="dashboard-heading">
-          <div>
-            <span class="eyebrow">${this.t('nurseryNow')}</span>
-            <h1>${this.t('dashboardHello', { period: this.t(this.period()), name })}</h1>
-          </div>
-          <button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
-            <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span>
-          </button>
-        </section>
-
         ${this.renderDailyRhythm()}
 
         <section class="now-grid">
@@ -1556,6 +1538,11 @@ export class BabyMonitorApp extends LitElement {
     return visible;
   }
 
+  private openRhythmSegment(segment: RhythmSegment): void {
+    if (segment.prediction) this.selectedPrediction = segment.prediction;
+    else if (segment.event) this.openSleepEditor(segment.event);
+  }
+
   private renderDailyRhythm(): TemplateResult {
     const today = localDateKey(new Date());
     const tomorrow = shiftDateKey(today, 1);
@@ -1578,18 +1565,23 @@ export class BabyMonitorApp extends LitElement {
       .filter((segment) => segment.prediction)
       .map((segment) => [segment.prediction!.recommendedStart, segment.prediction!])).values()];
     const recordedCount = new Set(model.sleepSegments.map((segment) => segment.event?.id ?? segment.id)).size;
+    const babyName = this.settings.baby.name.trim();
+    const rhythmContext = `${babyName ? `${babyName} · ` : ''}${this.t(this.rhythmMode === 'night' ? 'rhythmNight' : 'rhythmDay')}`;
 
     return html`
       <section class=${`rhythm-visual-card ${this.rhythmMode}`} aria-label=${this.t('rhythmVisualTitle')}>
         <header class="rhythm-visual-head">
           <div>
-            <span class="eyebrow">${this.t(this.rhythmMode === 'night' ? 'rhythmNight' : 'rhythmDay')}</span>
+            <span class="eyebrow rhythm-context">${rhythmContext}</span>
             <h2>${titleDate}</h2>
           </div>
           <div class="rhythm-date-nav">
             <button class="icon-button small rhythm-prev" aria-label=${this.t('rhythmPreviousDays')} @click=${() => this.moveRhythmDate(-7)}>${icon('chevron', 17)}</button>
             <button class="text-button rhythm-today" ?disabled=${this.rhythmDate === today} @click=${() => { this.rhythmDate = today; }}>${this.t('rhythmToday')}</button>
             <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= tomorrow} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
+            <button class="icon-button small rhythm-refresh" title=${this.t('refreshData')} aria-label=${this.t('refreshData')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
+              <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 16)}</span>
+            </button>
           </div>
         </header>
 
@@ -1626,6 +1618,13 @@ export class BabyMonitorApp extends LitElement {
                   class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
                   d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
                 ></path>
+                ${segment.event || segment.prediction ? svg`
+                  <path
+                    class="rhythm-hit"
+                    d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
+                    @click=${() => this.openRhythmSegment(segment)}
+                  ></path>
+                ` : nothing}
               `)}
             </svg>
             ${markerSegments.map((segment) => {
@@ -1635,7 +1634,7 @@ export class BabyMonitorApp extends LitElement {
                 : segment.type === 'awake' ? (this.language === 'es' ? 'Despertar por la noche' : 'Night waking') : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
               const detail = `${label} · ${formatClock(segment.prediction?.recommendedStart ?? segment.start.toISOString(), this.language)}${segment.predicted ? ` · ${this.language === 'es' ? 'previsto' : 'predicted'}` : `–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`}`;
               return html`
-                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => { if (segment.prediction) this.selectedPrediction = segment.prediction; else if (segment.event) this.openSleepEditor(segment.event); }}>
+                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => this.openRhythmSegment(segment)}>
                   ${icon(segment.predicted ? 'sparkle' : segment.type === 'awake' ? 'waves' : 'moon', 15)}
                 </button>
               `;
