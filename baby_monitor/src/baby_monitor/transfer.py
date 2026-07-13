@@ -40,7 +40,7 @@ FRAME_COLUMNS = (
     "model",
     "purged_at",
 )
-SLEEP_COLUMNS = (
+SLEEP_COLUMNS_V2 = (
     "id",
     "started_at",
     "ended_at",
@@ -50,6 +50,7 @@ SLEEP_COLUMNS = (
     "location_id",
     "created_at",
 )
+SLEEP_COLUMNS = (*SLEEP_COLUMNS_V2, "details_json")
 CRY_COLUMNS = (
     "id",
     "detected_at",
@@ -685,7 +686,7 @@ class HistoryTransferManager:
                     raise TransferError("archive history uses an unsupported database schema")
                 required = {
                     "frames": set(FRAME_COLUMNS),
-                    "sleep_events": set(SLEEP_COLUMNS),
+                    "sleep_events": set(SLEEP_COLUMNS if version >= 3 else SLEEP_COLUMNS_V2),
                     "cry_events": set(CRY_COLUMNS),
                 }
                 for table, columns in required.items():

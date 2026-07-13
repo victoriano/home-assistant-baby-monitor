@@ -4,10 +4,12 @@ import {
   buildRhythmModel,
   localDateKey,
   rhythmArcPath,
+  rhythmPosition,
+  rhythmTrackPath,
   rhythmWindow,
   shiftDateKey,
 } from '../src/sleep-rhythm';
-import type { SleepEvent, SleepKind } from '../src/types';
+import type { SleepEvent, SleepKind, SleepPlan } from '../src/types';
 
 function at(dateKey: string, hour: number, minute = 0): string {
   const [year, month, day] = dateKey.split('-').map(Number);
@@ -79,5 +81,54 @@ describe('sleep rhythm model', () => {
   it('creates a valid SVG arc for a sleep segment', () => {
     expect(rhythmArcPath(0.25, 0.5)).toMatch(/^M .+ A 122 122 0 0 1 /);
     expect(rhythmArcPath(0.1, 0.8)).toContain(' A 122 122 0 1 1 ');
+    expect(rhythmTrackPath()).toContain(' A 122 122 0 1 1 ');
+    expect(rhythmPosition(0).x).toBeLessThan(50);
+    expect(rhythmPosition(0).y).toBeGreaterThan(50);
+    expect(rhythmPosition(1).x).toBeGreaterThan(50);
+    expect(rhythmPosition(1).y).toBeGreaterThan(50);
+  });
+
+  it('subtracts structured awake pauses and keeps a long pause inside the same night', () => {
+    const event = sleep('night', at('2026-07-09', 22), at('2026-07-10', 7), 'night');
+    event.details = {
+      tags: ['in_bed'],
+      pauses: [{ startedAt: at('2026-07-10', 2), endedAt: at('2026-07-10', 3) }],
+    };
+    const model = buildRhythmModel([event], '2026-07-10', 'night', new Date(at('2026-07-10', 8)));
+
+    expect(model.totalMinutes).toBe(480);
+    expect(model.sleepSegments).toHaveLength(2);
+    expect(model.wakeGaps).toHaveLength(1);
+    expect(model.wakeGaps[0]?.minutes).toBe(60);
+    expect(model.wakeGaps[0]?.inferred).toBe(false);
+    expect(model.bedAt?.getHours()).toBe(22);
+    expect(model.wakeAt?.getHours()).toBe(7);
+  });
+
+  it('shows predicted naps today and the full predicted night ending tomorrow', () => {
+    const target = (kind: 'nap' | 'night', start: string, durationMinutes: number) => ({
+      kind, label: kind, recommendedStart: start, windowStart: start, windowEnd: start,
+      durationMinutes, confidence: 0.8, explanation: 'test',
+    });
+    const plan: SleepPlan = {
+      generatedAt: at('2026-07-10', 9), ageBand: '12-17m', confidence: 0.8, reason: 'test',
+      recentSampleCount: 8, wakeWindowMinutes: 240, wakeWindowMarginMinutes: 30,
+      averageNapMinutes: 60, averageNightMinutes: 600, nextSleepAt: at('2026-07-10', 12),
+      windowStart: at('2026-07-10', 11, 30), windowEnd: at('2026-07-10', 12, 30), nextKind: 'nap',
+      plans: [{
+        date: '2026-07-10', morningWakeAt: at('2026-07-10', 7), nightStartAt: at('2026-07-10', 20),
+        nightEndAt: at('2026-07-11', 7), dayNapPredictions: [target('nap', at('2026-07-10', 12), 60)],
+        nightPrediction: target('night', at('2026-07-10', 20), 660), explanation: 'test',
+      }],
+    };
+    const day = buildRhythmModel([], '2026-07-10', 'day', new Date(at('2026-07-10', 9)), plan);
+    const night = buildRhythmModel([], '2026-07-11', 'night', new Date(at('2026-07-10', 9)), plan);
+
+    expect(day.predictedSegments.map((item) => item.type)).toEqual(['nap', 'night']);
+    expect(day.wakePredicted).toBe(true);
+    expect(day.bedPredicted).toBe(true);
+    expect(night.predictedSegments).toHaveLength(1);
+    expect(night.visualStart.getHours()).toBe(20);
+    expect(night.visualEnd.getHours()).toBe(7);
   });
 });

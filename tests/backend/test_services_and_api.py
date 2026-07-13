@@ -71,10 +71,21 @@ def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payloa
                 "kind": "nap",
                 "source": "manual",
                 "notes": "",
+                "details": {
+                    "tags": ["in_bed", "woke_happy"],
+                    "pauses": [
+                        {
+                            "started_at": (start + timedelta(minutes=10)).isoformat(),
+                            "ended_at": (start + timedelta(minutes=15)).isoformat(),
+                        }
+                    ],
+                },
             },
         )
         assert created.status_code == 201, created.text
         assert created.json()["locationId"] == "granada"
+        assert created.json()["details"]["tags"] == ["in_bed", "woke_happy"]
+        assert len(created.json()["details"]["pauses"]) == 1
         event_id = created.json()["id"]
         assert client.get("/api/v1/sleep").json()["total"] == 1
         assert client.patch(f"/api/v1/sleep/{event_id}", json={"notes": "Corrected"}).json()["notes"] == "Corrected"
@@ -90,6 +101,9 @@ def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payloa
         summary = client.get("/api/v1/summary").json()
         assert summary["sleepTodayMinutes"] >= 0
         assert summary["lastCryAt"] is not None
+        predictions = client.get("/api/v1/predictions")
+        assert predictions.status_code == 200
+        assert len(predictions.json()["plans"]) == 2
         assert client.delete(f"/api/v1/sleep/{event_id}").status_code == 204
         started = client.post(
             "/api/v1/sleep/start",

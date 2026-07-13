@@ -231,6 +231,35 @@ describe('dashboard normalization', () => {
     expect(summary.prediction.confidence).toBe(0.8);
     expect(summary.sleepTodayMinutes).toBe(420);
   });
+
+  it('normalizes a complete two-day prediction plan', () => {
+    const plan = apiTesting.normalizeSleepPlan({
+      generatedAt: '2026-07-13T12:00:00+02:00',
+      ageBand: '4-5m',
+      confidence: 0.81,
+      wakeWindowMinutes: 135,
+      plans: [{
+        date: '2026-07-14',
+        morningWakeAt: '2026-07-14T07:30:00+02:00',
+        nightStartAt: '2026-07-14T20:30:00+02:00',
+        nightEndAt: '2026-07-15T07:30:00+02:00',
+        dayNapPredictions: [{
+          kind: 'nap', label: 'Nap 1', recommendedStart: '2026-07-14T10:00:00+02:00',
+          windowStart: '2026-07-14T09:30:00+02:00', windowEnd: '2026-07-14T10:30:00+02:00',
+          durationMinutes: 45, confidence: 0.81, explanation: 'Recent rhythm',
+        }],
+        nightPrediction: {
+          kind: 'night', label: 'Night sleep', recommendedStart: '2026-07-14T20:30:00+02:00',
+          windowStart: '2026-07-14T20:00:00+02:00', windowEnd: '2026-07-14T21:00:00+02:00',
+          durationMinutes: 660, confidence: 0.81, explanation: 'Recent bedtime',
+        },
+      }],
+    });
+
+    expect(plan.plans).toHaveLength(1);
+    expect(plan.plans[0].dayNapPredictions[0].durationMinutes).toBe(45);
+    expect(plan.plans[0].nightPrediction.kind).toBe('night');
+  });
 });
 
 describe('paginated history contract', () => {
@@ -255,6 +284,26 @@ describe('paginated history contract', () => {
       expect(page.items).toHaveLength(1);
       expect(page.items[0].id).toBe('sleep-31');
       expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/sleep?limit=30&offset=30');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('round-trips structured sleep details in a manual entry request', async () => {
+    const response = new Response(JSON.stringify({
+      id: 'awake-1', startedAt: '2026-07-13T01:00:00Z', endedAt: '2026-07-13T01:20:00Z',
+      kind: 'awake', source: 'manual', notes: null, locationId: 'granada',
+      details: { tags: [], pauses: [] },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    try {
+      const event = await api.addManualSleep({
+        startedAt: '2026-07-13T01:00:00Z', endedAt: '2026-07-13T01:20:00Z',
+        kind: 'awake', notes: '', details: { tags: [], pauses: [] },
+      });
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+      expect(event.kind).toBe('awake');
+      expect(body.details).toEqual({ tags: [], pauses: [] });
     } finally {
       fetchMock.mockRestore();
     }

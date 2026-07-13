@@ -22,6 +22,27 @@ Set a display name, optional birth date, and IANA timezone such as
 `Europe/Madrid`. Use a stable Location ID and a readable Location name when the
 same history follows the baby between homes. One baby profile is supported.
 
+### Sleep timeline and manual entries
+
+The main rhythm view has separate Day and Night modes. Day spans the baby's
+morning wake-up through bedtime; Night spans bedtime through the following
+wake-up, so the circular segments use the real boundaries instead of fixed
+clock positions. Solid arcs are recorded sleep, narrow dashed coral arcs are
+awake periods, and dashed purple arcs are predictions.
+
+The App calculates plans locally from the profile age and recent history. It
+shows remaining predicted naps and bedtime for today, plus the complete plan
+for tomorrow. These predictions do not call an AI service and are guidance,
+not medical advice.
+
+Use the centre Add action to record a nap, awake period, or night sleep. Start
+and end use a calendar plus exact hour/minute picker. Sleep entries can also
+store awake pauses, how the baby fell asleep, how the sleep ended, mood on
+waking, and a comment. Selecting a recorded segment opens the same fields for
+editing and can show the nearest camera frame at the start, midpoint, and end.
+Entries created automatically remain editable, but only manually created
+entries can be deleted from this screen.
+
 ### Home Assistant
 
 In Home Assistant App mode, leave the connection mode on automatic. The App

@@ -21,6 +21,7 @@ from .models import (
     SleepEventPatch,
     utc_now,
 )
+from .prediction import build_sleep_plan
 from .providers import ProviderError, build_provider
 from .settings import SettingsService
 
@@ -338,10 +339,17 @@ class DashboardService:
         day_end = day_end_local.astimezone(UTC)
         sleep_minutes = 0.0
         for event in self.database.sleep_events_overlapping(day_start, day_end):
+            if event.kind == "awake":
+                continue
             start = max(event.started_at.astimezone(UTC), day_start)
             end = min((event.ended_at or utc_now()).astimezone(UTC), day_end)
             if end > start:
                 sleep_minutes += (end - start).total_seconds() / 60
+                for pause in event.details.pauses:
+                    pause_start = max(pause.started_at.astimezone(UTC), start)
+                    pause_end = min(pause.ended_at.astimezone(UTC), end)
+                    if pause_end > pause_start:
+                        sleep_minutes -= (pause_end - pause_start).total_seconds() / 60
 
         prediction_history, _ = self.database.list_sleep_events(limit=30)
         next_sleep_at, prediction_confidence, prediction_reason = self._prediction(
@@ -368,6 +376,15 @@ class DashboardService:
             "recent_sleep": recent_sleep,
             "recent_cry": recent_cry,
         }
+
+    def predictions(self) -> dict[str, Any]:
+        settings = self.settings.get()
+        history, _ = self.database.list_sleep_events(limit=2_000)
+        return build_sleep_plan(
+            history,
+            birth_date=settings.baby.birth_date,
+            timezone_name=settings.baby.timezone,
+        )
 
     @staticmethod
     def _prediction(
@@ -398,7 +415,7 @@ class DashboardService:
                 baseline_minutes = 360
 
         closed = sorted(
-            (event for event in history if event.ended_at is not None),
+            (event for event in history if event.kind != "awake" and event.ended_at is not None),
             key=lambda event: event.started_at,
         )
         wake_intervals: list[float] = []

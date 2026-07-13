@@ -32,9 +32,13 @@ credentials are included.
 ## What it does
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
-- Tracks sleep manually and keeps a local history with predictions.
+- Tracks and edits naps, night sleep, awakenings, awake pauses, settling
+  context, wake-up context, mood, comments, and nearby camera frames.
+- Builds a local two-day plan with predicted naps and night sleep for today and
+  tomorrow; no AI key is required for sleep prediction.
 - Restores the original rich rhythm view with calendar navigation, circular
-  sleep segments, and separate day/night summaries.
+  sleep segments aligned to the actual wake/bed boundaries, a light Day theme,
+  a dark Night theme, and separate day/night summaries.
 - Keeps the original five-action caregiver navigation: Home, Trends, Add,
   Camera & crying, and Settings, with a direct return to Home Assistant.
 - Shows inferred overnight wake-ups alongside editable sleep segments and

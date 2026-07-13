@@ -8,7 +8,11 @@ import {
   localDateKey,
   rhythmArcPath,
   rhythmMarkerPosition,
+  rhythmPosition,
+  rhythmSvgPoint,
+  rhythmTrackPath,
   shiftDateKey,
+  type RhythmSegment,
   type RhythmMode,
 } from './sleep-rhythm';
 import {
@@ -40,7 +44,11 @@ import {
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
+  type SleepEventDetails,
   type SleepKind,
+  type SleepPause,
+  type SleepPlan,
+  type SleepPredictionTarget,
   type VisionProvider,
   type VisionStatistics,
 } from './types';
@@ -51,6 +59,72 @@ type HistoryKind = 'sleep' | 'cry' | 'frames';
 type TestState = { busy: boolean; ok?: boolean; message?: string };
 type Toast = { tone: 'success' | 'error' | 'info'; message: string };
 type HistoryPageState = { total: number; nextOffset: number; loading: boolean; error: string };
+type TemporalTarget =
+  | 'manual-start'
+  | 'manual-end'
+  | 'edit-start'
+  | 'edit-end'
+  | `manual-pause-start-${number}`
+  | `manual-pause-end-${number}`
+  | `edit-pause-start-${number}`
+  | `edit-pause-end-${number}`;
+type TemporalPickerState = { target: TemporalTarget; value: string; title: string };
+type FrameReviewState = {
+  point: 'start' | 'middle' | 'end' | '';
+  frames: FrameRecord[];
+  index: number;
+  loading: boolean;
+  error: string;
+  requestedAt: string;
+};
+
+const EMPTY_DETAILS = (): SleepEventDetails => ({ tags: [], pauses: [] });
+
+const DETAIL_GROUPS = [
+  {
+    key: 'start',
+    es: 'Inicio',
+    en: 'Falling asleep',
+    options: [
+      ['long_to_fall_asleep', '⏰', 'Mucho tiempo para dormirse', 'Took a long time to fall asleep'],
+      ['upset', '☹️', 'Molesto', 'Upset'],
+    ],
+  },
+  {
+    key: 'method',
+    es: 'Cómo',
+    en: 'How',
+    options: [
+      ['in_bed', '🛏️', 'En la cama', 'In bed'],
+      ['breastfeeding', '🤱', 'Lactancia', 'Breastfeeding'],
+      ['held', '🫶', 'Cargado o sostenido', 'Held'],
+      ['beside_parent', '🤍', 'A mi lado', 'Beside me'],
+      ['bottle', '🍼', 'Toma de biberón', 'Bottle'],
+      ['stroller', '👶', 'Cochecito', 'Stroller'],
+      ['car', '🚗', 'Automóvil', 'Car'],
+      ['swing', '🌙', 'Columpio', 'Swing'],
+    ],
+  },
+  {
+    key: 'end',
+    es: 'Fin',
+    en: 'Wake-up',
+    options: [
+      ['woken_by_parent', '🔔', 'Desperté al bebé', 'Woken by parent'],
+      ['woke_alone', '🌅', 'Se despertó solo', 'Woke independently'],
+    ],
+  },
+  {
+    key: 'mood',
+    es: 'Estado de ánimo al despertar',
+    en: 'Mood on waking',
+    options: [
+      ['woke_grumpy', '🙁', 'Mal humor', 'Grumpy'],
+      ['woke_neutral', '😐', 'Neutral', 'Neutral'],
+      ['woke_happy', '🙂', 'Buen humor', 'Happy'],
+    ],
+  },
+] as const;
 
 const HISTORY_PAGE_LIMITS: Record<HistoryKind, number> = { sleep: 30, cry: 30, frames: 24 };
 
@@ -117,6 +191,7 @@ export class BabyMonitorApp extends LitElement {
     camera: [], binary_sensor: [], light: [], notify: [],
   };
   @state() private summary: DashboardSummary = EMPTY_SUMMARY;
+  @state() private sleepPlan: SleepPlan | null = null;
   @state() private health: HealthStatus | null = null;
   @state() private sleepEvents: SleepEvent[] = [];
   @state() private cryEvents: CryEvent[] = [];
@@ -129,7 +204,15 @@ export class BabyMonitorApp extends LitElement {
   @state() private manualOpen = false;
   @state() private editingSleep: SleepEvent | null = null;
   @state() private editSleepBusy = false;
-  @state() private editSleepForm = { startedAt: '', endedAt: '', kind: 'nap' as SleepKind, notes: '' };
+  @state() private editSleepForm = {
+    startedAt: '', endedAt: '', kind: 'nap' as SleepKind, notes: '', details: EMPTY_DETAILS(),
+  };
+  @state() private temporalPicker: TemporalPickerState | null = null;
+  @state() private selectedPrediction: SleepPredictionTarget | null = null;
+  @state() private frameReview: FrameReviewState = {
+    point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '',
+  };
+  @state() private manualEndTouched = false;
   @state() private rhythmDate = localDateKey(new Date());
   @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
   @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
@@ -140,6 +223,7 @@ export class BabyMonitorApp extends LitElement {
     endedAt: localDateTime(new Date()),
     kind: 'nap' as SleepKind,
     notes: '',
+    details: EMPTY_DETAILS(),
   };
   @state() private tests: Partial<Record<TestKind, TestState>> = {};
   @state() private retentionEstimate: RetentionEstimate | null = null;
@@ -157,6 +241,8 @@ export class BabyMonitorApp extends LitElement {
   private operationalRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
+      if (this.temporalPicker) { this.temporalPicker = null; return; }
+      if (this.selectedPrediction) { this.selectedPrediction = null; return; }
       if (this.manualOpen) this.closeManualForm();
       if (this.editingSleep) this.editingSleep = null;
     }
@@ -249,6 +335,7 @@ export class BabyMonitorApp extends LitElement {
       api.getSleep(500, 0),
       api.getCryEvents(HISTORY_PAGE_LIMITS.cry, 0),
       api.getFrames(HISTORY_PAGE_LIMITS.frames, 0),
+      api.getPredictions(),
     ]);
     if (requestId !== this.operationalRequest) return;
     if (results[0].status === 'fulfilled') this.summary = results[0].value;
@@ -289,6 +376,7 @@ export class BabyMonitorApp extends LitElement {
     } else {
       nextPages.frames = { ...nextPages.frames, nextOffset: 0, loading: false, error: this.historyError(results[3].reason) };
     }
+    if (results[4].status === 'fulfilled') this.sleepPlan = results[4].value;
     this.historyPages = nextPages;
     this.refreshingData = false;
   }
@@ -374,51 +462,291 @@ export class BabyMonitorApp extends LitElement {
     }
   }
 
+  private manualKindForNow(now: Date): SleepKind {
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    if (minutes < 9 * 60) return this.summary.state === 'awake' ? 'awake' : 'night';
+    if (minutes >= 20 * 60) return 'night';
+    return 'nap';
+  }
+
+  private suggestedEnd(startValue: string, kind: SleepKind): string {
+    const start = new Date(startValue);
+    if (!Number.isFinite(start.getTime())) return '';
+    let minutes = kind === 'awake' ? 15 : kind === 'night' ? 10 * 60 : this.sleepPlan?.averageNapMinutes ?? 45;
+    if (kind === 'night') {
+      const dateKey = localDateKey(start);
+      const plan = this.sleepPlan?.plans.find((item) => item.date === dateKey);
+      const plannedEnd = plan?.nightEndAt ? new Date(plan.nightEndAt) : null;
+      if (plannedEnd && plannedEnd > start) minutes = Math.round((plannedEnd.getTime() - start.getTime()) / 60_000);
+      else {
+        const morning = new Date(start);
+        morning.setDate(morning.getDate() + (start.getHours() >= 8 ? 1 : 0));
+        morning.setHours(7, 30, 0, 0);
+        if (morning > start) minutes = Math.round((morning.getTime() - start.getTime()) / 60_000);
+      }
+      minutes = Math.max(6 * 60, Math.min(12 * 60, minutes));
+    }
+    if (kind === 'nap' && start.getHours() >= 17) minutes = Math.min(75, minutes);
+    return localDateTime(new Date(start.getTime() + Math.max(15, minutes) * 60_000));
+  }
+
+  private detailsFromEvent(event: SleepEvent): { notes: string; details: SleepEventDetails } {
+    const details = structuredClone(event.details ?? EMPTY_DETAILS());
+    const note = event.notes ?? '';
+    if (details.tags.length || !note.includes('Etiquetas:')) return { notes: note, details };
+    const aliases = new Map<string, string>();
+    DETAIL_GROUPS.forEach((group) => group.options.forEach(([tag, , es, en]) => {
+      aliases.set(es.toLocaleLowerCase('es'), tag);
+      aliases.set(en.toLocaleLowerCase('en'), tag);
+    }));
+    const [clean, rawTags = ''] = note.split(/\n?Etiquetas:\s*/i, 2);
+    details.tags = rawTags.split(',').map((item) => aliases.get(item.trim().toLocaleLowerCase()) ?? '')
+      .filter(Boolean);
+    return { notes: clean.trim(), details };
+  }
+
   private openManualForm(): void {
     this.inlineError = '';
+    const now = new Date();
+    now.setSeconds(0, 0);
+    this.manualForm = {
+      startedAt: localDateTime(now),
+      endedAt: '',
+      kind: this.manualKindForNow(now),
+      notes: '',
+      details: EMPTY_DETAILS(),
+    };
+    this.manualEndTouched = false;
     this.manualOpen = true;
   }
 
   private closeManualForm(): void {
     this.inlineError = '';
+    this.temporalPicker = null;
     this.manualOpen = false;
   }
 
   private openSleepEditor(event: SleepEvent): void {
+    const restored = this.detailsFromEvent(event);
     this.editingSleep = event;
     this.editSleepForm = {
       startedAt: localDateTime(new Date(event.startedAt)),
       endedAt: event.endedAt ? localDateTime(new Date(event.endedAt)) : '',
       kind: event.kind,
-      notes: event.notes ?? '',
+      notes: restored.notes,
+      details: restored.details,
     };
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
   }
 
   private async saveSleepEditor(): Promise<void> {
-    if (!this.editingSleep || !this.editSleepForm.endedAt) return;
+    if (!this.editingSleep) return;
+    const start = new Date(this.editSleepForm.startedAt);
+    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
+    if (!Number.isFinite(start.getTime()) || (end && (!Number.isFinite(end.getTime()) || end <= start))) {
+      this.inlineError = this.t('invalidSleepRange');
+      return;
+    }
+    if (this.editSleepForm.kind === 'awake' && !end) {
+      this.inlineError = this.language === 'es'
+        ? 'Los despertares necesitan una hora de fin.'
+        : 'Awake periods need an end time.';
+      return;
+    }
     this.editSleepBusy = true;
     try {
       await api.patchSleep(this.editingSleep.id, {
-        startedAt: asIso(this.editSleepForm.startedAt), endedAt: asIso(this.editSleepForm.endedAt),
-        kind: this.editSleepForm.kind, notes: this.editSleepForm.notes,
+        startedAt: asIso(this.editSleepForm.startedAt), endedAt: this.editSleepForm.endedAt ? asIso(this.editSleepForm.endedAt) : null,
+        kind: this.editSleepForm.kind, notes: this.editSleepForm.notes, details: this.editSleepForm.details,
       });
       this.editingSleep = null;
       await this.loadOperationalData(false);
-      this.showToast('Sueño actualizado');
-    } catch (error) { this.inlineError = error instanceof Error ? error.message : 'No se pudo guardar.'; }
+      this.showToast(this.language === 'es' ? 'Sueño actualizado' : 'Sleep updated');
+    } catch (error) {
+      this.inlineError = error instanceof Error
+        ? error.message
+        : this.language === 'es' ? 'No se pudo guardar.' : 'Could not save.';
+    }
     finally { this.editSleepBusy = false; }
   }
 
   private async deleteSleepEditor(): Promise<void> {
-    if (!this.editingSleep || !window.confirm('¿Eliminar este registro de sueño?')) return;
+    if (!this.editingSleep || !window.confirm(
+      this.language === 'es' ? '¿Eliminar este registro de sueño?' : 'Delete this sleep record?',
+    )) return;
     this.editSleepBusy = true;
     try {
       await api.deleteSleep(this.editingSleep.id);
       this.editingSleep = null;
       await this.loadOperationalData(false);
-      this.showToast('Sueño eliminado');
-    } catch (error) { this.inlineError = error instanceof Error ? error.message : 'No se pudo eliminar.'; }
+      this.showToast(this.language === 'es' ? 'Sueño eliminado' : 'Sleep deleted');
+    } catch (error) {
+      this.inlineError = error instanceof Error
+        ? error.message
+        : this.language === 'es' ? 'No se pudo eliminar.' : 'Could not delete.';
+    }
     finally { this.editSleepBusy = false; }
+  }
+
+  private async openTemporalPicker(target: TemporalTarget, value: string, title: string): Promise<void> {
+    const fallback = localDateTime(new Date());
+    const parsed = value ? new Date(value) : new Date(fallback);
+    this.temporalPicker = {
+      target,
+      value: Number.isFinite(parsed.getTime()) ? localDateTime(parsed) : fallback,
+      title,
+    };
+    await this.updateComplete;
+    this.querySelectorAll('.temporal-option.active').forEach((element) => {
+      element.scrollIntoView({ block: 'center' });
+    });
+  }
+
+  private updateTemporalDate(days: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    date.setDate(date.getDate() + days);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private updateTemporalClock(part: 'hour' | 'minute', value: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    if (part === 'hour') date.setHours(value);
+    else date.setMinutes(value);
+    date.setSeconds(0, 0);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private adjustTemporal(minutes: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    date.setMinutes(date.getMinutes() + minutes);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private applyTemporalPicker(): void {
+    if (!this.temporalPicker) return;
+    const { target, value } = this.temporalPicker;
+    if (target === 'manual-start') this.manualForm = { ...this.manualForm, startedAt: value };
+    else if (target === 'manual-end') {
+      this.manualForm = { ...this.manualForm, endedAt: value };
+      this.manualEndTouched = true;
+    } else if (target === 'edit-start') this.editSleepForm = { ...this.editSleepForm, startedAt: value };
+    else if (target === 'edit-end') this.editSleepForm = { ...this.editSleepForm, endedAt: value };
+    else {
+      const match = target.match(/^(manual|edit)-pause-(start|end)-(\d+)$/);
+      if (match) {
+        const [, scope, edge, rawIndex] = match;
+        const index = Number(rawIndex);
+        const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+        const pauses = form.details.pauses.map((pause, pauseIndex) => pauseIndex === index
+          ? { ...pause, [edge === 'start' ? 'startedAt' : 'endedAt']: asIso(value) }
+          : pause);
+        if (scope === 'manual') {
+          this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, pauses } };
+        } else {
+          this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, pauses } };
+        }
+      }
+    }
+    this.temporalPicker = null;
+  }
+
+  private setManualKind(kind: SleepKind): void {
+    const suggestion = this.suggestedEnd(this.manualForm.startedAt, kind);
+    this.manualForm = {
+      ...this.manualForm,
+      kind,
+      endedAt: this.manualEndTouched ? this.manualForm.endedAt : '',
+      details: kind === 'awake' ? EMPTY_DETAILS() : this.manualForm.details,
+    };
+    if (kind === 'awake' && !this.manualForm.endedAt) {
+      this.manualForm = { ...this.manualForm, endedAt: suggestion };
+    }
+  }
+
+  private toggleDetailTag(scope: 'manual' | 'edit', tag: string): void {
+    const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+    const tags = form.details.tags.includes(tag)
+      ? form.details.tags.filter((item) => item !== tag)
+      : [...form.details.tags, tag];
+    if (scope === 'manual') {
+      this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, tags } };
+    } else {
+      this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, tags } };
+    }
+  }
+
+  private addPause(scope: 'manual' | 'edit'): void {
+    const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+    const start = new Date(form.startedAt);
+    const endValue = form.endedAt || (scope === 'manual' ? this.suggestedEnd(form.startedAt, form.kind) : '');
+    const end = new Date(endValue);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+      this.inlineError = 'Elige primero un inicio y un fin para añadir la pausa.';
+      return;
+    }
+    if (end.getTime() - start.getTime() < 20 * 60_000) {
+      this.inlineError = 'El tramo es demasiado corto para añadir una pausa.';
+      return;
+    }
+    const middle = new Date((start.getTime() + end.getTime()) / 2);
+    const pause: SleepPause = {
+      startedAt: new Date(middle.getTime() - 5 * 60_000).toISOString(),
+      endedAt: new Date(middle.getTime() + 5 * 60_000).toISOString(),
+    };
+    const pauses = [...form.details.pauses, pause];
+    if (scope === 'manual') {
+      this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, pauses } };
+    } else {
+      this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, pauses } };
+    }
+    this.inlineError = '';
+  }
+
+  private removePause(scope: 'manual' | 'edit', index: number): void {
+    if (scope === 'manual') {
+      this.manualForm = {
+        ...this.manualForm,
+        details: { ...this.manualForm.details, pauses: this.manualForm.details.pauses.filter((_, item) => item !== index) },
+      };
+    } else {
+      this.editSleepForm = {
+        ...this.editSleepForm,
+        details: { ...this.editSleepForm.details, pauses: this.editSleepForm.details.pauses.filter((_, item) => item !== index) },
+      };
+    }
+  }
+
+  private reviewPointDate(point: 'start' | 'middle' | 'end'): Date | null {
+    const start = new Date(this.editSleepForm.startedAt);
+    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
+    if (!Number.isFinite(start.getTime())) return null;
+    if (point === 'start' || !end || !Number.isFinite(end.getTime())) return start;
+    if (point === 'end') return end;
+    return new Date((start.getTime() + end.getTime()) / 2);
+  }
+
+  private async loadFrameReview(point: 'start' | 'middle' | 'end'): Promise<void> {
+    const requested = this.reviewPointDate(point);
+    if (!requested) return;
+    this.frameReview = { point, frames: [], index: 0, loading: true, error: '', requestedAt: requested.toISOString() };
+    try {
+      const frames = await api.getNearestFrames(requested.toISOString(), 7);
+      this.frameReview = { point, frames, index: 0, loading: false, error: '', requestedAt: requested.toISOString() };
+    } catch (error) {
+      this.frameReview = {
+        point, frames: [], index: 0, loading: false,
+        error: error instanceof Error ? error.message : 'No se pudo cargar el frame.',
+        requestedAt: requested.toISOString(),
+      };
+    }
+  }
+
+  private stepFrameReview(direction: number): void {
+    const index = Math.max(0, Math.min(this.frameReview.frames.length - 1, this.frameReview.index + direction));
+    this.frameReview = { ...this.frameReview, index };
   }
 
   private isHomeAssistantContext(): boolean {
@@ -682,18 +1010,25 @@ export class BabyMonitorApp extends LitElement {
 
   private async addManualSleep(): Promise<void> {
     const start = new Date(this.manualForm.startedAt);
-    const end = new Date(this.manualForm.endedAt);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    const end = this.manualForm.endedAt ? new Date(this.manualForm.endedAt) : null;
+    if (Number.isNaN(start.getTime()) || (end && (Number.isNaN(end.getTime()) || end <= start))) {
       this.inlineError = this.t('invalidSleepRange');
+      return;
+    }
+    if (this.manualForm.kind === 'awake' && !end) {
+      this.inlineError = this.language === 'es'
+        ? 'Los despertares necesitan una hora de fin.'
+        : 'Awake periods need an end time.';
       return;
     }
     this.sleepBusy = 'add';
     try {
       await api.addManualSleep({
         startedAt: asIso(this.manualForm.startedAt),
-        endedAt: asIso(this.manualForm.endedAt),
+        endedAt: this.manualForm.endedAt ? asIso(this.manualForm.endedAt) : null,
         kind: this.manualForm.kind,
         notes: this.manualForm.notes,
+        details: this.manualForm.details,
       });
       this.manualOpen = false;
       this.showToast(this.t('sleepAdded'));
@@ -1149,7 +1484,9 @@ export class BabyMonitorApp extends LitElement {
     const duration = 12 * 60 * 60_000;
     const start = now - duration;
     const percent = (value: number): number => Math.max(0, Math.min(100, ((value - start) / duration) * 100));
-    const sleeps = this.sleepEvents.filter((event) => new Date(event.endedAt ?? now).getTime() >= start && new Date(event.startedAt).getTime() <= now);
+    const sleeps = this.sleepEvents.filter((event) => event.kind !== 'awake'
+      && new Date(event.endedAt ?? now).getTime() >= start
+      && new Date(event.startedAt).getTime() <= now);
     const cries = this.cryEvents.filter((event) => new Date(event.detectedAt).getTime() >= start);
     const frames = this.frames.filter((frame) => new Date(frame.capturedAt).getTime() >= start).slice(0, 18);
     return html`
@@ -1181,28 +1518,66 @@ export class BabyMonitorApp extends LitElement {
 
   private rhythmDayKeys(): string[] {
     const today = localDateKey(new Date());
-    const firstOffset = this.rhythmDate === today ? -6 : -3;
-    return Array.from({ length: 7 }, (_, index) => shiftDateKey(this.rhythmDate, firstOffset + index));
+    const tomorrow = shiftDateKey(today, 1);
+    if (this.rhythmDate >= today) {
+      return Array.from({ length: 7 }, (_, index) => shiftDateKey(tomorrow, index - 6));
+    }
+    return Array.from({ length: 7 }, (_, index) => shiftDateKey(this.rhythmDate, index - 3));
   }
 
   private moveRhythmDate(days: number): void {
     const today = localDateKey(new Date());
+    const tomorrow = shiftDateKey(today, 1);
     const next = shiftDateKey(this.rhythmDate, days);
-    this.rhythmDate = next > today ? today : next;
+    this.rhythmDate = next > tomorrow ? tomorrow : next;
+  }
+
+  private rhythmMarkerSegments(segments: RhythmSegment[]): RhythmSegment[] {
+    const eventIds = new Set<string>();
+    const candidates = segments.filter((item) => {
+      const midpoint = (item.startRatio + item.endRatio) / 2;
+      if (midpoint < 0.055 || midpoint > 0.945) return false;
+      if (item.predicted || item.type === 'awake' || !item.event) return true;
+      if (eventIds.has(item.event.id)) return false;
+      eventIds.add(item.event.id);
+      return true;
+    }).sort((a, b) => ((a.startRatio + a.endRatio) - (b.startRatio + b.endRatio)));
+    const visible: RhythmSegment[] = [];
+    for (const item of candidates) {
+      const midpoint = (item.startRatio + item.endRatio) / 2;
+      const previous = visible.at(-1);
+      const previousMidpoint = previous ? (previous.startRatio + previous.endRatio) / 2 : -1;
+      if (previous && midpoint - previousMidpoint < 0.052) {
+        if (item.type === 'awake' && previous.type !== 'awake') visible[visible.length - 1] = item;
+        continue;
+      }
+      visible.push(item);
+    }
+    return visible;
   }
 
   private renderDailyRhythm(): TemplateResult {
     const today = localDateKey(new Date());
-    const model = buildRhythmModel(this.sleepEvents, this.rhythmDate, this.rhythmMode);
+    const tomorrow = shiftDateKey(today, 1);
+    const model = buildRhythmModel(this.sleepEvents, this.rhythmDate, this.rhythmMode, new Date(), this.sleepPlan);
     const selectedDate = this.rhythmDateValue(this.rhythmDate);
     const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
     const titleDate = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selectedDate);
     const coreDate = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric' }).format(selectedDate);
     const dayKeys = this.rhythmDayKeys();
-    const napCount = model.sleepSegments.filter((segment) => segment.type === 'nap').length;
-    const nightCount = model.sleepSegments.filter((segment) => segment.type === 'night').length;
+    const napCount = new Set(model.sleepSegments.filter((segment) => segment.type === 'nap').map((segment) => segment.event?.id ?? segment.id)).size;
+    const nightCount = new Set(model.sleepSegments.filter((segment) => segment.type === 'night').map((segment) => segment.event?.id ?? segment.id)).size;
     const averageNap = napCount ? Math.round(model.napMinutes / napCount) : 0;
     const lastDay = dayKeys.at(-1) ?? this.rhythmDate;
+    const markerSegments = this.rhythmMarkerSegments(model.segments);
+    const startPosition = rhythmPosition(0);
+    const endPosition = rhythmPosition(1);
+    const midnightInner = model.midnightRatio == null ? null : rhythmSvgPoint(model.midnightRatio, 88);
+    const midnightOuter = model.midnightRatio == null ? null : rhythmSvgPoint(model.midnightRatio, 145);
+    const forecasts = [...new Map(model.predictedSegments
+      .filter((segment) => segment.prediction)
+      .map((segment) => [segment.prediction!.recommendedStart, segment.prediction!])).values()];
+    const recordedCount = new Set(model.sleepSegments.map((segment) => segment.event?.id ?? segment.id)).size;
 
     return html`
       <section class=${`rhythm-visual-card ${this.rhythmMode}`} aria-label=${this.t('rhythmVisualTitle')}>
@@ -1214,16 +1589,17 @@ export class BabyMonitorApp extends LitElement {
           <div class="rhythm-date-nav">
             <button class="icon-button small rhythm-prev" aria-label=${this.t('rhythmPreviousDays')} @click=${() => this.moveRhythmDate(-7)}>${icon('chevron', 17)}</button>
             <button class="text-button rhythm-today" ?disabled=${this.rhythmDate === today} @click=${() => { this.rhythmDate = today; }}>${this.t('rhythmToday')}</button>
-            <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= today} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
+            <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= tomorrow} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
           </div>
         </header>
 
         <div class="rhythm-week" aria-label=${this.t('rhythmChooseDay')}>
           ${dayKeys.map((dateKey) => {
             const date = this.rhythmDateValue(dateKey);
-            const future = dateKey > today;
+            const future = dateKey > tomorrow;
             const selected = dateKey === this.rhythmDate;
             const isToday = dateKey === today;
+            const isTomorrow = dateKey === tomorrow;
             return html`
               <button
                 class=${`rhythm-day ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
@@ -1233,7 +1609,7 @@ export class BabyMonitorApp extends LitElement {
               >
                 <span>${new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(date)}</span>
                 <strong>${date.getDate()}</strong>
-                <small>${isToday ? this.t('rhythmToday') : new Intl.DateTimeFormat(locale, { month: 'short' }).format(date)}</small>
+                <small>${isToday ? this.t('rhythmToday') : isTomorrow ? (this.language === 'es' ? 'mañana' : 'tomorrow') : new Intl.DateTimeFormat(locale, { month: 'short' }).format(date)}</small>
               </button>
             `;
           })}
@@ -1242,23 +1618,25 @@ export class BabyMonitorApp extends LitElement {
         <div class="rhythm-orbit-wrap">
           <div class="rhythm-orbit" aria-label=${this.t('rhythmRecordedSleep', { duration: formatDuration(model.totalMinutes) })}>
             <svg class="rhythm-ring" viewBox="0 0 320 320" aria-hidden="true">
-              <circle class="rhythm-ring-track" cx="160" cy="160" r="122"></circle>
-              <circle class="rhythm-ring-inner" cx="160" cy="160" r="82"></circle>
-              <line class="rhythm-midnight-line" x1="160" y1="30" x2="160" y2="56"></line>
+              <path class="rhythm-ring-track" d=${rhythmTrackPath(122)}></path>
+              <path class="rhythm-ring-inner" d=${rhythmTrackPath(82)}></path>
+              ${midnightInner && midnightOuter ? svg`<line class="rhythm-midnight-line" x1=${midnightInner.x} y1=${midnightInner.y} x2=${midnightOuter.x} y2=${midnightOuter.y}></line>` : nothing}
               ${model.segments.map((segment) => svg`
                 <path
-                  class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
+                  class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
                   d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
                 ></path>
               `)}
             </svg>
-            ${model.segments.map((segment) => {
+            ${markerSegments.map((segment) => {
               const position = rhythmMarkerPosition(segment);
-              const label = segment.type === 'awake' ? 'Despertar por la noche' : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
-              const detail = `${label} · ${formatClock(segment.start.toISOString(), this.language)}–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`;
+              const label = segment.predicted
+                ? this.language === 'es' ? segment.type === 'night' ? 'Sueño previsto' : 'Siesta prevista' : 'Predicted sleep'
+                : segment.type === 'awake' ? (this.language === 'es' ? 'Despertar por la noche' : 'Night waking') : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
+              const detail = `${label} · ${formatClock(segment.prediction?.recommendedStart ?? segment.start.toISOString(), this.language)}${segment.predicted ? ` · ${this.language === 'es' ? 'previsto' : 'predicted'}` : `–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`}`;
               return html`
-                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => segment.event && this.openSleepEditor(segment.event)}>
-                  ${icon(segment.type === 'awake' ? 'waves' : 'moon', 15)}
+                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => { if (segment.prediction) this.selectedPrediction = segment.prediction; else if (segment.event) this.openSleepEditor(segment.event); }}>
+                  ${icon(segment.predicted ? 'sparkle' : segment.type === 'awake' ? 'waves' : 'moon', 15)}
                 </button>
               `;
             })}
@@ -1270,13 +1648,13 @@ export class BabyMonitorApp extends LitElement {
                 <button class=${this.rhythmMode === 'day' ? 'active' : ''} aria-pressed=${this.rhythmMode === 'day'} @click=${() => { this.rhythmMode = 'day'; }}>${icon('sun', 18)}<span>${this.t('rhythmDay')}</span></button>
               </div>
             </div>
-            <div class="rhythm-endpoint left"><span>${icon(this.rhythmMode === 'night' ? 'moon' : 'sun', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmBed' : 'rhythmWake')}</small><strong>${model.bedAt && this.rhythmMode === 'night' ? formatClock(model.bedAt.toISOString(), this.language) : model.wakeAt && this.rhythmMode === 'day' ? formatClock(model.wakeAt.toISOString(), this.language) : '—'}</strong></div>
-            <div class="rhythm-endpoint right"><span>${icon(this.rhythmMode === 'night' ? 'sun' : 'moon', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmWake' : 'rhythmBed')}</small><strong>${model.wakeAt && this.rhythmMode === 'night' ? formatClock(model.wakeAt.toISOString(), this.language) : model.bedAt && this.rhythmMode === 'day' ? formatClock(model.bedAt.toISOString(), this.language) : '—'}</strong></div>
+            <div class="rhythm-endpoint start" style=${`--x:${startPosition.x}%;--y:${startPosition.y}%`}><span>${icon(this.rhythmMode === 'night' ? 'moon' : 'sun', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmBed' : 'rhythmWake')}</small><strong>${model.bedAt && this.rhythmMode === 'night' ? formatClock(model.bedAt.toISOString(), this.language) : model.wakeAt && this.rhythmMode === 'day' ? formatClock(model.wakeAt.toISOString(), this.language) : '—'}${this.rhythmMode === 'night' ? model.bedPredicted ? ' · ~' : '' : model.wakePredicted ? ' · ~' : ''}</strong></div>
+            <div class="rhythm-endpoint end" style=${`--x:${endPosition.x}%;--y:${endPosition.y}%`}><span>${icon(this.rhythmMode === 'night' ? 'sun' : 'moon', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmWake' : 'rhythmBed')}</small><strong>${model.wakeAt && this.rhythmMode === 'night' ? formatClock(model.wakeAt.toISOString(), this.language) : model.bedAt && this.rhythmMode === 'day' ? formatClock(model.bedAt.toISOString(), this.language) : '—'}${this.rhythmMode === 'night' ? model.wakePredicted ? ' · ~' : '' : model.bedPredicted ? ' · ~' : ''}</strong></div>
           </div>
         </div>
 
         <div class="rhythm-summary">
-          <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${model.segments.length}</b></div>
+          <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${recordedCount}</b></div>
           <div class="rhythm-duration-track" aria-hidden="true">
             ${model.sleepSegments.map((segment) => html`<i class=${segment.type === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
           </div>
@@ -1286,6 +1664,12 @@ export class BabyMonitorApp extends LitElement {
             <div><span>${this.t('rhythmAverageNap')}</span><strong>${formatDuration(averageNap)}</strong></div>
           </div>
         </div>
+        ${forecasts.length ? html`
+          <div class="rhythm-forecast" aria-label=${this.language === 'es' ? 'Sueño previsto' : 'Predicted sleep'}>
+            <div class="rhythm-forecast-heading"><span>${icon('sparkle', 17)}</span><div><strong>${this.language === 'es' ? 'Previsto por el modelo' : 'Model forecast'}</strong><small>${this.rhythmDate === tomorrow ? (this.language === 'es' ? 'Plan de mañana' : 'Tomorrow plan') : (this.language === 'es' ? 'Plan de hoy' : 'Today plan')}</small></div></div>
+            <div class="rhythm-forecast-list">${forecasts.map((target) => html`<button type="button" @click=${() => { this.selectedPrediction = target; }}><span>${icon(target.kind === 'night' ? 'moon' : 'sun', 17)}</span><div><strong>${this.language === 'es' ? target.kind === 'night' ? 'Sueño largo' : 'Siesta' : target.label}</strong><small>${formatClock(target.windowStart, this.language)}–${formatClock(target.windowEnd, this.language)}</small></div><b>${formatClock(target.recommendedStart, this.language)}</b>${icon('chevron', 14)}</button>`)}</div>
+          </div>
+        ` : nothing}
         ${!model.segments.length ? html`<p class="rhythm-empty">${this.t('rhythmEmptyHint')}</p>` : nothing}
       </section>
     `;
@@ -1295,29 +1679,217 @@ export class BabyMonitorApp extends LitElement {
     if (!events.length) return html`<div class="empty-state compact-empty">${icon('moon', 24)}<p>${this.t('noSleepEvents')}</p></div>`;
     return html`<div class="moment-list">${events.map((event) => html`
       <article class="moment-row">
-        <span class=${`moment-symbol ${event.endedAt ? '' : 'active'}`}>${icon(event.endedAt ? 'moon' : 'waves', 17)}</span>
-        <div class="moment-main"><strong>${this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)} · ${this.t('location')}: ${event.locationId}${event.notes ? ` · ${event.notes}` : ''}</small></div>
+        <span class=${`moment-symbol ${event.kind === 'awake' ? 'coral' : ''} ${event.endedAt ? '' : 'active'}`}>${icon(event.kind === 'awake' || !event.endedAt ? 'waves' : 'moon', 17)}</span>
+        <div class="moment-main"><strong>${event.kind === 'awake' ? (this.language === 'es' ? 'Despertar' : 'Awake') : this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)} · ${this.t('location')}: ${event.locationId}${event.notes ? ` · ${event.notes}` : ''}</small></div>
         <div class="moment-meta"><strong>${sleepDuration(event.startedAt, event.endedAt)}</strong><small>${event.endedAt ? this.t(event.source === 'vision' ? 'vision' : event.source === 'import' ? 'imported' : event.source === 'automatic' ? 'automatic' : 'manual') : this.t('ongoing')}</small></div>
       </article>
     `)}</div>`;
   }
 
-  private renderManualForm(): TemplateResult {
+  private renderTemporalButton(
+    label: string,
+    value: string,
+    target: TemporalTarget,
+    fallbackValue: string,
+    hint = '',
+  ): TemplateResult {
+    const date = value ? new Date(value) : null;
+    const valid = Boolean(date && Number.isFinite(date.getTime()));
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const dateLabel = valid && date
+      ? new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short' }).format(date)
+      : this.language === 'es' ? 'Sin finalizar' : 'Ongoing';
+    const timeLabel = valid && date
+      ? new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(date)
+      : '—';
     return html`
-      <form class="manual-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
-        <div class="form-heading"><div><h3>${this.t('manualTitle')}</h3><p>${this.t('manualHint')}</p></div><button type="button" class="icon-button small" aria-label=${this.t('dismiss')} @click=${() => this.closeManualForm()}>&times;</button></div>
-        <div class="field-grid two">
-          <label class="field"><span>${this.t('startedAt')}</span><input type="datetime-local" .value=${this.manualForm.startedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, startedAt: inputValue(event) }; }} required></label>
-          <label class="field"><span>${this.t('endedAt')}</span><input type="datetime-local" .value=${this.manualForm.endedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, endedAt: inputValue(event) }; }} required></label>
+      <button
+        class=${`sleep-time-card ${valid ? '' : 'open-ended'}`}
+        type="button"
+        @click=${() => this.openTemporalPicker(target, value || fallbackValue, label)}
+      >
+        <span>${label}</span>
+        <strong>${timeLabel}</strong>
+        <small>${dateLabel}${hint ? ` · ${hint}` : ''}</small>
+      </button>
+    `;
+  }
+
+  private renderDetailGroups(scope: 'manual' | 'edit', details: SleepEventDetails): TemplateResult {
+    return html`${DETAIL_GROUPS.map((group) => html`
+      <section class="sleep-detail-group">
+        <h4>${this.language === 'es' ? group.es : group.en}</h4>
+        <div class=${`sleep-detail-choices ${group.key === 'method' || group.key === 'mood' ? 'wide' : ''}`}>
+          ${group.options.map(([tag, emoji, es, en]) => html`
+            <button
+              type="button"
+              class=${details.tags.includes(tag) ? 'selected' : ''}
+              aria-pressed=${details.tags.includes(tag)}
+              @click=${() => this.toggleDetailTag(scope, tag)}
+            ><span>${emoji}</span><strong>${this.language === 'es' ? es : en}</strong></button>
+          `)}
         </div>
-        <div class="field-grid two">
-          <div class="field"><span>${this.t('sleepType')}</span>${this.renderChoiceRow([
-            ['nap', 'nap'], ['night', 'nightSleep'],
-          ], this.manualForm.kind, (value) => { this.manualForm = { ...this.manualForm, kind: value as SleepKind }; })}</div>
-          <label class="field"><span>${this.t('notes')}</span><input .value=${this.manualForm.notes} placeholder=${this.t('notesPlaceholder')} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></label>
+      </section>
+    `)}`;
+  }
+
+  private renderPauses(
+    scope: 'manual' | 'edit',
+    pauses: SleepPause[],
+  ): TemplateResult {
+    const label = this.language === 'es' ? 'Pausas despierto' : 'Awake pauses';
+    return html`
+      <section class="sleep-detail-group sleep-pause-group">
+        <div class="sleep-detail-heading"><h4>${label}</h4><button type="button" @click=${() => this.addPause(scope)}>${icon('plus', 15)} ${this.language === 'es' ? 'Añadir pausa' : 'Add pause'}</button></div>
+        ${pauses.length ? html`<div class="sleep-pause-list">${pauses.map((pause, index) => html`
+          <article class="sleep-pause-row">
+            <span>${icon('waves', 17)}</span>
+            <button type="button" @click=${() => this.openTemporalPicker(
+              `${scope}-pause-start-${index}` as TemporalTarget,
+              localDateTime(new Date(pause.startedAt)),
+              this.language === 'es' ? 'Inicio de la pausa' : 'Pause start',
+            )}><small>${this.language === 'es' ? 'Inicio' : 'Start'}</small><strong>${formatClock(pause.startedAt, this.language)}</strong></button>
+            <i>–</i>
+            <button type="button" @click=${() => this.openTemporalPicker(
+              `${scope}-pause-end-${index}` as TemporalTarget,
+              localDateTime(new Date(pause.endedAt)),
+              this.language === 'es' ? 'Fin de la pausa' : 'Pause end',
+            )}><small>${this.language === 'es' ? 'Fin' : 'End'}</small><strong>${formatClock(pause.endedAt, this.language)}</strong></button>
+            <button type="button" class="pause-remove" aria-label=${this.t('remove')} @click=${() => this.removePause(scope, index)}>&times;</button>
+          </article>
+        `)}</div>` : html`<p class="sleep-detail-empty">${this.language === 'es' ? 'Sin pausas dentro de este tramo.' : 'No awake pauses inside this segment.'}</p>`}
+      </section>
+    `;
+  }
+
+  private renderFrameReview(): TemplateResult {
+    const current = this.frameReview.frames[this.frameReview.index];
+    const requested = this.frameReview.requestedAt ? new Date(this.frameReview.requestedAt) : null;
+    const captured = current ? new Date(current.capturedAt) : null;
+    const delta = requested && captured
+      ? Math.round(Math.abs(captured.getTime() - requested.getTime()) / 60_000)
+      : null;
+    return html`
+      <section class="editor-frames">
+        <h4>${this.language === 'es' ? 'Imágenes cercanas' : 'Nearby images'}</h4>
+        <div class="frame-point-switch">
+          ${(['start', 'middle', 'end'] as const).map((point) => html`<button type="button" class=${this.frameReview.point === point ? 'active' : ''} @click=${() => this.loadFrameReview(point)}>${icon(point === 'middle' ? 'eye' : 'clock', 17)}<span>${this.language === 'es' ? ({ start: 'Inicio', middle: 'Mitad', end: 'Fin' }[point]) : ({ start: 'Start', middle: 'Middle', end: 'End' }[point])}</span></button>`)}
         </div>
-        ${this.inlineError ? html`<div class="inline-error" role="alert">${this.inlineError}</div>` : nothing}
-        <div class="form-actions"><button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button><button class="button primary" ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? this.t('addingSleep') : this.t('addSleep')}</button></div>
+        ${this.frameReview.loading ? html`<div class="frame-review-empty"><span class="spinner"></span> ${this.language === 'es' ? 'Buscando el frame más cercano…' : 'Finding the nearest frame…'}</div>` : this.frameReview.error ? html`<div class="frame-review-empty error">${this.frameReview.error}</div>` : current ? html`
+          <article class="frame-review-card">
+            ${current.imageAvailable ? html`<img src=${current.imageUrl} alt=${this.language === 'es' ? 'Frame cercano al tramo' : 'Frame near this segment'}>` : html`<div class="frame-review-missing">${icon('camera', 24)}</div>`}
+            <div class="frame-review-copy">
+              <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
+              <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
+              ${current.label ? html`<div class="frame-labels"><span>${current.label.state}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${current.label.inCrib == null ? '—' : current.label.inCrib ? (this.language === 'es' ? 'en cuna' : 'in crib') : (this.language === 'es' ? 'fuera de cuna' : 'out of crib')}</span></div>` : nothing}
+              <div class="frame-stepper"><button type="button" ?disabled=${this.frameReview.index === 0} @click=${() => this.stepFrameReview(-1)}>${icon('chevron', 18)}</button><span>${this.frameReview.index + 1} / ${this.frameReview.frames.length}</span><button type="button" ?disabled=${this.frameReview.index >= this.frameReview.frames.length - 1} @click=${() => this.stepFrameReview(1)}>${icon('chevron', 18)}</button></div>
+            </div>
+          </article>
+        ` : html`<div class="frame-review-empty">${this.language === 'es' ? 'Toca Inicio, Mitad o Fin para revisar la imagen más cercana.' : 'Tap Start, Middle or End to review the nearest image.'}</div>`}
+      </section>
+    `;
+  }
+
+  private renderTemporalPicker(): TemplateResult | typeof nothing {
+    if (!this.temporalPicker) return nothing;
+    const selected = new Date(this.temporalPicker.value);
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const hours = Array.from({ length: 24 }, (_, index) => index);
+    const minutes = Array.from({ length: 60 }, (_, index) => index);
+    const days = Array.from({ length: 7 }, (_, index) => {
+      const day = new Date(selected);
+      day.setDate(day.getDate() + index - 3);
+      return day;
+    });
+    return html`
+      <div class=${`temporal-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.temporalPicker = null; }}>
+        <section class="temporal-picker" role="dialog" aria-modal="true" aria-label=${this.temporalPicker.title}>
+          <div class="sheet-handle"></div>
+          <header><button type="button" @click=${() => { this.temporalPicker = null; }}>&times;</button><div><small>${this.temporalPicker.title}</small><strong>${new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selected)}</strong></div><button type="button" class="temporal-done" @click=${() => this.applyTemporalPicker()}>${this.language === 'es' ? 'Listo' : 'Done'}</button></header>
+          <div class="temporal-days">${days.map((day) => {
+            const active = localDateKey(day) === localDateKey(selected);
+            return html`<button type="button" class=${active ? 'active' : ''} @click=${() => {
+              const value = new Date(selected);
+              value.setFullYear(day.getFullYear(), day.getMonth(), day.getDate());
+              this.temporalPicker = this.temporalPicker ? { ...this.temporalPicker, value: localDateTime(value) } : null;
+            }}><span>${new Intl.DateTimeFormat(locale, { weekday: 'narrow' }).format(day)}</span><strong>${day.getDate()}</strong></button>`;
+          })}</div>
+          <div class="temporal-date-jump"><button type="button" @click=${() => this.updateTemporalDate(-7)}>${icon('chevron', 16)} ${this.language === 'es' ? '7 días' : '7 days'}</button><button type="button" @click=${() => {
+            const now = new Date();
+            now.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+            this.temporalPicker = this.temporalPicker ? { ...this.temporalPicker, value: localDateTime(now) } : null;
+          }}>${this.language === 'es' ? 'Hoy' : 'Today'}</button><button type="button" @click=${() => this.updateTemporalDate(7)}>${this.language === 'es' ? '7 días' : '7 days'} ${icon('chevron', 16)}</button></div>
+          <div class="temporal-clock" aria-label=${this.language === 'es' ? 'Hora y minutos' : 'Hours and minutes'}>
+            <div><small>${this.language === 'es' ? 'Hora' : 'Hour'}</small><div class="temporal-column">${hours.map((hour) => html`<button type="button" class=${`temporal-option ${selected.getHours() === hour ? 'active' : ''}`} @click=${() => this.updateTemporalClock('hour', hour)}>${String(hour).padStart(2, '0')}</button>`)}</div></div>
+            <b>:</b>
+            <div><small>${this.language === 'es' ? 'Minuto' : 'Minute'}</small><div class="temporal-column">${minutes.map((minute) => html`<button type="button" class=${`temporal-option ${selected.getMinutes() === minute ? 'active' : ''}`} @click=${() => this.updateTemporalClock('minute', minute)}>${String(minute).padStart(2, '0')}</button>`)}</div></div>
+          </div>
+          <div class="temporal-quick">${[-15, -5, 5, 15].map((minutes) => html`<button type="button" @click=${() => this.adjustTemporal(minutes)}>${minutes > 0 ? '+' : ''}${minutes} min</button>`)}</div>
+          <button type="button" class="button primary temporal-confirm" @click=${() => this.applyTemporalPicker()}>${this.language === 'es' ? 'Usar esta fecha y hora' : 'Use this date and time'}</button>
+        </section>
+      </div>
+    `;
+  }
+
+  private renderPredictionDialog(): TemplateResult | typeof nothing {
+    const target = this.selectedPrediction;
+    if (!target) return nothing;
+    return html`
+      <div class=${`manual-dialog-backdrop prediction-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.selectedPrediction = null; }}>
+        <section class="manual-dialog prediction-dialog" role="dialog" aria-modal="true">
+          <button class="dialog-close" type="button" @click=${() => { this.selectedPrediction = null; }}>&times;</button>
+          <span class="prediction-dialog-icon">${icon(target.kind === 'night' ? 'moon' : 'sun', 28)}</span>
+          <small>${this.language === 'es' ? 'Predicción del modelo' : 'Model prediction'}</small>
+          <h2>${this.language === 'es' ? target.kind === 'night' ? 'Sueño largo previsto' : 'Siesta prevista' : target.label}</h2>
+          <div class="prediction-dialog-time"><div><span>${this.language === 'es' ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(target.recommendedStart, this.language)}</strong></div><i>–</i><div><span>${this.language === 'es' ? 'Fin estimado' : 'Estimated end'}</span><strong>${formatClock(new Date(new Date(target.recommendedStart).getTime() + target.durationMinutes * 60_000).toISOString(), this.language)}</strong></div></div>
+          <div class="prediction-dialog-grid"><div><span>${this.language === 'es' ? 'Ventana' : 'Window'}</span><strong>${formatClock(target.windowStart, this.language)}–${formatClock(target.windowEnd, this.language)}</strong></div><div><span>${this.language === 'es' ? 'Duración' : 'Duration'}</span><strong>${formatDuration(target.durationMinutes)}</strong></div><div><span>${this.language === 'es' ? 'Confianza' : 'Confidence'}</span><strong>${Math.round(target.confidence * 100)}%</strong></div></div>
+          <p>${this.language === 'es' ? 'Calculado con las ventanas despierto, las duraciones y los horarios recientes guardados en este historial.' : target.explanation}</p>
+        </section>
+      </div>
+    `;
+  }
+
+  private renderManualForm(): TemplateResult {
+    const suggestion = this.suggestedEnd(this.manualForm.startedAt, this.manualForm.kind);
+    const start = new Date(this.manualForm.startedAt);
+    const effectiveEnd = this.manualForm.endedAt ? new Date(this.manualForm.endedAt) : new Date(suggestion);
+    const duration = Number.isFinite(start.getTime()) && Number.isFinite(effectiveEnd.getTime())
+      ? Math.max(0, Math.round((effectiveEnd.getTime() - start.getTime()) / 60_000))
+      : 0;
+    const title = this.manualForm.kind === 'awake'
+      ? (this.language === 'es' ? 'Despertar' : 'Awake period')
+      : this.manualForm.kind === 'night'
+        ? (this.language === 'es' ? 'Sueño largo' : 'Night sleep')
+        : (this.language === 'es' ? 'Siesta' : 'Nap');
+    return html`
+      <form class="manual-form legacy-sleep-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
+        <button type="button" class="dialog-close" aria-label=${this.t('dismiss')} @click=${() => this.closeManualForm()}>&times;</button>
+        <header class="sleep-form-hero">
+          <span>${icon(this.manualForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span>
+          <small>${this.language === 'es' ? 'Nuevo dato de sueño' : 'New sleep entry'}</small>
+          <h2>${title}</h2>
+          <div class="sleep-type-pills" role="radiogroup">
+            <button type="button" class=${this.manualForm.kind === 'nap' ? 'selected' : ''} @click=${() => this.setManualKind('nap')}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button>
+            <button type="button" class=${this.manualForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => this.setManualKind('awake')}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button>
+            <button type="button" class=${this.manualForm.kind === 'night' ? 'selected' : ''} @click=${() => this.setManualKind('night')}>${this.language === 'es' ? 'Noche' : 'Night'}</button>
+          </div>
+        </header>
+        <div class="sleep-time-editor">
+          ${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.manualForm.startedAt, 'manual-start', this.manualForm.startedAt)}
+          <i>–</i>
+          ${this.renderTemporalButton(
+            this.language === 'es' ? 'Fin' : 'End',
+            this.manualForm.endedAt,
+            'manual-end',
+            suggestion,
+            !this.manualForm.endedAt && duration ? `${this.language === 'es' ? 'máx. previsto' : 'suggested max'} ${formatDuration(duration)}` : '',
+          )}
+        </div>
+        ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
+        ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
+        <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
+        ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}
+        <div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button><button class="sheet-save" aria-label=${this.t('addSleep')} ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
       </form>
     `;
   }
@@ -1325,7 +1897,7 @@ export class BabyMonitorApp extends LitElement {
   private renderManualDialog(): TemplateResult | typeof nothing {
     if (!this.manualOpen) return nothing;
     return html`
-      <div class="manual-dialog-backdrop" @click=${(event: Event) => { if (event.target === event.currentTarget) this.closeManualForm(); }}>
+      <div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.closeManualForm(); }}>
         <section class="manual-dialog" role="dialog" aria-modal="true" aria-label=${this.t('manualTitle')}>
           ${this.renderManualForm()}
         </section>
@@ -1335,23 +1907,41 @@ export class BabyMonitorApp extends LitElement {
 
   private renderSleepEditor(): TemplateResult | typeof nothing {
     if (!this.editingSleep) return nothing;
-    return html`<div class="manual-dialog-backdrop" @click=${(event: Event) => { if (event.target === event.currentTarget) this.editingSleep = null; }}><form class="manual-dialog manual-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.saveSleepEditor(); }}>
-      <div class="form-heading"><div><h3>Editar sueño</h3><p>Corrige el inicio, el final o el tipo como en la app original.</p></div><button type="button" class="icon-button small" @click=${() => { this.editingSleep = null; }}>&times;</button></div>
-      <div class="field-grid two"><label class="field"><span>Inicio</span><input type="datetime-local" required .value=${this.editSleepForm.startedAt} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, startedAt: inputValue(event) }; }}></label><label class="field"><span>Final</span><input type="datetime-local" required .value=${this.editSleepForm.endedAt} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, endedAt: inputValue(event) }; }}></label></div>
-      <div class="field-grid two"><label class="field"><span>Tipo</span><select .value=${this.editSleepForm.kind} @change=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, kind: inputValue(event) as SleepKind }; }}><option value="nap">Siesta</option><option value="night">Sueño largo</option></select></label><label class="field"><span>Notas</span><input .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></label></div>
-      ${this.inlineError ? html`<div class="inline-error">${this.inlineError}</div>` : nothing}<div class="form-actions split"><button type="button" class="button danger" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>Eliminar</button><span></span><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>Cancelar</button><button class="button primary" ?disabled=${this.editSleepBusy}>Guardar</button></div>
+    const start = new Date(this.editSleepForm.startedAt);
+    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
+    const minutes = end && end > start ? Math.round((end.getTime() - start.getTime()) / 60_000) : 0;
+    const title = this.language === 'es'
+      ? this.editSleepForm.kind === 'awake' ? 'Despertar' : this.editSleepForm.kind === 'night' ? 'Sueño largo' : 'Siesta'
+      : this.editSleepForm.kind === 'awake' ? 'Awake period' : this.editSleepForm.kind === 'night' ? 'Night sleep' : 'Nap';
+    return html`<div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.editingSleep = null; }}><form class="manual-dialog manual-form legacy-sleep-form sleep-edit-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.saveSleepEditor(); }}>
+      <button type="button" class="dialog-close" @click=${() => { this.editingSleep = null; }}>&times;</button>
+      <button type="button" class="editor-delete" ?disabled=${this.editSleepBusy || this.editingSleep.source !== 'manual'} title=${this.editingSleep.source === 'manual' ? (this.language === 'es' ? 'Eliminar entrada manual' : 'Delete manual entry') : (this.language === 'es' ? 'Solo se pueden borrar entradas manuales' : 'Only manual entries can be deleted')} @click=${() => this.deleteSleepEditor()}>×</button>
+      <header class="sleep-form-hero"><span>${icon(this.editSleepForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span><small>${this.language === 'es' ? 'Editar segmento' : 'Edit segment'}</small><h2>${title}</h2></header>
+      <div class="sleep-time-editor">${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.editSleepForm.startedAt, 'edit-start', this.editSleepForm.startedAt)}<i>–</i>${this.renderTemporalButton(this.language === 'es' ? 'Fin' : 'End', this.editSleepForm.endedAt, 'edit-end', this.editSleepForm.endedAt || this.suggestedEnd(this.editSleepForm.startedAt, this.editSleepForm.kind))}</div>
+      <div class="editor-duration">${minutes ? `${formatDuration(minutes)} ${this.language === 'es' ? 'de duración' : 'duration'}` : (this.language === 'es' ? 'Sueño activo' : 'Active sleep')} · ${formatDateTime(this.editingSleep.startedAt, this.language)}</div>
+      <div class="sleep-type-pills editor-types" role="radiogroup"><button type="button" class=${this.editSleepForm.kind === 'nap' ? 'selected' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'nap' }; }}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button><button type="button" class=${this.editSleepForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'awake', details: EMPTY_DETAILS() }; }}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button><button type="button" class=${this.editSleepForm.kind === 'night' ? 'selected' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'night' }; }}>${this.language === 'es' ? 'Sueño largo' : 'Night sleep'}</button></div>
+      <div class="event-source-note">${icon(this.editingSleep.source === 'manual' ? 'heart' : 'sparkle', 16)}<span>${this.language === 'es' ? `Origen: ${this.editingSleep.source === 'manual' ? 'añadido a mano' : this.editingSleep.source === 'vision' ? 'detección de cámara' : 'histórico importado'}` : `Source: ${this.editingSleep.source}`}</span></div>
+      ${this.renderFrameReview()}
+      ${this.editSleepForm.kind !== 'awake' ? html`${this.renderPauses('edit', this.editSleepForm.details.pauses)}${this.renderDetailGroups('edit', this.editSleepForm.details)}` : nothing}
+      <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></textarea></section>
+      ${this.inlineError ? html`<div class="inline-error sleep-form-error">${this.inlineError}</div>` : nothing}<div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>${this.language === 'es' ? 'Cancelar' : 'Cancel'}</button><button class="sheet-save" ?disabled=${this.editSleepBusy}>${this.editSleepBusy ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
     </form></div>`;
   }
 
   private sleepSeries(): Array<{ date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }> {
     const rows = new Map<string, { date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }>();
     for (const event of this.sleepEvents) {
-      if (!event.endedAt) continue;
+      if (!event.endedAt || event.kind === 'awake') continue;
       const start = new Date(event.startedAt);
       const end = new Date(event.endedAt);
       const date = event.kind === 'night' && start.getHours() >= 18 ? localDateKey(new Date(start.getTime() + 86_400_000)) : localDateKey(start);
       const row = rows.get(date) ?? { date, total: 0, naps: 0, night: 0, count: 0, wake: '', bed: '' };
-      const minutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60_000));
+      const pausedMinutes = (event.details?.pauses ?? []).reduce((total, pause) => {
+        const pauseStart = Math.max(start.getTime(), new Date(pause.startedAt).getTime());
+        const pauseEnd = Math.min(end.getTime(), new Date(pause.endedAt).getTime());
+        return total + Math.max(0, Math.round((pauseEnd - pauseStart) / 60_000));
+      }, 0);
+      const minutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60_000) - pausedMinutes);
       row.total += minutes;
       row.count += 1;
       if (event.kind === 'nap') row.naps += minutes;
@@ -1766,9 +2356,11 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <a class="skip-link" href="#main">${this.t('skipContent')}</a>
       ${this.loading ? this.renderLoading() : this.fatalError ? this.renderFatalError() : this.onboarding ? this.renderOnboarding() : html`
-        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'sleep' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'data' ? this.renderHistory() : this.renderSettings()}</div>
+        <div class=${`app-shell ${this.page === 'sleep' && this.rhythmMode === 'day' ? 'theme-day' : 'theme-night'}`}>${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'sleep' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'data' ? this.renderHistory() : this.renderSettings()}</div>
         ${this.renderManualDialog()}
         ${this.renderSleepEditor()}
+        ${this.renderPredictionDialog()}
+        ${this.renderTemporalPicker()}
       `}
       <div class="toast-region" aria-live="polite" aria-atomic="true">${this.toast ? html`<div class=${`toast ${this.toast.tone}`}>${this.toast.tone === 'success' ? icon('check', 17) : this.toast.tone === 'error' ? '!' : icon('heart', 17)}<span>${this.toast.message}</span><button aria-label=${this.t('dismiss')} @click=${() => { this.toast = null; }}>&times;</button></div>` : nothing}</div>
     `;

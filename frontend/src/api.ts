@@ -18,6 +18,9 @@ import {
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
+  type SleepEventDetails,
+  type SleepPlan,
+  type SleepPredictionTarget,
   type VisionLabel,
 } from './types';
 
@@ -375,14 +378,89 @@ export function normalizeSleep(value: unknown): SleepEvent {
   const data = asRecord(value);
   const kind = asString(data.kind);
   const source = asString(data.source);
+  const details = asRecord(data.details);
+  const pauses = unwrapList(details.pauses, ['items']).map((pause) => {
+    const item = asRecord(pause);
+    return {
+      startedAt: asString(pick(item, 'startedAt', 'started_at')),
+      endedAt: asString(pick(item, 'endedAt', 'ended_at')),
+    };
+  }).filter((pause) => pause.startedAt && pause.endedAt);
   return {
     id: asString(data.id),
     startedAt: asString(pick(data, 'startedAt', 'started_at')),
     endedAt: asNullableString(pick(data, 'endedAt', 'ended_at')),
-    kind: kind === 'nap' || kind === 'night' ? kind : 'unknown',
+    kind: kind === 'nap' || kind === 'night' || kind === 'awake' ? kind : 'unknown',
     source: source === 'vision' || source === 'import' || source === 'automatic' ? source : 'manual',
     notes: asNullableString(data.notes),
+    details: { tags: asStringArray(details.tags), pauses },
     locationId: asString(pick(data, 'locationId', 'location_id'), 'home'),
+  };
+}
+
+function normalizePredictionTarget(value: unknown): SleepPredictionTarget | null {
+  const data = asRecord(value);
+  const kind = asString(data.kind);
+  const recommendedStart = asString(pick(data, 'recommendedStart', 'recommended_start'));
+  if ((kind !== 'nap' && kind !== 'night') || !recommendedStart) return null;
+  return {
+    kind,
+    label: asString(data.label, kind === 'night' ? 'Night sleep' : 'Nap'),
+    recommendedStart,
+    windowStart: asString(pick(data, 'windowStart', 'window_start'), recommendedStart),
+    windowEnd: asString(pick(data, 'windowEnd', 'window_end'), recommendedStart),
+    durationMinutes: asNumber(pick(data, 'durationMinutes', 'duration_minutes'), kind === 'night' ? 600 : 45),
+    confidence: asNumber(data.confidence),
+    explanation: asString(data.explanation),
+  };
+}
+
+export function normalizeSleepPlan(value: unknown): SleepPlan {
+  const data = asRecord(value);
+  const plans = unwrapList(data.plans, ['items']).flatMap((value) => {
+    const item = asRecord(value);
+    const nightPrediction = normalizePredictionTarget(pick(item, 'nightPrediction', 'night_prediction'));
+    const date = asString(item.date);
+    if (!nightPrediction || !date) return [];
+    return [{
+      date,
+      morningWakeAt: asString(pick(item, 'morningWakeAt', 'morning_wake_at')),
+      nightStartAt: asString(pick(item, 'nightStartAt', 'night_start_at')),
+      nightEndAt: asString(pick(item, 'nightEndAt', 'night_end_at')),
+      dayNapPredictions: unwrapList(
+        pick(item, 'dayNapPredictions', 'day_nap_predictions'),
+        ['items'],
+      ).map(normalizePredictionTarget).filter((target): target is SleepPredictionTarget => Boolean(target)),
+      nightPrediction,
+      explanation: asString(item.explanation),
+    }];
+  });
+  const nextKind = asString(pick(data, 'nextKind', 'next_kind'));
+  return {
+    generatedAt: asString(pick(data, 'generatedAt', 'generated_at')),
+    ageBand: asString(pick(data, 'ageBand', 'age_band'), 'unknown'),
+    confidence: asNumber(data.confidence),
+    reason: asString(data.reason),
+    recentSampleCount: asNumber(pick(data, 'recentSampleCount', 'recent_sample_count')),
+    wakeWindowMinutes: asNumber(pick(data, 'wakeWindowMinutes', 'wake_window_minutes'), 180),
+    wakeWindowMarginMinutes: asNumber(pick(data, 'wakeWindowMarginMinutes', 'wake_window_margin_minutes'), 35),
+    averageNapMinutes: asNumber(pick(data, 'averageNapMinutes', 'average_nap_minutes'), 45),
+    averageNightMinutes: asNumber(pick(data, 'averageNightMinutes', 'average_night_minutes'), 600),
+    nextSleepAt: asNullableString(pick(data, 'nextSleepAt', 'next_sleep_at')),
+    windowStart: asNullableString(pick(data, 'windowStart', 'window_start')),
+    windowEnd: asNullableString(pick(data, 'windowEnd', 'window_end')),
+    nextKind: nextKind === 'nap' || nextKind === 'night' ? nextKind : null,
+    plans,
+  };
+}
+
+function detailsPayload(details: SleepEventDetails): Record<string, unknown> {
+  return {
+    tags: details.tags,
+    pauses: details.pauses.map((pause) => ({
+      started_at: pause.startedAt,
+      ended_at: pause.endedAt,
+    })),
   };
 }
 
@@ -475,9 +553,20 @@ export const api = {
     return normalizeSummary(await request<unknown>('api/v1/summary'));
   },
 
+  async getPredictions(): Promise<SleepPlan> {
+    return normalizeSleepPlan(await request<unknown>('api/v1/predictions'));
+  },
+
   async getFrames(limit = 24, offset = 0): Promise<PageResult<FrameRecord>> {
     const result = await request<unknown>(`api/v1/frames?limit=${limit}&offset=${offset}`);
     return normalizePage(result, ['items', 'frames'], normalizeFrame, limit, offset);
+  },
+
+  async getNearestFrames(at: string, limit = 5): Promise<FrameRecord[]> {
+    const result = await request<unknown>(
+      `api/v1/frames/nearest?at=${encodeURIComponent(at)}&limit=${limit}`,
+    );
+    return unwrapList(result, ['items', 'frames']).map(normalizeFrame);
   },
 
   async getSleep(limit = 50, offset = 0): Promise<PageResult<SleepEvent>> {
@@ -496,7 +585,7 @@ export const api = {
 
   async patchSleep(eventId: string, input: ManualSleepInput): Promise<SleepEvent> {
     return normalizeSleep(await request<unknown>(`api/v1/sleep/${encodeURIComponent(eventId)}`, {
-      method: 'PATCH', body: JSON.stringify({ started_at: input.startedAt, ended_at: input.endedAt, kind: input.kind, notes: input.notes || null }),
+      method: 'PATCH', body: JSON.stringify({ started_at: input.startedAt, ended_at: input.endedAt, kind: input.kind, notes: input.notes || null, details: detailsPayload(input.details) }),
     }));
   },
 
@@ -521,6 +610,7 @@ export const api = {
         ended_at: input.endedAt,
         kind: input.kind,
         notes: input.notes || null,
+        details: detailsPayload(input.details),
         source: 'manual',
       }),
     }));
@@ -637,5 +727,6 @@ export const apiTesting = {
   normalizeSettings,
   normalizeSummary,
   normalizeFrame,
+  normalizeSleepPlan,
   normalizeTransferStatus,
 };

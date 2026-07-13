@@ -54,7 +54,19 @@ def test_database_context_releases_connection(tmp_path: Path) -> None:
         connection.execute("SELECT 1")
 
 
-def test_schema_v2_adds_locations_without_touching_frame_files(tmp_path: Path) -> None:
+def test_nearest_frames_ignores_images_from_an_unrelated_day(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    requested = utc_now()
+    far = database.add_frame(b"far", "image/jpeg", requested - timedelta(hours=7))
+    near = database.add_frame(b"near", "image/jpeg", requested - timedelta(minutes=8))
+
+    nearest = database.nearest_frames(requested)
+
+    assert [frame.id for frame in nearest] == [near.id]
+    assert far.id not in {frame.id for frame in nearest}
+
+
+def test_schema_v3_adds_locations_and_sleep_details_without_touching_frame_files(tmp_path: Path) -> None:
     frame_path = tmp_path / "frames" / "legacy.jpg"
     frame_path.parent.mkdir(parents=True)
     frame_path.write_bytes(b"preserve-this-image")
@@ -79,13 +91,15 @@ def test_schema_v2_adds_locations_without_touching_frame_files(tmp_path: Path) -
             """
         )
     database = Database(tmp_path)
-    assert database.SCHEMA_VERSION == 2
+    assert database.SCHEMA_VERSION == 3
     assert frame_path.read_bytes() == b"preserve-this-image"
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         for table in ("frames", "sleep_events", "cry_events"):
             columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
             assert "location_id" in columns
+        sleep_columns = {row[1] for row in connection.execute("PRAGMA table_info(sleep_events)")}
+        assert "details_json" in sleep_columns
 
 
 def test_sleep_events_cannot_overlap(tmp_path: Path) -> None:

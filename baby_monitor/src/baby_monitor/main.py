@@ -100,6 +100,13 @@ def _sleep(event: Any) -> dict[str, Any]:
         "kind": event.kind,
         "source": event.source,
         "notes": event.notes,
+        "details": {
+            "tags": event.details.tags,
+            "pauses": [
+                {"startedAt": pause.started_at, "endedAt": pause.ended_at}
+                for pause in event.details.pauses
+            ],
+        },
         "locationId": event.location_id,
         "createdAt": event.created_at,
     }
@@ -539,10 +546,23 @@ def create_app(
             "updatedAt": utc_now(),
         }
 
+    @app.get(f"{API_PREFIX}/predictions")
+    async def predictions() -> dict[str, Any]:
+        return dashboard.predictions()
+
     @app.get(f"{API_PREFIX}/frames")
     async def list_frames(limit: int = Query(24, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = database.list_frames(limit, offset)
         return {"items": [_frame(item) for item in items], "limit": limit, "offset": offset, "total": total}
+
+    @app.get(f"{API_PREFIX}/frames/nearest")
+    async def nearest_frames(
+        at: datetime,
+        limit: int = Query(5, ge=1, le=12),
+        within_minutes: int = Query(360, ge=1, le=1_440),
+    ) -> dict[str, Any]:
+        items = database.nearest_frames(at, limit, within_minutes)
+        return {"items": [_frame(item) for item in items], "requestedAt": at}
 
     @app.get(f"{API_PREFIX}/statistics/vision")
     async def visual_statistics(start: datetime, end: datetime) -> dict[str, Any]:

@@ -403,12 +403,55 @@ class FrameRecord(StrictModel):
     model: str | None = None
 
 
+SleepKind = Literal["nap", "night", "awake", "unknown"]
+
+
+class SleepPause(StrictModel):
+    started_at: datetime
+    ended_at: datetime
+
+    @model_validator(mode="after")
+    def valid_dates(self) -> SleepPause:
+        if self.ended_at <= self.started_at:
+            raise ValueError("pause ended_at must be after started_at")
+        return self
+
+
+class SleepDetails(StrictModel):
+    """Optional context captured by the original Esteban sleep editor."""
+
+    tags: list[str] = Field(default_factory=list, max_length=32)
+    pauses: list[SleepPause] = Field(default_factory=list, max_length=24)
+
+    @field_validator("tags")
+    @classmethod
+    def valid_tags(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            tag = item.strip().lower().replace(" ", "_")
+            if not tag or len(tag) > 64 or not re.fullmatch(r"[a-z0-9_\-]+", tag):
+                raise ValueError("sleep detail tags must be short lowercase identifiers")
+            if tag not in normalized:
+                normalized.append(tag)
+        return normalized
+
+    @model_validator(mode="after")
+    def non_overlapping_pauses(self) -> SleepDetails:
+        ordered = sorted(self.pauses, key=lambda item: item.started_at)
+        for previous, following in zip(ordered, ordered[1:], strict=False):
+            if following.started_at < previous.ended_at:
+                raise ValueError("sleep pauses must not overlap")
+        self.pauses = ordered
+        return self
+
+
 class SleepEventCreate(StrictModel):
     started_at: datetime
     ended_at: datetime | None = None
-    kind: Literal["nap", "night", "unknown"] = "unknown"
+    kind: SleepKind = "unknown"
     source: Literal["manual", "vision", "import"] = "manual"
     notes: str | None = Field(default=None, max_length=1000)
+    details: SleepDetails = Field(default_factory=SleepDetails)
     location_id: str = "home"
 
     @field_validator("location_id")
@@ -420,14 +463,22 @@ class SleepEventCreate(StrictModel):
     def valid_dates(self) -> SleepEventCreate:
         if self.ended_at is not None and self.ended_at <= self.started_at:
             raise ValueError("ended_at must be after started_at")
+        if self.kind == "awake" and self.ended_at is None:
+            raise ValueError("awake events require ended_at")
+        for pause in self.details.pauses:
+            if self.ended_at is None:
+                raise ValueError("pauses require a closed sleep event")
+            if pause.started_at < self.started_at or pause.ended_at > self.ended_at:
+                raise ValueError("sleep pauses must stay inside the event")
         return self
 
 
 class SleepEventPatch(StrictModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
-    kind: Literal["nap", "night", "unknown"] | None = None
+    kind: SleepKind | None = None
     notes: str | None = Field(default=None, max_length=1000)
+    details: SleepDetails | None = None
 
 
 class SleepStartRequest(StrictModel):

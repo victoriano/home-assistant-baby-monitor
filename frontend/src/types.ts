@@ -4,7 +4,7 @@ export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
 export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';
 export type RetentionMode = 'forever' | 'days';
-export type SleepKind = 'nap' | 'night' | 'unknown';
+export type SleepKind = 'nap' | 'night' | 'awake' | 'unknown';
 export type SleepState = 'sleeping' | 'awake' | 'unknown';
 export type SecretName =
   | 'home_assistant_access_token'
@@ -200,7 +200,18 @@ export interface SleepEvent {
   kind: SleepKind;
   source: 'manual' | 'vision' | 'automatic' | 'import';
   notes: string | null;
+  details?: SleepEventDetails;
   locationId: string;
+}
+
+export interface SleepPause {
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface SleepEventDetails {
+  tags: string[];
+  pauses: SleepPause[];
 }
 
 export interface CryEvent {
@@ -227,6 +238,44 @@ export interface SleepPrediction {
   reason: string | null;
 }
 
+export interface SleepPredictionTarget {
+  kind: 'nap' | 'night';
+  label: string;
+  recommendedStart: string;
+  windowStart: string;
+  windowEnd: string;
+  durationMinutes: number;
+  confidence: number;
+  explanation: string;
+}
+
+export interface SleepDayPlan {
+  date: string;
+  morningWakeAt: string;
+  nightStartAt: string;
+  nightEndAt: string;
+  dayNapPredictions: SleepPredictionTarget[];
+  nightPrediction: SleepPredictionTarget;
+  explanation: string;
+}
+
+export interface SleepPlan {
+  generatedAt: string;
+  ageBand: string;
+  confidence: number;
+  reason: string;
+  recentSampleCount: number;
+  wakeWindowMinutes: number;
+  wakeWindowMarginMinutes: number;
+  averageNapMinutes: number;
+  averageNightMinutes: number;
+  nextSleepAt: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  nextKind: 'nap' | 'night' | null;
+  plans: SleepDayPlan[];
+}
+
 export interface DashboardSummary {
   state: SleepState;
   stateSince: string | null;
@@ -246,6 +295,7 @@ export interface ManualSleepInput {
   endedAt: string | null;
   kind: SleepKind;
   notes: string;
+  details: SleepEventDetails;
 }
 
 export interface ConnectionTestResult {
