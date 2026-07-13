@@ -2,12 +2,12 @@ name: home-assistant-baby-monitor
 
 services:
   baby-monitor:
-    image: ghcr.io/victoriano/home-assistant-baby-monitor:0.2.0
+    image: ghcr.io/victoriano/home-assistant-baby-monitor:0.2.1
     build:
       context: .
       dockerfile: baby_monitor/Dockerfile
       args:
-        BUILD_VERSION: "0.2.0"
+        BUILD_VERSION: "0.2.1"
     restart: unless-stopped
     read_only: true
     security_opt:

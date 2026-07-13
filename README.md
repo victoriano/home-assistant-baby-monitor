@@ -107,7 +107,7 @@ GitHub provenance with:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.2.0 \
+  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.2.1 \
   --repo victoriano/home-assistant-baby-monitor \
   --signer-workflow victoriano/home-assistant-baby-monitor/.github/workflows/release.yaml
 ```
