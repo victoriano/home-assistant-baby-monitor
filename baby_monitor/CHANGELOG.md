@@ -4,6 +4,16 @@ All notable changes to this App are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-13
+
+### Added
+
+- Rich daily and nightly sleep visualization restored from the original
+  Esteban dashboard: calendar navigation, circular sleep segments, bedtime and
+  wake-up boundaries, and duration summaries.
+- Responsive day/night controls that work with the public, configurable baby,
+  home, time zone, and shared multi-home history model.
+
 ## [0.2.1] - 2026-07-13
 
 ### Fixed
