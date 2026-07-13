@@ -4,6 +4,14 @@ All notable changes to this App are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-13
+
+### Fixed
+
+- Close every SQLite connection after its transaction context exits, avoiding
+  file-descriptor exhaustion in long-running Home Assistant and standalone
+  installations.
+
 ## [0.2.0] - 2026-07-13
 
 ### Added

@@ -43,6 +43,17 @@ def test_sleep_crud_and_retention_keep_metadata(tmp_path: Path) -> None:
     assert database.delete_sleep_event(event.id) is True
 
 
+def test_database_context_releases_connection(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    connection = database._connect()
+
+    with connection as active:
+        assert active.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+
+
 def test_schema_v2_adds_locations_without_touching_frame_files(tmp_path: Path) -> None:
     frame_path = tmp_path / "frames" / "legacy.jpg"
     frame_path.parent.mkdir(parents=True)

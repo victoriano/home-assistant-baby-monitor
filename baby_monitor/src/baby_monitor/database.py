@@ -27,6 +27,16 @@ class StorageError(RuntimeError):
     pass
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit or roll back a context block, then release its file descriptors."""
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
@@ -67,7 +77,11 @@ class Database:
                 os.chmod(path, 0o600)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=10)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=10,
+            factory=_ClosingConnection,
+        )
         self._secure_database_files()
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
