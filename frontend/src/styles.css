@@ -90,6 +90,24 @@ h1, h2, h3, strong { font-family: var(--font-display); }
   backdrop-filter: blur(18px);
 }
 
+.brand-cluster { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ha-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--slate-room);
+  color: var(--oat);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ha-exit:hover { border-color: var(--edge-strong); background: var(--slate-raised); color: var(--linen); }
+.ha-exit svg { transform: rotate(180deg); }
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -137,6 +155,7 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .primary-nav button:hover { color: var(--linen); }
 .primary-nav button.active { background: var(--slate-soft); color: var(--linen); }
 .primary-nav button span { font-size: 13px; font-weight: 650; }
+.primary-nav button.nav-add { border-color: rgba(230, 184, 108, 0.24); background: var(--amber-wash); color: var(--amber); }
 .header-tools { justify-self: end; display: flex; align-items: center; gap: 12px; }
 .health-banner {
   display: grid;
@@ -345,6 +364,14 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .camera-empty-art span { position: absolute; inset: 8px; border: 1px solid var(--edge); border-radius: 50%; }
 .camera-empty h2 { margin-bottom: 8px; font-size: 20px; }
 .camera-empty p { max-width: 330px; margin-bottom: 20px; color: var(--quiet); font-size: 13px; line-height: 1.55; }
+.camera-focus-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 0.46fr); gap: 16px; align-items: stretch; }
+.camera-focus-grid .camera-card { min-height: 500px; }
+.camera-focus-grid .camera-visual { flex: 1; aspect-ratio: auto; }
+.camera-signals { display: grid; align-content: start; gap: 12px; }
+.camera-signals .signal-card { grid-template-columns: auto minmax(0, 1fr); min-height: 112px; }
+.camera-signals .signal-card > small { grid-column: 2; text-align: left; }
+.camera-signals .signal-card strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.45; }
+.camera-moments { margin-top: 28px; }
 
 .signal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .signal-card { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 15px 17px; border-radius: var(--radius); }
@@ -545,6 +572,20 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .form-heading h3 { margin-bottom: 4px; font-size: 16px; }
 .form-heading p { margin: 0; color: var(--quiet); font-size: 11px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.manual-dialog-backdrop {
+  position: fixed;
+  z-index: 150;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 7, 14, 0.72);
+  backdrop-filter: blur(10px);
+  animation: dialog-fade-in 160ms ease both;
+}
+.manual-dialog { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow: auto; border-radius: var(--radius-large); box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58); }
+.manual-dialog .manual-form { margin: 0; }
+@keyframes dialog-fade-in { from { opacity: 0; } }
 
 .history-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 32px; align-items: start; }
 .history-panel { padding: 22px; border-radius: var(--radius); }
@@ -791,15 +832,61 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
 @media (max-width: 980px) {
-  .app-header { grid-template-columns: 1fr auto; padding: 0 20px; }
-  .app-header .primary-nav { position: fixed; z-index: 80; right: 14px; bottom: 14px; left: 14px; justify-content: space-around; padding: 6px; background: rgba(21, 27, 43, 0.95); backdrop-filter: blur(20px); box-shadow: 0 12px 40px rgba(0,0,0,.42); }
-  .primary-nav button { flex: 1; justify-content: center; }
+  .app-header {
+    grid-template-columns: 1fr auto;
+    padding: 0 20px;
+    background: rgba(13, 18, 32, 0.98);
+    /* backdrop-filter makes fixed descendants use the header as their
+       containing block in Chromium, which would pin the dock to the top. */
+    backdrop-filter: none;
+  }
+  .app-header .primary-nav {
+    position: fixed;
+    z-index: 80;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    left: 50%;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    width: min(calc(100% - 24px), 520px);
+    padding: 7px;
+    border-radius: 999px;
+    background: rgba(23, 28, 61, 0.9);
+    box-shadow: 0 16px 48px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.04);
+    backdrop-filter: blur(22px);
+    transform: translateX(-50%);
+  }
+  .primary-nav button {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 48px;
+    padding: 4px 3px;
+    border-radius: 999px;
+  }
+  .primary-nav button span { overflow: hidden; width: 100%; font-size: 9px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+  .primary-nav button.nav-add {
+    justify-self: center;
+    width: 58px;
+    min-height: 58px;
+    margin-top: -20px;
+    border: 1px solid rgba(255, 229, 178, 0.5);
+    background: radial-gradient(circle at 45% 35%, #f3d79f 0, var(--amber) 58%, #bd8440 100%);
+    color: #211707;
+    box-shadow: 0 0 0 6px rgba(230, 184, 108, 0.08), 0 10px 30px rgba(230, 184, 108, 0.3);
+  }
+  .primary-nav button.nav-add span { display: none; }
   .privacy-chip { display: none; }
   .health-banner { margin-bottom: -24px; }
   .now-grid { grid-template-columns: 1fr; }
   .sleep-scene { min-height: 390px; }
   .camera-card { min-height: 0; }
   .camera-visual { aspect-ratio: 16 / 8; }
+  .camera-focus-grid { grid-template-columns: 1fr; }
+  .camera-focus-grid .camera-card { min-height: 0; }
+  .camera-focus-grid .camera-visual { aspect-ratio: 16 / 9; }
+  .camera-signals { grid-template-columns: 1fr 1fr; }
   .history-grid { grid-template-columns: 1fr; }
   .frame-grid { grid-template-columns: repeat(3, 1fr); }
   .settings-layout { grid-template-columns: 1fr; }
@@ -814,11 +901,14 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
 
 @media (max-width: 660px) {
   .app-header { min-height: 62px; padding: 0 14px; }
+  .brand-cluster { gap: 8px; }
+  .ha-exit { width: 34px; padding: 0; justify-content: center; }
+  .ha-exit span { display: none; }
   .brand small { display: none; }
   .brand-mark { width: 32px; height: 32px; }
   .health-banner { grid-template-columns: auto 1fr; width: calc(100% - 28px); margin-top: 14px; }
   .health-banner .button { grid-column: 2; justify-self: start; }
-  .page { width: min(100% - 28px, 1180px); padding-top: 32px; padding-bottom: 112px; }
+  .page { width: min(100% - 28px, 1180px); padding-top: 32px; padding-bottom: calc(132px + env(safe-area-inset-bottom, 0px)); }
   .dashboard-heading h1, .page-heading h1 { font-size: 30px; }
   .dashboard-heading { align-items: center; }
   .sleep-scene { min-height: 400px; padding: 25px 22px; }
@@ -858,6 +948,7 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .ribbon-legend { display: none; }
   .camera-visual { aspect-ratio: 4 / 3; min-height: 0; }
   .camera-actions .button { flex: 1 1 calc(50% - 6px); }
+  .camera-signals { grid-template-columns: 1fr; }
   .moment-row { grid-template-columns: auto minmax(0, 1fr); }
   .moment-meta { grid-column: 2; grid-row: 2; justify-items: start; grid-template-columns: auto auto; gap: 8px; }
   .recent-section, .frame-section { margin-top: 40px; }
@@ -887,7 +978,10 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .setup-content { padding: 20px; }
   .setup-actions { padding: 16px 20px; }
   .inline-error { margin: 0 20px 14px; }
-  .toast-region { bottom: 88px; }
+  .manual-dialog-backdrop { place-items: end center; padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px)); }
+  .manual-dialog { max-height: min(82vh, 720px); border-radius: 22px 22px 16px 16px; }
+  .manual-dialog .manual-form { padding: 20px; }
+  .toast-region { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

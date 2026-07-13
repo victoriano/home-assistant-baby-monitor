@@ -2,7 +2,7 @@ import { LitElement, html, nothing, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
 import { ApiError, api } from './api';
-import { icon } from './icons';
+import { icon, type IconName } from './icons';
 import {
   buildRhythmModel,
   localDateKey,
@@ -148,15 +148,20 @@ export class BabyMonitorApp extends LitElement {
   private pollTimer?: number;
   private toastTimer?: number;
   private operationalRequest = 0;
+  private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && this.manualOpen) this.closeManualForm();
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener('keydown', this.handleKeyDown);
     void this.load();
   }
 
   disconnectedCallback(): void {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    window.removeEventListener('keydown', this.handleKeyDown);
     super.disconnectedCallback();
   }
 
@@ -196,7 +201,7 @@ export class BabyMonitorApp extends LitElement {
     this.pollTimer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void this.loadHealth();
-        if (!this.onboarding && this.page === 'dashboard') void this.loadOperationalData(false);
+        if (!this.onboarding && (this.page === 'dashboard' || this.page === 'camera')) void this.loadOperationalData(false);
       }
     }, 30_000);
   }
@@ -334,13 +339,42 @@ export class BabyMonitorApp extends LitElement {
     this.inlineError = '';
     this.liveView = false;
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    if (page === 'history') void this.loadOperationalData(true);
+    if (page === 'camera' || page === 'history') void this.loadOperationalData(true);
     if (page === 'settings') {
       this.draft = structuredClone(this.settings);
       this.cameraSource = this.draft.camera.entityId ? 'entity' : this.draft.camera.streamUrlConfigured ? 'stream' : 'entity';
       void this.loadEntities();
       void this.loadHistoryTransfer();
     }
+  }
+
+  private openManualForm(): void {
+    this.inlineError = '';
+    this.manualOpen = true;
+  }
+
+  private closeManualForm(): void {
+    this.inlineError = '';
+    this.manualOpen = false;
+  }
+
+  private isHomeAssistantContext(): boolean {
+    const path = window.location.pathname;
+    return window.self !== window.top || path.startsWith('/baby-monitor-proxy/') || path.includes('/api/hassio_ingress/');
+  }
+
+  private returnToHomeAssistant(): void {
+    const home = new URL('/', window.location.origin).href;
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.assign(home);
+        return;
+      }
+    } catch {
+      // A Home Assistant iframe can be cross-origin. The click still has a
+      // safe same-origin fallback below.
+    }
+    window.location.assign(home);
   }
 
   private async loadHistoryTransfer(): Promise<void> {
@@ -745,19 +779,38 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderHeader(): TemplateResult {
-    const nav: Array<[AppPage, TranslationKey, 'moon' | 'history' | 'settings']> = [
-      ['dashboard', 'navDashboard', 'moon'], ['history', 'navHistory', 'history'], ['settings', 'navSettings', 'settings'],
+    const nav: Array<{ page?: AppPage; label: TranslationKey; itemIcon: IconName; add?: boolean }> = [
+      { page: 'dashboard', label: 'navDashboard', itemIcon: 'home' },
+      { page: 'camera', label: 'navCamera', itemIcon: 'camera' },
+      { label: 'navAdd', itemIcon: 'plus', add: true },
+      { page: 'history', label: 'navStatistics', itemIcon: 'history' },
+      { page: 'settings', label: 'navSettings', itemIcon: 'settings' },
     ];
+    const inHomeAssistant = this.isHomeAssistantContext();
     return html`
       <header class="app-header">
-        <a class="brand" href="#main" @click=${(event: Event) => event.preventDefault()}>
-          <span class="brand-mark">${icon('baby', 22)}</span>
-          <span><strong>${this.t('brand')}</strong><small>${this.t('brandSuffix')}</small></span>
-        </a>
+        <div class="brand-cluster">
+          ${inHomeAssistant ? html`
+            <button class="ha-exit" type="button" aria-label=${this.t('returnHomeAssistant')} title=${this.t('returnHomeAssistant')} @click=${() => this.returnToHomeAssistant()}>
+              ${icon('chevron', 19)}<span>Home Assistant</span>
+            </button>
+          ` : nothing}
+          <a class="brand" href="#main" @click=${(event: Event) => event.preventDefault()}>
+            <span class="brand-mark">${icon('baby', 22)}</span>
+            <span><strong>${this.t('brand')}</strong><small>${this.t('brandSuffix')}</small></span>
+          </a>
+        </div>
         <nav class="primary-nav" aria-label="Primary">
-          ${nav.map(([page, label, itemIcon]) => html`
-            <button class=${this.page === page ? 'active' : ''} @click=${() => this.setPage(page)} aria-current=${this.page === page ? 'page' : nothing}>
-              ${icon(itemIcon, 18)}<span>${this.t(label)}</span>
+          ${nav.map(({ page, label, itemIcon, add }) => html`
+            <button
+              class=${`${page && this.page === page ? 'active' : ''}${add ? ' nav-add' : ''}`}
+              @click=${() => add ? this.openManualForm() : page && this.setPage(page)}
+              aria-current=${page && this.page === page ? 'page' : nothing}
+              aria-label=${this.t(label)}
+              aria-haspopup=${add ? 'dialog' : nothing}
+              aria-expanded=${add ? String(this.manualOpen) : nothing}
+            >
+              ${icon(itemIcon, add ? 22 : 18)}<span>${this.t(label)}</span>
             </button>
           `)}
         </nav>
@@ -940,8 +993,6 @@ export class BabyMonitorApp extends LitElement {
             <button class="text-button" @click=${() => this.setPage('history')}>${this.t('viewRhythm')} ${icon('chevron', 15)}</button>
           </div>
           ${this.renderSleepList(this.sleepEvents.slice(0, 4))}
-          <button class="button secondary full-mobile" @click=${() => { this.manualOpen = !this.manualOpen; }}>${icon('plus', 17)} ${this.t('manualTitle')}</button>
-          ${this.manualOpen ? this.renderManualForm() : nothing}
         </section>
       </main>
     `;
@@ -993,6 +1044,38 @@ export class BabyMonitorApp extends LitElement {
           </div>
         </div>
       </article>
+    `;
+  }
+
+  private renderCamera(): TemplateResult {
+    return html`
+      <main class="page camera-page" id="main">
+        <section class="page-heading">
+          <div><span class="eyebrow">${this.t('navCamera')}</span><h1>${this.t('cameraPageTitle')}</h1><p>${this.t('cameraPageIntro')}</p></div>
+          <button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
+            <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span>
+          </button>
+        </section>
+        <section class="camera-focus-grid">
+          ${this.renderCameraCard()}
+          <div class="camera-signals">
+            <article class=${`signal-card ${this.summary.cryActive ? 'alert' : ''}`}>
+              <span class="signal-icon">${icon('waves', 20)}</span>
+              <div><span>${this.t('cryStatus')}</span><strong>${this.health?.background.errors.cry ? this.t('monitorAttention') : this.settings.cry.mode === 'disabled' ? this.t('cryDisabled') : this.summary.cryActive ? this.t('cryActive') : this.t('allQuiet')}</strong></div>
+              <small>${this.summary.lastCryAt ? this.t('lastCry', { time: formatRelative(this.summary.lastCryAt, this.language) }) : '—'}</small>
+            </article>
+            <article class="signal-card">
+              <span class="signal-icon">${icon('sparkle', 20)}</span>
+              <div><span>${this.t('visionLabel')}</span><strong>${this.summary.latestFrame?.label?.description || this.t('noVisionLabel')}</strong></div>
+              <small>${this.summary.latestFrame ? formatRelative(this.summary.latestFrame.capturedAt, this.language) : '—'}</small>
+            </article>
+          </div>
+        </section>
+        <section class="frame-section camera-moments">
+          <div class="section-heading"><div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('imageTimeline')}</h2></div><button class="text-button" @click=${() => this.setPage('history')}>${this.t('navStatistics')} ${icon('chevron', 15)}</button></div>
+          ${this.frames.length ? html`<div class="frame-grid">${this.frames.slice(0, 12).map((frame) => this.renderFrame(frame))}</div>` : html`<div class="empty-state">${icon('camera', 26)}<p>${this.t('noFrames')}</p></div>`}
+        </section>
+      </main>
     `;
   }
 
@@ -1157,7 +1240,7 @@ export class BabyMonitorApp extends LitElement {
   private renderManualForm(): TemplateResult {
     return html`
       <form class="manual-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
-        <div class="form-heading"><div><h3>${this.t('manualTitle')}</h3><p>${this.t('manualHint')}</p></div><button type="button" class="icon-button small" aria-label=${this.t('dismiss')} @click=${() => { this.manualOpen = false; }}>&times;</button></div>
+        <div class="form-heading"><div><h3>${this.t('manualTitle')}</h3><p>${this.t('manualHint')}</p></div><button type="button" class="icon-button small" aria-label=${this.t('dismiss')} @click=${() => this.closeManualForm()}>&times;</button></div>
         <div class="field-grid two">
           <label class="field"><span>${this.t('startedAt')}</span><input type="datetime-local" .value=${this.manualForm.startedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, startedAt: inputValue(event) }; }} required></label>
           <label class="field"><span>${this.t('endedAt')}</span><input type="datetime-local" .value=${this.manualForm.endedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, endedAt: inputValue(event) }; }} required></label>
@@ -1169,8 +1252,19 @@ export class BabyMonitorApp extends LitElement {
           <label class="field"><span>${this.t('notes')}</span><input .value=${this.manualForm.notes} placeholder=${this.t('notesPlaceholder')} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></label>
         </div>
         ${this.inlineError ? html`<div class="inline-error" role="alert">${this.inlineError}</div>` : nothing}
-        <div class="form-actions"><button type="button" class="button ghost" @click=${() => { this.manualOpen = false; }}>${this.t('cancel')}</button><button class="button primary" ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? this.t('addingSleep') : this.t('addSleep')}</button></div>
+        <div class="form-actions"><button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button><button class="button primary" ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? this.t('addingSleep') : this.t('addSleep')}</button></div>
       </form>
+    `;
+  }
+
+  private renderManualDialog(): TemplateResult | typeof nothing {
+    if (!this.manualOpen) return nothing;
+    return html`
+      <div class="manual-dialog-backdrop" @click=${(event: Event) => { if (event.target === event.currentTarget) this.closeManualForm(); }}>
+        <section class="manual-dialog" role="dialog" aria-modal="true" aria-label=${this.t('manualTitle')}>
+          ${this.renderManualForm()}
+        </section>
+      </div>
     `;
   }
 
@@ -1179,9 +1273,8 @@ export class BabyMonitorApp extends LitElement {
       <main class="page history-page" id="main">
         <section class="page-heading">
           <div><span class="eyebrow">${this.t('navHistory')}</span><h1>${this.t('historyTitle')}</h1><p>${this.t('historyIntro')}</p></div>
-          <div class="heading-actions"><button class="button secondary" @click=${() => { this.manualOpen = !this.manualOpen; }}>${icon('plus', 17)} ${this.t('manualTitle')}</button><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
+          <div class="heading-actions"><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
         </section>
-        ${this.manualOpen ? this.renderManualForm() : nothing}
         ${this.renderDailyRhythm()}
         ${this.renderNightRibbon()}
         <section class="history-grid">
@@ -1537,7 +1630,8 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <a class="skip-link" href="#main">${this.t('skipContent')}</a>
       ${this.loading ? this.renderLoading() : this.fatalError ? this.renderFatalError() : this.onboarding ? this.renderOnboarding() : html`
-        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'dashboard' ? this.renderDashboard() : this.page === 'history' ? this.renderHistory() : this.renderSettings()}</div>
+        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'dashboard' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'history' ? this.renderHistory() : this.renderSettings()}</div>
+        ${this.renderManualDialog()}
       `}
       <div class="toast-region" aria-live="polite" aria-atomic="true">${this.toast ? html`<div class=${`toast ${this.toast.tone}`}>${this.toast.tone === 'success' ? icon('check', 17) : this.toast.tone === 'error' ? '!' : icon('heart', 17)}<span>${this.toast.message}</span><button aria-label=${this.t('dismiss')} @click=${() => { this.toast = null; }}>&times;</button></div>` : nothing}</div>
     `;

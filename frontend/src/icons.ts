@@ -9,6 +9,7 @@ export type IconName =
   | 'eye'
   | 'heart'
   | 'history'
+  | 'home'
   | 'light'
   | 'lock'
   | 'moon'
@@ -37,6 +38,8 @@ function path(name: IconName): SVGTemplateResult {
       return svg`<path d="M20.8 5.7a5.4 5.4 0 0 0-7.6 0L12 6.9l-1.2-1.2a5.4 5.4 0 0 0-7.6 7.6L12 22l8.8-8.7a5.4 5.4 0 0 0 0-7.6Z"/><path d="M7 12h2l1-2 2 5 1.5-3H17"/>`;
     case 'history':
       return svg`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>`;
+    case 'home':
+      return svg`<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>`;
     case 'light':
       return svg`<path d="M9 18h6"/><path d="M10 22h4"/><path d="M8.2 15.2A7 7 0 1 1 15.8 15c-.7.5-.8 1.2-.8 2H9c0-.8-.1-1.3-.8-1.8Z"/>`;
     case 'lock':

@@ -297,7 +297,7 @@ wheels = [
 
 [[package]]
 name = "home-assistant-baby-monitor"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

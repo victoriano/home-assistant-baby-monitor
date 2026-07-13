@@ -1,5 +1,5 @@
 export type Language = 'en' | 'es';
-export type AppPage = 'dashboard' | 'history' | 'settings';
+export type AppPage = 'dashboard' | 'camera' | 'history' | 'settings';
 export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
 export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';

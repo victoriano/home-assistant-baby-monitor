@@ -3,7 +3,7 @@
 from typing import Any
 
 __all__ = ["create_app"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def create_app(**kwargs: Any) -> Any:

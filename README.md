@@ -35,6 +35,8 @@ credentials are included.
 - Tracks sleep manually and keeps a local history with predictions.
 - Restores the original rich rhythm view with calendar navigation, circular
   sleep segments, and separate day/night summaries.
+- Uses a floating five-action mobile dock for the live view, camera, manual
+  sleep entries, history, and Settings, with a direct return to Home Assistant.
 - Tags frames, sleep sessions, and cries with a configurable home/location so
   one history can distinguish records captured in different houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
@@ -109,7 +111,7 @@ GitHub provenance with:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.3.0 \
+  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.4.0 \
   --repo victoriano/home-assistant-baby-monitor \
   --signer-workflow victoriano/home-assistant-baby-monitor/.github/workflows/release.yaml
 ```

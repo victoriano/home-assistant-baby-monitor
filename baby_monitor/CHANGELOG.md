@@ -4,6 +4,18 @@ All notable changes to this App are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-13
+
+### Added
+
+- Floating five-action navigation for the current state, camera, manual sleep
+  entry, historical statistics, and Settings.
+- Dedicated camera view with live controls, nursery signals, and recent
+  captures.
+- A direct back-to-Home-Assistant control when the app runs through Ingress or
+  the Home Assistant proxy.
+- Global manual sleep dialog that preserves the caregiver's current view.
+
 ## [0.3.0] - 2026-07-13
 
 ### Added

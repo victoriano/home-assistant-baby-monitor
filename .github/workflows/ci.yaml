@@ -127,7 +127,7 @@ jobs:
         run: >-
           docker build
           --build-arg BUILD_ARCH=amd64
-          --build-arg BUILD_VERSION=0.3.0
+          --build-arg BUILD_VERSION=0.4.0
           --file baby_monitor/Dockerfile
           --tag baby-monitor:ci
           .
