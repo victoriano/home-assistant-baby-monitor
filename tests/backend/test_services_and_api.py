@@ -30,6 +30,34 @@ class FakeHomeAssistant:
         return []
 
 
+def test_frontend_missing_assets_do_not_fall_back_to_html(tmp_path: Path) -> None:
+    frontend_dir = tmp_path / "frontend"
+    assets_dir = frontend_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (frontend_dir / "index.html").write_text("<html><body>Baby Monitor</body></html>")
+    (assets_dir / "current.js").write_text("export const ready = true;")
+    app = create_app(
+        data_dir=tmp_path / "data",
+        frontend_dir=frontend_dir,
+        runtime="test",
+        start_workers=False,
+    )
+
+    with TestClient(app) as client:
+        current = client.get("/assets/current.js")
+        assert current.status_code == 200
+        assert "javascript" in current.headers["content-type"]
+
+        missing = client.get("/assets/previous-build.js")
+        assert missing.status_code == 404
+        assert "html" not in missing.headers["content-type"]
+
+        client_route = client.get("/settings")
+        assert client_route.status_code == 200
+        assert client_route.headers["content-type"].startswith("text/html")
+        assert "Baby Monitor" in client_route.text
+
+
 async def test_cry_alert_preserves_and_restores_selected_lights(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     app.state.settings.patch(

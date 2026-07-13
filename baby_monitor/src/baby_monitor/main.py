@@ -726,6 +726,11 @@ def create_app(
         candidate = (root / asset_path).resolve()
         if candidate.is_relative_to(root) and candidate.is_file():
             return FileResponse(candidate, headers={"Cache-Control": "private, max-age=3600"})
+        if asset_path.startswith("assets/"):
+            # Never disguise a missing content-hashed bundle as the SPA shell.
+            # Browsers reject that HTML as JavaScript/CSS and the misleading 200
+            # makes deployment races much harder for an embedding panel to spot.
+            raise HTTPException(404)
         index_path = root / "index.html"
         if index_path.is_file():
             return FileResponse(index_path, headers={"Cache-Control": "no-store"})

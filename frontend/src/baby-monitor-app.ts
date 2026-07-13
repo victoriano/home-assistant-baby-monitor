@@ -254,6 +254,17 @@ export class BabyMonitorApp extends LitElement {
     void this.load();
   }
 
+  protected firstUpdated(): void {
+    if (window.parent === window) return;
+    window.parent.postMessage(
+      {
+        type: 'baby-monitor:ready',
+        loadId: new URLSearchParams(window.location.search).get('ui'),
+      },
+      window.location.origin,
+    );
+  }
+
   disconnectedCallback(): void {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
