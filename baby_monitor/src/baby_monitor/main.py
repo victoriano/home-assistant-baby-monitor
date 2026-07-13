@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import os
+import shutil
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -15,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import ValidationError
 
+from . import __version__
 from .auth import SESSION_COOKIE, AccessControlMiddleware, session_value, validate_admin_token
 from .database import Database, StorageError
 from .home_assistant import HomeAssistantClient, HomeAssistantError
@@ -39,6 +42,7 @@ from .runtime import RuntimeWorkers
 from .security import EncryptedSecretStore
 from .services import CryAlertService, DashboardService, FrameService, ServiceError
 from .settings import SettingsError, SettingsRepository, SettingsService
+from .transfer import MAX_ARCHIVE_BYTES, HistoryTransferManager, TransferError
 
 API_PREFIX = "/api/v1"
 
@@ -128,6 +132,7 @@ def create_app(
     data_dir = data_dir or _default_data_dir(runtime)
     frontend_dir = frontend_dir or Path(os.environ.get("BABY_MONITOR_FRONTEND_DIR", "/app/frontend-dist"))
     database = Database(data_dir)
+    history_transfer = HistoryTransferManager(data_dir, database, app_version=__version__)
     secret_store = EncryptedSecretStore(data_dir)
     settings_repository = SettingsRepository(data_dir)
     settings = SettingsService(settings_repository, secret_store, runtime=runtime)
@@ -143,7 +148,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        if start_workers:
+        history_transfer.cleanup()
+        if start_workers and history_transfer.writable:
             workers.start()
         try:
             yield
@@ -153,7 +159,7 @@ def create_app(
 
     app = FastAPI(
         title="Baby Monitor for Home Assistant",
-        version="0.1.1",
+        version=__version__,
         docs_url=f"{API_PREFIX}/docs" if runtime != "home_assistant_app" else None,
         redoc_url=None,
         openapi_url=f"{API_PREFIX}/openapi.json" if runtime != "home_assistant_app" else None,
@@ -183,6 +189,7 @@ def create_app(
         return response
 
     app.state.database = database
+    app.state.history_transfer = history_transfer
     app.state.settings = settings
     app.state.home_assistant = home_assistant
     app.state.frames = frames
@@ -218,6 +225,10 @@ def create_app(
 
     @app.exception_handler(StorageError)
     async def storage_error(_: Request, error: StorageError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @app.exception_handler(TransferError)
+    async def transfer_error(_: Request, error: TransferError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
     @app.exception_handler(MediaError)
@@ -302,6 +313,100 @@ def create_app(
     @app.get(f"{API_PREFIX}/settings")
     async def get_settings() -> dict[str, Any]:
         return _public_settings(settings.get(), settings.configured())
+
+    @app.get(f"{API_PREFIX}/history-transfer")
+    async def history_transfer_status() -> dict[str, Any]:
+        return history_transfer.public_status()
+
+    @app.post(f"{API_PREFIX}/history-transfer/exports")
+    async def prepare_history_export() -> dict[str, Any]:
+        if history_transfer.public_status()["status"] == "pending":
+            return history_transfer.public_status()["outgoing"]
+        workers_were_running = workers.status()["running"]
+        if workers_were_running:
+            await workers.stop()
+        try:
+            result = await asyncio.to_thread(history_transfer.prepare_export)
+            return {key: value for key, value in result.items() if key not in {"path", "contentType"}}
+        except Exception:
+            if workers_were_running and history_transfer.writable:
+                workers.start()
+            raise
+
+    @app.get(f"{API_PREFIX}/history-transfer/exports/{{archive_id}}")
+    async def download_history_export(archive_id: str) -> Response:
+        path, filename = history_transfer.export_path(archive_id)
+        return FileResponse(
+            path,
+            filename=filename,
+            media_type="application/zip",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post(f"{API_PREFIX}/history-transfer/cancel")
+    async def cancel_history_export() -> dict[str, Any]:
+        result = history_transfer.cancel_export()
+        if start_workers and history_transfer.writable:
+            workers.start()
+        return result
+
+    @app.post(f"{API_PREFIX}/history-transfer/finalize")
+    async def finalize_history_export(request: Request, delete: bool = Query(False)) -> dict[str, Any]:
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(400, "import receipt is empty")
+        if len(raw) > 64 * 1024:
+            raise HTTPException(413, "import receipt is too large")
+        try:
+            receipt = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(400, "import receipt is not valid JSON") from exc
+        return await asyncio.to_thread(
+            history_transfer.retire_exported_history,
+            receipt,
+            delete_history=delete,
+        )
+
+    @app.post(f"{API_PREFIX}/history-transfer/imports")
+    async def import_history(request: Request, replace: bool = Query(False)) -> dict[str, Any]:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                expected_bytes = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(400, "Content-Length is invalid") from exc
+            if expected_bytes <= 0 or expected_bytes > MAX_ARCHIVE_BYTES:
+                raise HTTPException(413, "history archive is too large")
+            if expected_bytes + 256 * 1024 * 1024 > shutil.disk_usage(data_dir).free:
+                raise HTTPException(507, "not enough free disk space to upload this history archive")
+        upload = history_transfer.new_incoming_path()
+        received = 0
+        try:
+            with upload.open("wb") as destination:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > MAX_ARCHIVE_BYTES:
+                        raise HTTPException(413, "history archive is too large")
+                    destination.write(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if received == 0:
+                raise HTTPException(400, "history archive is empty")
+            workers_were_running = workers.status()["running"]
+            if workers_were_running:
+                await workers.stop()
+            try:
+                result = await asyncio.to_thread(
+                    history_transfer.import_archive,
+                    upload,
+                    replace_existing=replace,
+                )
+            finally:
+                if workers_were_running and history_transfer.writable:
+                    workers.start()
+            return {**result, "status": history_transfer.public_status()}
+        finally:
+            upload.unlink(missing_ok=True)
 
     @app.put(f"{API_PREFIX}/settings")
     async def put_settings(request: Request) -> dict[str, Any]:
@@ -454,10 +559,12 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/frames/{{frame_id}}/label")
     async def label_frame(frame_id: str) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         return _frame(await frames.label(frame_id))
 
     @app.post(f"{API_PREFIX}/camera/snapshot")
     async def camera_snapshot() -> dict[str, Any]:
+        history_transfer.ensure_writable()
         return _frame(await frames.capture(label=True))
 
     @app.get(f"{API_PREFIX}/camera/live")
@@ -491,11 +598,13 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/sleep", status_code=201)
     async def add_sleep(event: SleepEventCreate) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         located = event.model_copy(update={"location_id": settings.get().baby.location_id})
         return _sleep(database.add_sleep_event(located))
 
     @app.patch(f"{API_PREFIX}/sleep/{{event_id}}")
     async def patch_sleep(event_id: str, update: SleepEventPatch) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         event = database.update_sleep_event(event_id, update)
         if event is None:
             raise HTTPException(404, "sleep event not found")
@@ -503,12 +612,14 @@ def create_app(
 
     @app.delete(f"{API_PREFIX}/sleep/{{event_id}}", status_code=204)
     async def delete_sleep(event_id: str) -> Response:
+        history_transfer.ensure_writable()
         if not database.delete_sleep_event(event_id):
             raise HTTPException(404, "sleep event not found")
         return Response(status_code=204)
 
     @app.post(f"{API_PREFIX}/sleep/start", status_code=201)
     async def start_sleep(payload: SleepStartRequest) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         if database.open_sleep_event() is not None:
             raise HTTPException(409, "a sleep session is already active")
         return _sleep(
@@ -525,6 +636,7 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/sleep/stop")
     async def stop_sleep(payload: SleepStopRequest) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         current = database.open_sleep_event()
         if current is None:
             raise HTTPException(409, "there is no active sleep session")
@@ -539,6 +651,7 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/cry-events", status_code=201)
     async def add_cry(event: CryEventCreate) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         result = await cry_alerts.set_state(
             "on",
             observed_at=event.detected_at,
@@ -554,6 +667,7 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/cry/webhook")
     async def cry_webhook(payload: CryWebhook) -> dict[str, Any]:
+        history_transfer.ensure_writable()
         if len(json.dumps(payload.metadata, separators=(",", ":"))) > 32_768:
             raise HTTPException(413, "cry metadata is too large")
         event = await cry_alerts.set_state(

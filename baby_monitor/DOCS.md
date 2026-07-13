@@ -104,21 +104,51 @@ Estimate storage before choosing indefinite retention. Backups may grow quickly.
 ### Multiple homes and one history
 
 The active Location ID is stored on every new frame, sleep session, and cry
-event. One computer that moves between homes may reuse the same private `/data`
-directory, but only while exactly one Baby Monitor process is running.
+event. Two Home Assistant OS installations have isolated App data and must not
+share a live SQLite database.
 
-Two Home Assistant OS installations have isolated App data and must not share a
-live SQLite database. Concurrent combined history requires the planned
-Household Hub synchronization layer described in
-[Multi-home shared history](../docs/shared-history.md); it is not available in
-version `0.1.1`. Switching locations does not delete or move images. Select
-**Forever** under Retention if frames must never be removed automatically.
+To move the complete history while keeping one active copy:
+
+1. At the source, open **Settings → Move or export history** and select
+   **Prepare and download ZIP**. The source becomes read-only.
+2. At the destination, choose that ZIP, acknowledge replacement, and select
+   **Validate and import history**.
+3. Check the record counts and images at the destination, then download its
+   JSON receipt.
+4. Back at the source, upload the receipt and explicitly confirm deletion of
+   its history and images. The source keeps its house-specific Settings and is
+   marked retired until a newer ZIP is imported there.
+
+If the destination import is not completed, select **Cancel transfer** at the
+source. Its history becomes writable again and nothing is deleted.
+
+Import validates the database and every image before it replaces any existing
+history. Camera entities, lights, notifications, stream URLs, API keys, and AI
+configuration always remain local to the destination installation. This is a
+sequential handoff, not simultaneous synchronization. Full design and recovery
+details are in [Moving one history between homes](../docs/shared-history.md).
+
+Select **Forever** under Retention if frames must never be removed
+automatically. A transfer does not delete images unless the source receipt is
+validated and the final destructive confirmation is selected.
 
 ## Data and backups
 
 The App stores its database, frames, settings, encryption key, and encrypted
 secrets in `/data`. Supervisor includes this directory in App backups. Treat
 those backups as private household data.
+
+The history ZIP is suitable for external analysis without running Baby
+Monitor. It includes:
+
+- `data/frames.csv`, including labels and the corresponding archive image path;
+- `data/sleep_events.csv`;
+- `data/cry_events.csv`;
+- original images under `images/<location>/<year>/<month>/<day>/`;
+- `internal/history.sqlite3` and `manifest.json` for verified, lossless import.
+
+It excludes Settings, API keys, Home Assistant tokens, camera URLs, and the
+local encryption key. It still contains sensitive family images and history.
 
 Do not publish:
 

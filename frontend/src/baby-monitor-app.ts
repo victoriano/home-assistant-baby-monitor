@@ -24,6 +24,9 @@ import {
   type DashboardSummary,
   type FrameRecord,
   type HealthStatus,
+  type HistoryImportReceipt,
+  type HistoryTransferExport,
+  type HistoryTransferStatus,
   type HomeAssistantEntity,
   type Language,
   type RetentionEstimate,
@@ -124,6 +127,13 @@ export class BabyMonitorApp extends LitElement {
   @state() private tests: Partial<Record<TestKind, TestState>> = {};
   @state() private retentionEstimate: RetentionEstimate | null = null;
   @state() private retentionEstimateError = false;
+  @state() private historyTransfer: HistoryTransferStatus | null = null;
+  @state() private transferBusy: 'export' | 'import' | 'cancel' | 'retire' | '' = '';
+  @state() private transferFile: File | null = null;
+  @state() private replaceHistoryConfirmed = false;
+  @state() private importReceipt: HistoryImportReceipt | null = null;
+  @state() private receiptFile: File | null = null;
+  @state() private retireHistoryConfirmed = false;
 
   private pollTimer?: number;
   private toastTimer?: number;
@@ -157,6 +167,7 @@ export class BabyMonitorApp extends LitElement {
       this.cameraSource = settings.camera.entityId ? 'entity' : settings.camera.streamUrlConfigured ? 'stream' : 'entity';
       this.onboarding = !configured;
       await this.loadHealth();
+      await this.loadHistoryTransfer();
       await this.loadEntities();
       if (configured) await this.loadOperationalData(false);
       this.startPolling();
@@ -318,6 +329,15 @@ export class BabyMonitorApp extends LitElement {
       this.draft = structuredClone(this.settings);
       this.cameraSource = this.draft.camera.entityId ? 'entity' : this.draft.camera.streamUrlConfigured ? 'stream' : 'entity';
       void this.loadEntities();
+      void this.loadHistoryTransfer();
+    }
+  }
+
+  private async loadHistoryTransfer(): Promise<void> {
+    try {
+      this.historyTransfer = await api.getHistoryTransfer();
+    } catch {
+      this.historyTransfer = null;
     }
   }
 
@@ -591,6 +611,107 @@ export class BabyMonitorApp extends LitElement {
       this.retentionEstimate = null;
       this.retentionEstimateError = true;
     }
+  }
+
+  private downloadHistoryExport(item: HistoryTransferExport): void {
+    const link = document.createElement('a');
+    link.href = api.historyExportUrl(item);
+    link.download = item.filename;
+    link.rel = 'noopener';
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  private async prepareHistoryExport(): Promise<void> {
+    this.transferBusy = 'export';
+    this.inlineError = '';
+    try {
+      const item = await api.prepareHistoryExport();
+      await this.loadHistoryTransfer();
+      this.downloadHistoryExport(item);
+      this.showToast(this.t('historyExportReady'));
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : this.t('historyTransferFailed');
+    } finally {
+      this.transferBusy = '';
+    }
+  }
+
+  private async cancelHistoryExport(): Promise<void> {
+    this.transferBusy = 'cancel';
+    this.inlineError = '';
+    try {
+      this.historyTransfer = await api.cancelHistoryExport();
+      this.showToast(this.t('historyTransferCancelled'));
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : this.t('historyTransferFailed');
+    } finally {
+      this.transferBusy = '';
+    }
+  }
+
+  private async retireExportedHistory(): Promise<void> {
+    if (!this.receiptFile) {
+      this.inlineError = this.t('historyReceiptChooseFile');
+      return;
+    }
+    if (!this.retireHistoryConfirmed) {
+      this.inlineError = this.t('historyRetireConfirmRequired');
+      return;
+    }
+    this.transferBusy = 'retire';
+    this.inlineError = '';
+    try {
+      this.historyTransfer = await api.finalizeHistoryExport(this.receiptFile, true);
+      this.receiptFile = null;
+      this.retireHistoryConfirmed = false;
+      this.showToast(this.t('historyRetired'));
+      await this.loadOperationalData(false);
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : this.t('historyTransferFailed');
+    } finally {
+      this.transferBusy = '';
+    }
+  }
+
+  private async importHistory(): Promise<void> {
+    if (!this.transferFile) {
+      this.inlineError = this.t('historyImportChooseFile');
+      return;
+    }
+    if (!this.replaceHistoryConfirmed) {
+      this.inlineError = this.t('historyImportConfirmRequired');
+      return;
+    }
+    this.transferBusy = 'import';
+    this.inlineError = '';
+    try {
+      const result = await api.importHistory(this.transferFile, true);
+      this.historyTransfer = result.status;
+      this.importReceipt = result.receipt;
+      this.transferFile = null;
+      this.replaceHistoryConfirmed = false;
+      this.showToast(this.t(result.idempotent ? 'historyAlreadyImported' : 'historyImportComplete'));
+      await this.loadOperationalData(false);
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : this.t('historyTransferFailed');
+    } finally {
+      this.transferBusy = '';
+    }
+  }
+
+  private downloadImportReceipt(): void {
+    if (!this.importReceipt) return;
+    const content = `${JSON.stringify(this.importReceipt, null, 2)}\n`;
+    const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `baby-monitor-import-receipt-g${this.importReceipt.generation}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   private period(): TranslationKey {
@@ -992,11 +1113,11 @@ export class BabyMonitorApp extends LitElement {
             ${[
               ['profile', 'settingsProfile', 'baby'], ['home-assistant', 'settingsHomeAssistant', 'lock'], ['camera', 'settingsCamera', 'camera'], ['cry', 'settingsCry', 'waves'],
               ['lights', 'settingsLights', 'light'], ['notifications', 'settingsNotifications', 'heart'], ['vision', 'settingsVision', 'sparkle'],
-              ['privacy', 'settingsRetention', 'lock'],
+              ['transfer', 'settingsHistoryTransfer', 'history'], ['privacy', 'settingsRetention', 'lock'],
             ].map(([anchor, label, itemIcon]) => html`<a href=${`#settings-${anchor}`}>${icon(itemIcon as 'baby', 16)} ${this.t(label as TranslationKey)}</a>`)}
           </aside>
           <div class="settings-sections">
-            ${this.renderProfileSection()}${this.renderHomeAssistantSection()}${this.renderCameraSection()}${this.renderCrySection()}${this.renderLightsSection()}${this.renderNotificationsSection()}${this.renderVisionSection()}${this.renderRetentionSection()}
+            ${this.renderProfileSection()}${this.renderHomeAssistantSection()}${this.renderCameraSection()}${this.renderCrySection()}${this.renderLightsSection()}${this.renderNotificationsSection()}${this.renderVisionSection()}${this.renderHistoryTransferSection()}${this.renderRetentionSection()}
           </div>
         </div>
         <div class="settings-savebar">
@@ -1184,6 +1305,52 @@ export class BabyMonitorApp extends LitElement {
       ${compact ? html`<label class="consent-box safety-confirm"><input type="checkbox" .checked=${this.safetyConfirmed} @change=${(event: Event) => { this.safetyConfirmed = inputChecked(event); this.inlineError = ''; }}><span><strong>${this.t('safetyConfirm')}</strong><small>${this.t('adminOnly')}</small></span></label>` : nothing}
     `;
     return compact ? html`<div class="compact-section">${content}</div>` : this.renderSettingsCard('privacy', 'lock', 'settingsRetention', 'settingsRetentionHint', content);
+  }
+
+  private renderHistoryTransferSection(): TemplateResult {
+    const outgoing = this.historyTransfer?.outgoing;
+    const content = html`
+      <div class="privacy-banner">${icon('history', 21)}<div><strong>${this.t('historyTransferLocal')}</strong><small>${this.t('historyTransferPrivacy')}</small></div></div>
+      ${this.historyTransfer?.status === 'pending' && outgoing ? html`
+        <div class="credential-warning" role="status">${icon('lock', 17)}<span>${this.t('historyTransferPending')}</span></div>
+        <div class="transfer-summary">
+          <strong>${outgoing.filename}</strong>
+          <small>${this.t('historyTransferSummary', {
+            frames: outgoing.counts.frames,
+            images: outgoing.counts.storedImages,
+            size: formatBytes(outgoing.bytes, this.language),
+          })}</small>
+        </div>
+        <div class="transfer-actions">
+          <button type="button" class="button secondary" @click=${() => this.downloadHistoryExport(outgoing)}>${this.t('downloadAgain')}</button>
+          <button type="button" class="button tertiary" ?disabled=${this.transferBusy !== ''} @click=${() => this.cancelHistoryExport()}>${this.transferBusy === 'cancel' ? this.t('cancellingTransfer') : this.t('cancelTransfer')}</button>
+        </div>
+        <div class="transfer-block retire-block">
+          <div><strong>${this.t('retireSource')}</strong><p>${this.t('retireSourceHint')}</p></div>
+          <label class="field"><span>${this.t('historyReceipt')}</span><input type="file" accept=".json,application/json" @change=${(event: Event) => { this.receiptFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.inlineError = ''; }}><small>${this.receiptFile ? `${this.receiptFile.name} · ${formatBytes(this.receiptFile.size, this.language)}` : this.t('historyReceiptHint')}</small></label>
+          <label class="consent-box destructive-confirm"><input type="checkbox" .checked=${this.retireHistoryConfirmed} @change=${(event: Event) => { this.retireHistoryConfirmed = inputChecked(event); this.inlineError = ''; }}><span><strong>${this.t('retireHistoryConfirm')}</strong><small>${this.t('retireHistoryConfirmHint')}</small></span></label>
+          <button type="button" class="button danger" ?disabled=${this.transferBusy !== '' || !this.receiptFile} @click=${() => this.retireExportedHistory()}>${this.transferBusy === 'retire' ? this.t('retiringHistory') : this.t('retireHistoryButton')}</button>
+        </div>
+      ` : this.historyTransfer?.status === 'retired' ? html`
+        <div class="credential-warning" role="status">${icon('check', 17)}<span>${this.t('historyRetiredState')}</span></div>
+      ` : html`
+        <div class="transfer-block">
+          <div><strong>${this.t('exportHistory')}</strong><p>${this.t('exportHistoryHint')}</p></div>
+          <button type="button" class="button secondary" ?disabled=${this.transferBusy !== ''} @click=${() => this.prepareHistoryExport()}>${this.transferBusy === 'export' ? this.t('preparingExport') : this.t('prepareExport')}</button>
+        </div>
+      `}
+      <div class="transfer-divider"></div>
+      <div class="transfer-block import-block">
+        <div><strong>${this.t('importHistory')}</strong><p>${this.t('importHistoryHint')}</p></div>
+        <label class="field"><span>${this.t('historyArchive')}</span><input type="file" accept=".zip,application/zip" @change=${(event: Event) => { this.transferFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.inlineError = ''; }}><small>${this.transferFile ? `${this.transferFile.name} · ${formatBytes(this.transferFile.size, this.language)}` : this.t('historyArchiveHint')}</small></label>
+        <label class="consent-box danger-confirm"><input type="checkbox" .checked=${this.replaceHistoryConfirmed} @change=${(event: Event) => { this.replaceHistoryConfirmed = inputChecked(event); this.inlineError = ''; }}><span><strong>${this.t('replaceHistoryConfirm')}</strong><small>${this.t('replaceHistoryConfirmHint')}</small></span></label>
+        <button type="button" class="button primary" ?disabled=${this.transferBusy !== '' || !this.transferFile} @click=${() => this.importHistory()}>${this.transferBusy === 'import' ? this.t('importingHistory') : this.t('importHistoryButton')}</button>
+      </div>
+      ${this.importReceipt ? html`
+        <div class="transfer-result" role="status">${icon('check', 18)}<div><strong>${this.t('historyImportVerified')}</strong><small>${this.t('historyImportReceiptHint')}</small></div><button type="button" class="button compact tertiary" @click=${() => this.downloadImportReceipt()}>${this.t('downloadReceipt')}</button></div>
+      ` : nothing}
+    `;
+    return this.renderSettingsCard('transfer', 'history', 'settingsHistoryTransfer', 'settingsHistoryTransferHint', content);
   }
 
   private renderSettingsCard(anchor: string, itemIcon: Parameters<typeof icon>[0], title: TranslationKey, hint: TranslationKey, content: TemplateResult): TemplateResult {

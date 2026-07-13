@@ -3,16 +3,24 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { api } from '../src/api';
 import { BabyMonitorApp } from '../src/baby-monitor-app';
-import { cloneDefaultSettings, settingsToPayload, type AppSettings, type SecretName } from '../src/types';
+import {
+  cloneDefaultSettings,
+  settingsToPayload,
+  type AppSettings,
+  type HistoryTransferStatus,
+  type SecretName,
+} from '../src/types';
 
 interface SettingsHarness {
   draft: AppSettings;
   settings: AppSettings;
   pendingSecretClears: SecretName[];
+  historyTransfer: HistoryTransferStatus | null;
   renderCameraSection(compact?: boolean): TemplateResult;
   renderHomeAssistantSection(compact?: boolean): TemplateResult;
   renderNotificationsSection(compact?: boolean): TemplateResult;
   renderVisionSection(compact?: boolean): TemplateResult;
+  renderHistoryTransferSection(): TemplateResult;
   homeAssistantValidationError(): string;
   validationError(stage: number | 'all'): string;
 }
@@ -22,6 +30,7 @@ function harness(settings = cloneDefaultSettings()): SettingsHarness {
   app.settings = structuredClone(settings);
   app.draft = structuredClone(settings);
   app.pendingSecretClears = [];
+  app.historyTransfer = null;
   return app;
 }
 
@@ -159,5 +168,53 @@ describe('settings safety interactions', () => {
     buttonNamed('Send test notification').click();
 
     await vi.waitFor(() => expect(test).toHaveBeenCalledWith('notifications', app.draft));
+  });
+
+  it('shows the portable CSV and image export as read-only while transfer is pending', () => {
+    const app = harness();
+    app.historyTransfer = {
+      status: 'pending',
+      writable: false,
+      datasetId: 'dataset-1',
+      generation: 1,
+      lastImport: null,
+      outgoing: {
+        archiveId: 'archive-1',
+        filename: 'baby-monitor-history.zip',
+        createdAt: '2026-07-13T00:00:00Z',
+        manifestSha256: 'hash',
+        bytes: 1024,
+        counts: { frames: 10, storedImages: 9, sleepEvents: 2, cryEvents: 1 },
+        downloadUrl: 'api/v1/history-transfer/exports/archive-1',
+      },
+    };
+
+    renderSettings(app.renderHistoryTransferSection());
+
+    expect(document.body.textContent).toContain('read-only');
+    expect(document.body.textContent).toContain('10 records');
+    expect(buttonNamed('Download again')).toBeTruthy();
+    expect(buttonNamed('Cancel transfer')).toBeTruthy();
+    expect(document.body.textContent).toContain('CSV');
+    expect(document.body.textContent).toContain('Verified import receipt');
+    expect(document.body.textContent).toContain('delete this source history');
+  });
+
+  it('explains that a retired source becomes active again by importing a newer ZIP', () => {
+    const app = harness();
+    app.historyTransfer = {
+      status: 'retired',
+      writable: false,
+      datasetId: 'dataset-1',
+      generation: 1,
+      lastImport: null,
+      outgoing: null,
+    };
+
+    renderSettings(app.renderHistoryTransferSection());
+
+    expect(document.body.textContent).toContain('safely retired');
+    expect(document.body.textContent).toContain('Import a newer ZIP');
+    expect(document.body.textContent).not.toContain('Prepare and download ZIP');
   });
 });

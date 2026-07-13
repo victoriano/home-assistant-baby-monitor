@@ -7,6 +7,11 @@ import {
   type DashboardSummary,
   type FrameRecord,
   type HealthStatus,
+  type HistoryImportReceipt,
+  type HistoryImportResult,
+  type HistoryTransferCounts,
+  type HistoryTransferExport,
+  type HistoryTransferStatus,
   type HomeAssistantEntity,
   type ManualSleepInput,
   type PageResult,
@@ -64,6 +69,66 @@ function asStringRecord(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(asRecord(value)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );
+}
+
+function normalizeTransferCounts(value: unknown): HistoryTransferCounts {
+  const data = asRecord(value);
+  return {
+    frames: asNumber(data.frames),
+    storedImages: asNumber(pick(data, 'storedImages', 'stored_images')),
+    sleepEvents: asNumber(pick(data, 'sleepEvents', 'sleep_events')),
+    cryEvents: asNumber(pick(data, 'cryEvents', 'cry_events')),
+  };
+}
+
+function normalizeTransferExport(value: unknown): HistoryTransferExport | null {
+  if (!value) return null;
+  const data = asRecord(value);
+  const archiveId = asString(pick(data, 'archiveId', 'archive_id'));
+  if (!archiveId) return null;
+  return {
+    archiveId,
+    filename: asString(data.filename, 'baby-monitor-history.zip'),
+    createdAt: asString(pick(data, 'createdAt', 'created_at')),
+    manifestSha256: asString(pick(data, 'manifestSha256', 'manifest_sha256')),
+    bytes: asNumber(data.bytes),
+    counts: normalizeTransferCounts(data.counts),
+    downloadUrl: asString(pick(data, 'downloadUrl', 'download_url')),
+  };
+}
+
+function normalizeImportReceipt(value: unknown): HistoryImportReceipt {
+  const data = asRecord(value);
+  return {
+    format: 'baby-monitor-import-receipt',
+    formatVersion: 1,
+    datasetId: asString(pick(data, 'datasetId', 'dataset_id')),
+    generation: asNumber(data.generation),
+    manifestSha256: asString(pick(data, 'manifestSha256', 'manifest_sha256')),
+    destinationInstallationId: asString(
+      pick(data, 'destinationInstallationId', 'destination_installation_id'),
+    ),
+    importedAt: asString(pick(data, 'importedAt', 'imported_at')),
+    counts: normalizeTransferCounts(data.counts),
+  };
+}
+
+function normalizeTransferStatus(value: unknown): HistoryTransferStatus {
+  const data = asRecord(value);
+  const rawStatus = asString(data.status);
+  const status = ['active', 'preparing', 'pending', 'retired'].includes(rawStatus)
+    ? rawStatus as HistoryTransferStatus['status']
+    : 'active';
+  return {
+    status,
+    writable: asBoolean(data.writable, status === 'active'),
+    datasetId: asString(pick(data, 'datasetId', 'dataset_id')),
+    generation: asNumber(data.generation),
+    outgoing: normalizeTransferExport(data.outgoing),
+    lastImport: data.lastImport || data.last_import
+      ? normalizeImportReceipt(data.lastImport ?? data.last_import)
+      : null,
+  };
 }
 
 function pick(record: JsonRecord, ...names: string[]): unknown {
@@ -470,10 +535,70 @@ export const api = {
       bytes: asNumber(result.bytes),
     };
   },
+
+  async getHistoryTransfer(): Promise<HistoryTransferStatus> {
+    return normalizeTransferStatus(await request<unknown>('api/v1/history-transfer'));
+  },
+
+  async prepareHistoryExport(): Promise<HistoryTransferExport> {
+    const result = normalizeTransferExport(await request<unknown>('api/v1/history-transfer/exports', {
+      method: 'POST',
+    }));
+    if (!result) throw new ApiError('The history export response was invalid.', 500);
+    return result;
+  },
+
+  historyExportUrl(item: HistoryTransferExport): string {
+    return resolveAppUrl(item.downloadUrl);
+  },
+
+  async cancelHistoryExport(): Promise<HistoryTransferStatus> {
+    return normalizeTransferStatus(await request<unknown>('api/v1/history-transfer/cancel', { method: 'POST' }));
+  },
+
+  async finalizeHistoryExport(receipt: File, deleteHistory: boolean): Promise<HistoryTransferStatus> {
+    const response = await fetch(apiUrl(`api/v1/history-transfer/finalize?delete=${deleteHistory ? 'true' : 'false'}`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: receipt,
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    const body: unknown = contentType.includes('application/json') ? await response.json() : await response.text();
+    if (!response.ok) {
+      throw new ApiError(errorMessage(body, response.statusText || 'History transfer finalization failed'), response.status, body);
+    }
+    return normalizeTransferStatus(asRecord(body).status);
+  },
+
+  async importHistory(file: File, replaceExisting: boolean): Promise<HistoryImportResult> {
+    const response = await fetch(apiUrl(`api/v1/history-transfer/imports?replace=${replaceExisting ? 'true' : 'false'}`), {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    const body: unknown = contentType.includes('application/json') ? await response.json() : await response.text();
+    if (!response.ok) {
+      throw new ApiError(errorMessage(body, response.statusText || 'History import failed'), response.status, body);
+    }
+    const data = asRecord(body);
+    return {
+      ok: asBoolean(data.ok),
+      idempotent: asBoolean(data.idempotent),
+      receipt: normalizeImportReceipt(data.receipt),
+      counts: normalizeTransferCounts(data.counts),
+      status: normalizeTransferStatus(data.status),
+    };
+  },
 };
 
 export const apiTesting = {
   normalizeSettings,
   normalizeSummary,
   normalizeFrame,
+  normalizeTransferStatus,
 };

@@ -42,6 +42,8 @@ credentials are included.
   such as Ollama. AI is optional and disabled by default.
 - Stores settings, events, and frames under `/data`; no public Home Assistant
   `/local` directory is used.
+- Exports a portable ZIP with CSV tables and images grouped by location and
+  date, while retaining a verified SQLite snapshot for lossless re-import.
 - Encrypts API keys and private stream URLs at rest. Secret values are never
   returned by the API.
 
@@ -105,7 +107,7 @@ GitHub provenance with:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.1.1 \
+  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.2.0 \
   --repo victoriano/home-assistant-baby-monitor \
   --signer-workflow victoriano/home-assistant-baby-monitor/.github/workflows/release.yaml
 ```
@@ -175,24 +177,37 @@ Home Assistant instance, for example `madrid` / `Madrid` and `granada` /
 `Granada`. New frames, sleep sessions, and cry events are tagged with the
 active location and shown that way in history.
 
-Version `0.1.1` can reuse one private `/data` directory only when one machine
-moves between homes and **exactly one** Baby Monitor process is active. This is
-the current Madrid/Granada migration path, not the design for two independent
-Home Assistant OS installations.
-
 Each Home Assistant OS App installation owns an isolated `/data` directory.
 Never mount one live SQLite database into two Apps or place it on an internet
-file share. Concurrent multi-home history will use the optional Household Hub
-sync design in [Multi-home shared history](docs/shared-history.md): each App
-keeps working locally and exchanges location-tagged records and immutable image
-objects over TLS. Sync is not implemented in `0.1.1`; until it is released,
-moving or merging data must be done while all writers are stopped.
+file share. Version `0.2.0` instead provides a public, verified handoff in
+**Settings → Move or export history**:
+
+1. Prepare and download the ZIP at the currently active home. History writes
+   pause there so the two copies cannot diverge.
+2. Import it at the destination. The App validates the SQLite database, every
+   image size and SHA-256 hash, and all record counts before replacing history.
+3. Verify the destination and download its JSON import receipt.
+4. Upload that receipt at the source and explicitly confirm deletion. Only a
+   receipt matching the exact pending export can retire the source history.
+
+If the move is abandoned, cancel the pending export and the source becomes
+writable again. Importing history never replaces the destination home's
+camera, lights, notifications, AI credentials, or other Settings.
+
+The ZIP is also a normal analysis export. It contains `frames.csv`,
+`sleep_events.csv`, and `cry_events.csv`, plus original images under
+`images/<location>/<year>/<month>/<day>/`. It does not contain API keys, Home
+Assistant tokens, private camera URLs, settings, or encryption keys.
+
+This workflow intentionally supports one active writer at a time; it is not
+continuous two-home synchronization. See [Moving one history between homes](docs/shared-history.md)
+for the format, safety properties, and recovery paths.
 
 Changing location never deletes or moves existing frames. Retention remains a
 separate explicit setting; choose **Forever** if every image must be preserved.
 
-Stop the App before replacing its `/data` contents and keep both the source and
-target out of public web roots and repositories.
+Keep exported ZIPs and receipts out of public web roots and repositories: the
+ZIP contains private family history and camera images.
 
 ## Privacy and security
 
@@ -212,10 +227,10 @@ Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.m
 
 ## Status
 
-Version `0.1.1` adds multi-home location tags and a non-destructive database
-migration. It does not yet synchronize two concurrently running App
-installations. Camera and AI providers remain optional; core sleep tracking
-works without either.
+Version `0.2.0` adds verified history export, import, and source retirement,
+plus independently readable CSV and image exports. It deliberately allows only
+one active history writer at a time. Camera and AI providers remain optional;
+core sleep tracking works without either.
 
 ## License
 
