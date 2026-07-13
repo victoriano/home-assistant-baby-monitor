@@ -35,8 +35,11 @@ credentials are included.
 - Tracks sleep manually and keeps a local history with predictions.
 - Restores the original rich rhythm view with calendar navigation, circular
   sleep segments, and separate day/night summaries.
-- Uses a floating five-action mobile dock for the live view, camera, manual
-  sleep entries, history, and Settings, with a direct return to Home Assistant.
+- Keeps the original five-action caregiver navigation: Home, Trends, Add,
+  Camera & crying, and Settings, with a direct return to Home Assistant.
+- Shows inferred overnight wake-ups alongside editable sleep segments and
+  restores the original sleep, nap, awake-time, night, pacifier, head, clothing,
+  and mouth statistics.
 - Tags frames, sleep sessions, and cries with a configurable home/location so
   one history can distinguish records captured in different houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
@@ -167,12 +170,16 @@ baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/baby-monitor-data \
   --location-id madrid \
+  --timezone Europe/Madrid \
   --apply
 ```
 
 `--location-id` records where the imported events and frames were captured.
-Existing version 1 databases upgrade automatically and keep every image file;
-their previous records receive the backwards-compatible location `home`.
+The migration reconstructs the same sleep intervals that the legacy interface
+derived from camera observations, restores structured pacifier, mouth, head,
+and clothing labels, and keeps existing records from another home. Re-running
+it updates only legacy-derived rows. Existing image files are neither deleted
+nor rewritten; missing files can be repaired from the read-only source.
 
 ## Use one history across multiple homes
 

@@ -13,7 +13,7 @@ interface NavigationHarness {
 
 function harness(): NavigationHarness {
   const app = new BabyMonitorApp() as unknown as NavigationHarness;
-  app.page = 'dashboard';
+  app.page = 'sleep';
   app.manualOpen = false;
   return app;
 }
@@ -27,7 +27,7 @@ describe('floating navigation', () => {
 
     const buttons = [...container.querySelectorAll('.primary-nav button')];
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Now', 'Camera', 'Add', 'History', 'Settings',
+      'Home', 'Trends', 'Add', 'Camera & crying', 'Settings',
     ]);
     expect(buttons[0]?.getAttribute('aria-current')).toBe('page');
   });

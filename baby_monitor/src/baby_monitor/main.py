@@ -7,7 +7,7 @@ import os
 import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs
@@ -42,6 +42,7 @@ from .runtime import RuntimeWorkers
 from .security import EncryptedSecretStore
 from .services import CryAlertService, DashboardService, FrameService, ServiceError
 from .settings import SettingsError, SettingsRepository, SettingsService
+from .statistics import vision_summary
 from .transfer import MAX_ARCHIVE_BYTES, HistoryTransferManager, TransferError
 
 API_PREFIX = "/api/v1"
@@ -542,6 +543,13 @@ def create_app(
     async def list_frames(limit: int = Query(24, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = database.list_frames(limit, offset)
         return {"items": [_frame(item) for item in items], "limit": limit, "offset": offset, "total": total}
+
+    @app.get(f"{API_PREFIX}/statistics/vision")
+    async def visual_statistics(start: datetime, end: datetime) -> dict[str, Any]:
+        if end <= start:
+            raise HTTPException(400, "end must be after start")
+        rows = database.vision_labels_between(start, end)
+        return vision_summary(rows, start, end, settings.get().baby.timezone)
 
     @app.get(f"{API_PREFIX}/frames/{{frame_id}}/image")
     async def frame_image(frame_id: str) -> Response:

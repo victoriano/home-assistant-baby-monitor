@@ -371,6 +371,22 @@ class VisionLabel(StrictModel):
     confidence: float = Field(ge=0, le=1)
     description: str = Field(max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
+    in_crib: bool | None = None
+    face_visible: Literal["yes", "no", "unknown"] = "unknown"
+    head_side: Literal["left", "right", "back", "face_down", "unknown"] = "unknown"
+    body_position: str = Field(default="unknown", max_length=80)
+    clothing_items: list[
+        Literal[
+            "diaper_only",
+            "short_sleeve_onesie",
+            "long_sleeve_onesie",
+            "sleep_sack",
+            "blanket",
+            "unknown",
+        ]
+    ] = Field(default_factory=lambda: ["unknown"], max_length=5)
+    pacifier: Literal["yes", "no", "unknown"] = "unknown"
+    mouth_open: Literal["yes", "no", "unknown"] = "unknown"
 
 
 class FrameRecord(StrictModel):

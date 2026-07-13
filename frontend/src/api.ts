@@ -325,6 +325,13 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
       confidence: 0,
       description: value,
       tags: [],
+      inCrib: null,
+      faceVisible: 'unknown',
+      headSide: 'unknown',
+      bodyPosition: 'unknown',
+      clothingItems: ['unknown'],
+      pacifier: 'unknown',
+      mouthOpen: 'unknown',
     };
   }
   const data = asRecord(value);
@@ -335,6 +342,13 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
     confidence: asNumber(data.confidence),
     description: asString(data.description, descriptionFallback),
     tags: asStringArray(data.tags),
+    inCrib: typeof pick(data, 'inCrib', 'in_crib') === 'boolean' ? asBoolean(pick(data, 'inCrib', 'in_crib')) : null,
+    faceVisible: ['yes', 'no'].includes(asString(pick(data, 'faceVisible', 'face_visible'))) ? asString(pick(data, 'faceVisible', 'face_visible')) as 'yes' | 'no' : 'unknown',
+    headSide: ['left', 'right', 'back', 'face_down'].includes(asString(pick(data, 'headSide', 'head_side'))) ? asString(pick(data, 'headSide', 'head_side')) as 'left' | 'right' | 'back' | 'face_down' : 'unknown',
+    bodyPosition: asString(pick(data, 'bodyPosition', 'body_position'), 'unknown'),
+    clothingItems: asStringArray(pick(data, 'clothingItems', 'clothing_items')),
+    pacifier: ['yes', 'no'].includes(asString(data.pacifier)) ? asString(data.pacifier) as 'yes' | 'no' : 'unknown',
+    mouthOpen: ['yes', 'no'].includes(asString(pick(data, 'mouthOpen', 'mouth_open'))) ? asString(pick(data, 'mouthOpen', 'mouth_open')) as 'yes' | 'no' : 'unknown',
   };
 }
 
@@ -469,6 +483,29 @@ export const api = {
   async getSleep(limit = 50, offset = 0): Promise<PageResult<SleepEvent>> {
     const result = await request<unknown>(`api/v1/sleep?limit=${limit}&offset=${offset}`);
     return normalizePage(result, ['items', 'events'], normalizeSleep, limit, offset);
+  },
+
+  async getAllSleep(): Promise<SleepEvent[]> {
+    const first = await this.getSleep(500, 0);
+    const items = [...first.items];
+    for (let offset = first.items.length; offset < first.total; offset += 500) {
+      items.push(...(await this.getSleep(500, offset)).items);
+    }
+    return items;
+  },
+
+  async patchSleep(eventId: string, input: ManualSleepInput): Promise<SleepEvent> {
+    return normalizeSleep(await request<unknown>(`api/v1/sleep/${encodeURIComponent(eventId)}`, {
+      method: 'PATCH', body: JSON.stringify({ started_at: input.startedAt, ended_at: input.endedAt, kind: input.kind, notes: input.notes || null }),
+    }));
+  },
+
+  async deleteSleep(eventId: string): Promise<void> {
+    await request<void>(`api/v1/sleep/${encodeURIComponent(eventId)}`, { method: 'DELETE' });
+  },
+
+  async getVisionStatistics(start: string, end: string): Promise<import('./types').VisionStatistics> {
+    return request<import('./types').VisionStatistics>(`api/v1/statistics/vision?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
   },
 
   async getCryEvents(limit = 50, offset = 0): Promise<PageResult<CryEvent>> {

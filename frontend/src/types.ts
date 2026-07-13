@@ -1,5 +1,5 @@
 export type Language = 'en' | 'es';
-export type AppPage = 'dashboard' | 'camera' | 'history' | 'settings';
+export type AppPage = 'sleep' | 'data' | 'camera' | 'settings';
 export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
 export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';
@@ -158,6 +158,25 @@ export interface VisionLabel {
   confidence: number;
   description: string;
   tags: string[];
+  inCrib: boolean | null;
+  faceVisible: 'yes' | 'no' | 'unknown';
+  headSide: 'left' | 'right' | 'back' | 'face_down' | 'unknown';
+  bodyPosition: string;
+  clothingItems: string[];
+  pacifier: 'yes' | 'no' | 'unknown';
+  mouthOpen: 'yes' | 'no' | 'unknown';
+}
+
+export interface VisionStatisticSegment { key: string; label: string; minutes: number; percent: number; color: string }
+export interface VisionStatisticMetric { total_minutes: number; positive_minutes?: number; negative_minutes?: number; segments: VisionStatisticSegment[] }
+export interface VisionStatistics {
+  range: { start: string; end: string };
+  sample_count: number;
+  visible_sample_count: number;
+  observed_minutes: number;
+  visible_minutes: number;
+  metrics: { pacifier: VisionStatisticMetric; mouth_open: VisionStatisticMetric; head_side: VisionStatisticMetric; clothing: VisionStatisticMetric };
+  daily: Array<{ date: string; sample_count: number; visible_sample_count: number; observed_minutes: number; visible_minutes: number; pacifier_minutes: number; mouth_open_minutes: number }>;
 }
 
 export interface FrameRecord {

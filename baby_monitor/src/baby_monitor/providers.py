@@ -19,8 +19,11 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 VISION_PROMPT = (
     "Label this baby-monitor frame. Decide whether a baby is visible and, only from visible evidence, "
-    "whether the baby appears awake, asleep, or uncertain. Be conservative: never infer sleep when the "
-    "baby is absent or occluded. Return only the requested structured object."
+    "whether the baby appears awake, asleep, or uncertain. Also describe only clearly visible nursery "
+    "details: whether the baby is in the crib, face visibility, head side, body position, clothing, "
+    "pacifier use, and whether the mouth is open. Be conservative: use unknown when occluded or unclear, "
+    "never infer sleep when the baby is absent, and never infer a pacifier from a closed mouth or shadow. "
+    "Return only the requested structured object."
 )
 
 VISION_SCHEMA: dict[str, Any] = {
@@ -31,8 +34,42 @@ VISION_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "description": {"type": "string", "maxLength": 500},
         "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+        "in_crib": {"type": "boolean"},
+        "face_visible": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "head_side": {"type": "string", "enum": ["left", "right", "back", "face_down", "unknown"]},
+        "body_position": {"type": "string", "maxLength": 80},
+        "clothing_items": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "diaper_only",
+                    "short_sleeve_onesie",
+                    "long_sleeve_onesie",
+                    "sleep_sack",
+                    "blanket",
+                    "unknown",
+                ],
+            },
+            "maxItems": 5,
+        },
+        "pacifier": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "mouth_open": {"type": "string", "enum": ["yes", "no", "unknown"]},
     },
-    "required": ["baby_present", "state", "confidence", "description", "tags"],
+    "required": [
+        "baby_present",
+        "state",
+        "confidence",
+        "description",
+        "tags",
+        "in_crib",
+        "face_visible",
+        "head_side",
+        "body_position",
+        "clothing_items",
+        "pacifier",
+        "mouth_open",
+    ],
     "additionalProperties": False,
 }
 

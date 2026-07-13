@@ -208,12 +208,16 @@ baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/new-data \
   --location-id madrid \
+  --timezone Europe/Madrid \
   --apply
 ```
 
 Use a lowercase Location ID containing letters, numbers, underscores, or
 hyphens. The import copies the location onto every migrated frame and event.
 
-The target must be private and outside a Git worktree. Stop Baby Monitor before
-copying the migrated target into `/data`, retain a backup, start the App, and
+The target must be private and outside a Git worktree. The import rebuilds the
+legacy sleep timeline from its stored camera observations and retains the
+structured visual attributes used by Trends. Existing non-legacy sleep entries
+and every existing image file are preserved. Stop Baby Monitor before applying
+the import to its live data directory, retain a backup, start the App, and
 verify history and frame counts before deleting the source.

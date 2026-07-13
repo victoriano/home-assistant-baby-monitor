@@ -42,6 +42,7 @@ import {
   type SleepEvent,
   type SleepKind,
   type VisionProvider,
+  type VisionStatistics,
 } from './types';
 
 type EntityDomain = 'camera' | 'binary_sensor' | 'light' | 'notify';
@@ -99,7 +100,7 @@ export class BabyMonitorApp extends LitElement {
   }
 
   @state() private language: Language = preferredLanguage();
-  @state() private page: AppPage = 'dashboard';
+  @state() private page: AppPage = 'sleep';
   @state() private loading = true;
   @state() private fatalError: { title: string; body: string } | null = null;
   @state() private inlineError = '';
@@ -126,8 +127,14 @@ export class BabyMonitorApp extends LitElement {
   @state() private cameraBusy: 'snapshot' | 'label' | '' = '';
   @state() private sleepBusy: 'start' | 'stop' | 'add' | '' = '';
   @state() private manualOpen = false;
+  @state() private editingSleep: SleepEvent | null = null;
+  @state() private editSleepBusy = false;
+  @state() private editSleepForm = { startedAt: '', endedAt: '', kind: 'nap' as SleepKind, notes: '' };
   @state() private rhythmDate = localDateKey(new Date());
   @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
+  @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
+  @state() private visionStatistics: VisionStatistics | null = null;
+  @state() private visionStatisticsLoading = false;
   @state() private manualForm = {
     startedAt: localDateTime(new Date(Date.now() - 60 * 60_000)),
     endedAt: localDateTime(new Date()),
@@ -149,7 +156,10 @@ export class BabyMonitorApp extends LitElement {
   private toastTimer?: number;
   private operationalRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === 'Escape' && this.manualOpen) this.closeManualForm();
+    if (event.key === 'Escape') {
+      if (this.manualOpen) this.closeManualForm();
+      if (this.editingSleep) this.editingSleep = null;
+    }
   };
 
   connectedCallback(): void {
@@ -201,7 +211,7 @@ export class BabyMonitorApp extends LitElement {
     this.pollTimer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void this.loadHealth();
-        if (!this.onboarding && (this.page === 'dashboard' || this.page === 'camera')) void this.loadOperationalData(false);
+        if (!this.onboarding && (this.page === 'sleep' || this.page === 'camera')) void this.loadOperationalData(false);
       }
     }, 30_000);
   }
@@ -236,7 +246,7 @@ export class BabyMonitorApp extends LitElement {
     ) as Record<HistoryKind, HistoryPageState>;
     const results = await Promise.allSettled([
       api.getSummary(),
-      api.getSleep(HISTORY_PAGE_LIMITS.sleep, 0),
+      api.getSleep(500, 0),
       api.getCryEvents(HISTORY_PAGE_LIMITS.cry, 0),
       api.getFrames(HISTORY_PAGE_LIMITS.frames, 0),
     ]);
@@ -339,12 +349,28 @@ export class BabyMonitorApp extends LitElement {
     this.inlineError = '';
     this.liveView = false;
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    if (page === 'camera' || page === 'history') void this.loadOperationalData(true);
+    if (page === 'camera' || page === 'data') void this.loadOperationalData(true);
+    if (page === 'data') void this.loadVisionStatistics();
     if (page === 'settings') {
       this.draft = structuredClone(this.settings);
       this.cameraSource = this.draft.camera.entityId ? 'entity' : this.draft.camera.streamUrlConfigured ? 'stream' : 'entity';
       void this.loadEntities();
       void this.loadHistoryTransfer();
+    }
+  }
+
+  private async loadVisionStatistics(): Promise<void> {
+    if (this.visionStatisticsLoading) return;
+    this.visionStatisticsLoading = true;
+    try {
+      const start = this.sleepEvents.length
+        ? new Date(Math.min(...this.sleepEvents.map((event) => new Date(event.startedAt).getTime())))
+        : new Date(Date.now() - 90 * 86_400_000);
+      this.visionStatistics = await api.getVisionStatistics(start.toISOString(), new Date().toISOString());
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : 'No se pudieron cargar las estadísticas visuales.';
+    } finally {
+      this.visionStatisticsLoading = false;
     }
   }
 
@@ -356,6 +382,43 @@ export class BabyMonitorApp extends LitElement {
   private closeManualForm(): void {
     this.inlineError = '';
     this.manualOpen = false;
+  }
+
+  private openSleepEditor(event: SleepEvent): void {
+    this.editingSleep = event;
+    this.editSleepForm = {
+      startedAt: localDateTime(new Date(event.startedAt)),
+      endedAt: event.endedAt ? localDateTime(new Date(event.endedAt)) : '',
+      kind: event.kind,
+      notes: event.notes ?? '',
+    };
+  }
+
+  private async saveSleepEditor(): Promise<void> {
+    if (!this.editingSleep || !this.editSleepForm.endedAt) return;
+    this.editSleepBusy = true;
+    try {
+      await api.patchSleep(this.editingSleep.id, {
+        startedAt: asIso(this.editSleepForm.startedAt), endedAt: asIso(this.editSleepForm.endedAt),
+        kind: this.editSleepForm.kind, notes: this.editSleepForm.notes,
+      });
+      this.editingSleep = null;
+      await this.loadOperationalData(false);
+      this.showToast('Sueño actualizado');
+    } catch (error) { this.inlineError = error instanceof Error ? error.message : 'No se pudo guardar.'; }
+    finally { this.editSleepBusy = false; }
+  }
+
+  private async deleteSleepEditor(): Promise<void> {
+    if (!this.editingSleep || !window.confirm('¿Eliminar este registro de sueño?')) return;
+    this.editSleepBusy = true;
+    try {
+      await api.deleteSleep(this.editingSleep.id);
+      this.editingSleep = null;
+      await this.loadOperationalData(false);
+      this.showToast('Sueño eliminado');
+    } catch (error) { this.inlineError = error instanceof Error ? error.message : 'No se pudo eliminar.'; }
+    finally { this.editSleepBusy = false; }
   }
 
   private isHomeAssistantContext(): boolean {
@@ -534,7 +597,7 @@ export class BabyMonitorApp extends LitElement {
       this.showToast(this.t('saved'));
       if (finishOnboarding) {
         this.onboarding = false;
-        this.page = 'dashboard';
+        this.page = 'sleep';
         await this.loadOperationalData(true);
       }
     } catch (caught) {
@@ -780,10 +843,10 @@ export class BabyMonitorApp extends LitElement {
 
   private renderHeader(): TemplateResult {
     const nav: Array<{ page?: AppPage; label: TranslationKey; itemIcon: IconName; add?: boolean }> = [
-      { page: 'dashboard', label: 'navDashboard', itemIcon: 'home' },
-      { page: 'camera', label: 'navCamera', itemIcon: 'camera' },
+      { page: 'sleep', label: 'navDashboard', itemIcon: 'home' },
+      { page: 'data', label: 'navStatistics', itemIcon: 'history' },
       { label: 'navAdd', itemIcon: 'plus', add: true },
-      { page: 'history', label: 'navStatistics', itemIcon: 'history' },
+      { page: 'camera', label: 'navCamera', itemIcon: 'camera' },
       { page: 'settings', label: 'navSettings', itemIcon: 'settings' },
     ];
     const inHomeAssistant = this.isHomeAssistantContext();
@@ -943,6 +1006,8 @@ export class BabyMonitorApp extends LitElement {
           </button>
         </section>
 
+        ${this.renderDailyRhythm()}
+
         <section class="now-grid">
           <article class=${`sleep-scene ${sleeping ? 'sleeping' : 'awake'}`}>
             <div class="scene-glow" aria-hidden="true"></div>
@@ -990,7 +1055,7 @@ export class BabyMonitorApp extends LitElement {
         <section class="recent-section">
           <div class="section-heading">
             <div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('sleepTimeline')}</h2></div>
-            <button class="text-button" @click=${() => this.setPage('history')}>${this.t('viewRhythm')} ${icon('chevron', 15)}</button>
+            <button class="text-button" @click=${() => this.setPage('data')}>${this.t('viewRhythm')} ${icon('chevron', 15)}</button>
           </div>
           ${this.renderSleepList(this.sleepEvents.slice(0, 4))}
         </section>
@@ -1072,7 +1137,7 @@ export class BabyMonitorApp extends LitElement {
           </div>
         </section>
         <section class="frame-section camera-moments">
-          <div class="section-heading"><div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('imageTimeline')}</h2></div><button class="text-button" @click=${() => this.setPage('history')}>${this.t('navStatistics')} ${icon('chevron', 15)}</button></div>
+          <div class="section-heading"><div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('imageTimeline')}</h2></div><button class="text-button" @click=${() => this.setPage('data')}>${this.t('navStatistics')} ${icon('chevron', 15)}</button></div>
           ${this.frames.length ? html`<div class="frame-grid">${this.frames.slice(0, 12).map((frame) => this.renderFrame(frame))}</div>` : html`<div class="empty-state">${icon('camera', 26)}<p>${this.t('noFrames')}</p></div>`}
         </section>
       </main>
@@ -1093,7 +1158,7 @@ export class BabyMonitorApp extends LitElement {
           <div><span>${icon('moon', 18)} ${this.t('nightRibbon')}</span><small>${this.t('nightRibbonHint')}</small></div>
           <div class="ribbon-legend"><span class="sleep-dot">${this.t('ribbonSleep')}</span><span class="cry-dot">${this.t('ribbonCry')}</span><span class="frame-dot">${this.t('ribbonFrame')}</span></div>
         </div>
-        <button class="ribbon-track" @click=${() => this.setPage('history')} aria-label=${this.t('viewRhythm')}>
+        <button class="ribbon-track" @click=${() => this.setPage('data')} aria-label=${this.t('viewRhythm')}>
           <span class="ribbon-midline"></span>
           ${sleeps.map((event) => {
             const left = percent(new Date(event.startedAt).getTime());
@@ -1134,8 +1199,8 @@ export class BabyMonitorApp extends LitElement {
     const titleDate = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selectedDate);
     const coreDate = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric' }).format(selectedDate);
     const dayKeys = this.rhythmDayKeys();
-    const napCount = model.segments.filter((segment) => segment.event.kind !== 'night').length;
-    const nightCount = model.segments.filter((segment) => segment.event.kind === 'night').length;
+    const napCount = model.sleepSegments.filter((segment) => segment.type === 'nap').length;
+    const nightCount = model.sleepSegments.filter((segment) => segment.type === 'night').length;
     const averageNap = napCount ? Math.round(model.napMinutes / napCount) : 0;
     const lastDay = dayKeys.at(-1) ?? this.rhythmDate;
 
@@ -1182,19 +1247,19 @@ export class BabyMonitorApp extends LitElement {
               <line class="rhythm-midnight-line" x1="160" y1="30" x2="160" y2="56"></line>
               ${model.segments.map((segment) => svg`
                 <path
-                  class=${`rhythm-arc ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} ${segment.event.endedAt ? '' : 'ongoing'}`}
+                  class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
                   d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
                 ></path>
               `)}
             </svg>
             ${model.segments.map((segment) => {
               const position = rhythmMarkerPosition(segment);
-              const label = this.t(segment.event.kind === 'night' ? 'nightSleep' : 'nap');
+              const label = segment.type === 'awake' ? 'Despertar por la noche' : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
               const detail = `${label} · ${formatClock(segment.start.toISOString(), this.language)}–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`;
               return html`
-                <span class=${`rhythm-marker ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail}>
-                  ${icon('moon', 15)}
-                </span>
+                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => segment.event && this.openSleepEditor(segment.event)}>
+                  ${icon(segment.type === 'awake' ? 'waves' : 'moon', 15)}
+                </button>
               `;
             })}
             <div class="rhythm-core">
@@ -1213,7 +1278,7 @@ export class BabyMonitorApp extends LitElement {
         <div class="rhythm-summary">
           <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${model.segments.length}</b></div>
           <div class="rhythm-duration-track" aria-hidden="true">
-            ${model.segments.map((segment) => html`<i class=${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
+            ${model.sleepSegments.map((segment) => html`<i class=${segment.type === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
           </div>
           <div class="rhythm-stats">
             <div><span>${this.t('rhythmNaps')}</span><strong>${napCount} · ${formatDuration(model.napMinutes)}</strong></div>
@@ -1268,24 +1333,95 @@ export class BabyMonitorApp extends LitElement {
     `;
   }
 
+  private renderSleepEditor(): TemplateResult | typeof nothing {
+    if (!this.editingSleep) return nothing;
+    return html`<div class="manual-dialog-backdrop" @click=${(event: Event) => { if (event.target === event.currentTarget) this.editingSleep = null; }}><form class="manual-dialog manual-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.saveSleepEditor(); }}>
+      <div class="form-heading"><div><h3>Editar sueño</h3><p>Corrige el inicio, el final o el tipo como en la app original.</p></div><button type="button" class="icon-button small" @click=${() => { this.editingSleep = null; }}>&times;</button></div>
+      <div class="field-grid two"><label class="field"><span>Inicio</span><input type="datetime-local" required .value=${this.editSleepForm.startedAt} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, startedAt: inputValue(event) }; }}></label><label class="field"><span>Final</span><input type="datetime-local" required .value=${this.editSleepForm.endedAt} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, endedAt: inputValue(event) }; }}></label></div>
+      <div class="field-grid two"><label class="field"><span>Tipo</span><select .value=${this.editSleepForm.kind} @change=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, kind: inputValue(event) as SleepKind }; }}><option value="nap">Siesta</option><option value="night">Sueño largo</option></select></label><label class="field"><span>Notas</span><input .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></label></div>
+      ${this.inlineError ? html`<div class="inline-error">${this.inlineError}</div>` : nothing}<div class="form-actions split"><button type="button" class="button danger" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>Eliminar</button><span></span><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>Cancelar</button><button class="button primary" ?disabled=${this.editSleepBusy}>Guardar</button></div>
+    </form></div>`;
+  }
+
+  private sleepSeries(): Array<{ date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }> {
+    const rows = new Map<string, { date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }>();
+    for (const event of this.sleepEvents) {
+      if (!event.endedAt) continue;
+      const start = new Date(event.startedAt);
+      const end = new Date(event.endedAt);
+      const date = event.kind === 'night' && start.getHours() >= 18 ? localDateKey(new Date(start.getTime() + 86_400_000)) : localDateKey(start);
+      const row = rows.get(date) ?? { date, total: 0, naps: 0, night: 0, count: 0, wake: '', bed: '' };
+      const minutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60_000));
+      row.total += minutes;
+      row.count += 1;
+      if (event.kind === 'nap') row.naps += minutes;
+      else {
+        row.night += minutes;
+        if (!row.bed || start < new Date(`${date}T${row.bed}:00`)) row.bed = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`;
+        row.wake = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+      }
+      rows.set(date, row);
+    }
+    return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  private renderMetricBars(rows: Array<{ label: string; value: number }>, suffix = 'min'): TemplateResult {
+    const visible = rows.slice(-21);
+    const maximum = Math.max(1, ...visible.map((row) => row.value));
+    return html`<div class="legacy-chart" role="img">${visible.map((row) => html`
+      <div class="legacy-chart-column" title=${`${row.label}: ${row.value} ${suffix}`}>
+        <strong>${row.value ? Math.round(row.value) : '—'}</strong><i style=${`--height:${Math.max(2, row.value / maximum * 100)}%`}></i><small>${row.label.slice(5)}</small>
+      </div>`)}
+    </div>`;
+  }
+
+  private renderVisualStatistic(kind: 'pacifier' | 'mouth_open' | 'head_side' | 'clothing', title: string): TemplateResult {
+    const metric = this.visionStatistics?.metrics[kind];
+    if (this.visionStatisticsLoading) return html`<div class="empty-state"><span class="spinner"></span><p>Cargando el histórico visual…</p></div>`;
+    if (!metric?.segments.length) return html`<div class="empty-state"><p>No hay observaciones estructuradas para este periodo.</p></div>`;
+    const total = metric.total_minutes;
+    const label = (value: string): string => ({
+      pacifier: 'Con chupete', 'no pacifier': 'Sin chupete', 'mouth open': 'Boca abierta', 'mouth closed': 'Boca cerrada',
+      left: 'Izquierda', right: 'Derecha', back: 'Boca arriba', face_down: 'Boca abajo', diaper_only: 'Solo pañal',
+      short_sleeve_onesie: 'Body de manga corta', long_sleeve_onesie: 'Body de manga larga', sleep_sack: 'Saco de dormir', blanket: 'Manta',
+    }[value] ?? value.replaceAll('_', ' '));
+    return html`
+      <section class="legacy-stat-grid">
+        <article class="legacy-stat-card hero-stat"><span>Tiempo observado</span><strong>${formatDuration(total)}</strong><small>${this.visionStatistics?.visible_sample_count ?? 0} imágenes válidas</small></article>
+        <article class="legacy-stat-card"><h2>${title}</h2><div class="donut-legend">${metric.segments.map((segment) => html`<div><i style=${`--color:${segment.color}`}></i><span>${label(segment.label)}</span><strong>${segment.percent}%</strong><small>${formatDuration(segment.minutes)}</small></div>`)}</div></article>
+      </section>
+      ${kind === 'pacifier' || kind === 'mouth_open' ? html`<article class="legacy-stat-card"><h2>Evolución diaria</h2>${this.renderMetricBars((this.visionStatistics?.daily ?? []).map((day) => ({ label: day.date, value: kind === 'pacifier' ? day.pacifier_minutes : day.mouth_open_minutes })))}</article>` : nothing}
+    `;
+  }
+
   private renderHistory(): TemplateResult {
+    const series = this.sleepSeries();
+    const total = series.reduce((sum, row) => sum + row.total, 0);
+    const nap = series.reduce((sum, row) => sum + row.naps, 0);
+    const night = series.reduce((sum, row) => sum + row.night, 0);
+    const tabs = [
+      ['summary', 'Resumen de sueño'], ['naps', 'Siestas'], ['awake', 'Tiempo despierto'], ['night', 'Sueño nocturno'],
+      ['pacifier', 'Chupete'], ['head', 'Cabeza'], ['clothing', 'Ropa'], ['mouth', 'Boca'],
+    ] as const;
     return html`
       <main class="page history-page" id="main">
         <section class="page-heading">
-          <div><span class="eyebrow">${this.t('navHistory')}</span><h1>${this.t('historyTitle')}</h1><p>${this.t('historyIntro')}</p></div>
+          <div><span class="eyebrow">Histórico completo</span><h1>Tendencias</h1><p>El mismo análisis de sueño y de las imágenes de la app original.</p></div>
           <div class="heading-actions"><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
         </section>
-        ${this.renderDailyRhythm()}
-        ${this.renderNightRibbon()}
-        <section class="history-grid">
-          <article class="history-panel" aria-busy=${this.historyPages.sleep.loading}><div class="panel-heading"><span class="panel-icon">${icon('moon', 18)}</span><div><h2>${this.t('sleepTimeline')}</h2><small>${this.historyPages.sleep.total}</small></div></div>${this.sleepEvents.length || (!this.historyPages.sleep.loading && !this.historyPages.sleep.error) ? this.renderSleepList(this.sleepEvents) : nothing}${this.renderHistoryPager('sleep', this.sleepEvents.length)}</article>
-          <article class="history-panel" aria-busy=${this.historyPages.cry.loading}><div class="panel-heading"><span class="panel-icon coral">${icon('waves', 18)}</span><div><h2>${this.t('cryTimeline')}</h2><small>${this.historyPages.cry.total}</small></div></div>${this.cryEvents.length || (!this.historyPages.cry.loading && !this.historyPages.cry.error) ? this.renderCryList() : nothing}${this.renderHistoryPager('cry', this.cryEvents.length)}</article>
-        </section>
-        <section class="frame-section" aria-busy=${this.historyPages.frames.loading}>
-          <div class="section-heading"><div><span class="eyebrow">${this.t('cameraTitle')}</span><h2>${this.t('imageTimeline')}</h2></div></div>
-          ${this.frames.length ? html`<div class="frame-grid">${this.frames.map((frame) => this.renderFrame(frame))}</div>` : !this.historyPages.frames.loading && !this.historyPages.frames.error ? html`<div class="empty-state">${icon('camera', 26)}<p>${this.t('noFrames')}</p></div>` : nothing}
-          ${this.renderHistoryPager('frames', this.frames.length)}
-        </section>
+        <nav class="legacy-stats-tabs" aria-label="Estadísticas">${tabs.map(([tab, label]) => html`<button class=${this.statsTab === tab ? 'active' : ''} @click=${() => { this.statsTab = tab; if (['pacifier', 'head', 'clothing', 'mouth'].includes(tab)) void this.loadVisionStatistics(); }}>${label}</button>`)}</nav>
+        ${this.statsTab === 'summary' ? html`
+          <section class="legacy-stat-grid three"><article class="legacy-stat-card hero-stat"><span>Sueño total</span><strong>${formatDuration(total)}</strong><small>${series.length} días con datos</small></article><article class="legacy-stat-card hero-stat"><span>Sueño nocturno</span><strong>${formatDuration(night)}</strong><small>${total ? Math.round(night / total * 100) : 0}% del total</small></article><article class="legacy-stat-card hero-stat"><span>Siestas</span><strong>${formatDuration(nap)}</strong><small>${total ? Math.round(nap / total * 100) : 0}% del total</small></article></section>
+          <article class="legacy-stat-card"><h2>Sueño diario</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.total })))}</article>
+        ` : this.statsTab === 'naps' ? html`<article class="legacy-stat-card"><h2>Sueño durante el día</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.naps })))}</article>
+        <section class="legacy-stat-grid"><article class="legacy-stat-card hero-stat"><span>Media diaria de siestas</span><strong>${formatDuration(series.length ? Math.round(nap / series.length) : 0)}</strong></article><article class="legacy-stat-card hero-stat"><span>Días analizados</span><strong>${series.filter((row) => row.naps).length}</strong></article></section>`
+        : this.statsTab === 'awake' ? html`<article class="legacy-stat-card"><h2>Hora de despertar</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${row.date}</span><strong>${row.wake || '—'}</strong></div>`)}</div></article>`
+        : this.statsTab === 'night' ? html`<article class="legacy-stat-card"><h2>Sueño nocturno</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.night })))}</article><article class="legacy-stat-card"><h2>Se durmió / se despertó</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${row.date}</span><strong>${row.bed || '—'} → ${row.wake || '—'}</strong></div>`)}</div></article>`
+        : this.statsTab === 'pacifier' ? this.renderVisualStatistic('pacifier', 'Uso del chupete')
+        : this.statsTab === 'head' ? this.renderVisualStatistic('head_side', 'Posición de la cabeza')
+        : this.statsTab === 'clothing' ? this.renderVisualStatistic('clothing', 'Ropa detectada')
+        : this.renderVisualStatistic('mouth_open', 'Boca abierta o cerrada')}
+        <details class="legacy-raw-history"><summary>Ver registros detallados</summary><section class="history-grid"><article class="history-panel">${this.renderSleepList(this.sleepEvents)}${this.renderHistoryPager('sleep', this.sleepEvents.length)}</article><article class="history-panel">${this.renderCryList()}${this.renderHistoryPager('cry', this.cryEvents.length)}</article></section></details>
       </main>
     `;
   }
@@ -1630,8 +1766,9 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <a class="skip-link" href="#main">${this.t('skipContent')}</a>
       ${this.loading ? this.renderLoading() : this.fatalError ? this.renderFatalError() : this.onboarding ? this.renderOnboarding() : html`
-        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'dashboard' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'history' ? this.renderHistory() : this.renderSettings()}</div>
+        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'sleep' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'data' ? this.renderHistory() : this.renderSettings()}</div>
         ${this.renderManualDialog()}
+        ${this.renderSleepEditor()}
       `}
       <div class="toast-region" aria-live="polite" aria-atomic="true">${this.toast ? html`<div class=${`toast ${this.toast.tone}`}>${this.toast.tone === 'success' ? icon('check', 17) : this.toast.tone === 'error' ? '!' : icon('heart', 17)}<span>${this.toast.message}</span><button aria-label=${this.t('dismiss')} @click=${() => { this.toast = null; }}>&times;</button></div>` : nothing}</div>
     `;

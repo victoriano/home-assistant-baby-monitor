@@ -243,6 +243,25 @@ class Database:
             ).fetchall()
         return [self._frame(row) for row in rows], total
 
+    def vision_labels_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        limit: int = 250_000,
+    ) -> list[tuple[datetime, VisionLabel]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT captured_at, label_json FROM frames
+                   WHERE captured_at >= ? AND captured_at <= ? AND label_json IS NOT NULL
+                   ORDER BY captured_at ASC LIMIT ?""",
+                (_iso(start), _iso(end), limit),
+            ).fetchall()
+        return [
+            (_dt(row["captured_at"]), VisionLabel.model_validate_json(row["label_json"]))
+            for row in rows
+        ]
+
     def latest_frame(self) -> FrameRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM frames ORDER BY captured_at DESC LIMIT 1").fetchone()

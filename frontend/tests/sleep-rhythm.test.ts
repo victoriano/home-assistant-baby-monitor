@@ -33,7 +33,8 @@ describe('sleep rhythm model', () => {
 
   it('restores the day view with naps plus morning and bedtime boundaries', () => {
     const events = [
-      sleep('night-before', at('2026-07-09', 22, 30), at('2026-07-10', 7, 15), 'night'),
+      sleep('night-before-1', at('2026-07-09', 22, 30), at('2026-07-10', 2), 'night'),
+      sleep('night-before-2', at('2026-07-10', 2, 20), at('2026-07-10', 7, 15), 'night'),
       sleep('nap-1', at('2026-07-10', 10), at('2026-07-10', 10, 45), 'nap'),
       sleep('nap-2', at('2026-07-10', 15), at('2026-07-10', 16, 30), 'nap'),
       sleep('night-after', at('2026-07-10', 21, 10), at('2026-07-11', 7), 'night'),
@@ -41,7 +42,7 @@ describe('sleep rhythm model', () => {
 
     const model = buildRhythmModel(events, '2026-07-10', 'day', new Date(at('2026-07-10', 17)));
 
-    expect(model.segments.map((segment) => segment.event.id)).toEqual(['nap-1', 'nap-2']);
+    expect(model.segments.map((segment) => segment.event?.id)).toEqual(['nap-1', 'nap-2']);
     expect(model.totalMinutes).toBe(135);
     expect(model.napMinutes).toBe(135);
     expect(model.wakeAt?.getHours()).toBe(7);
@@ -51,14 +52,17 @@ describe('sleep rhythm model', () => {
   it('joins separate night periods inside the previous-evening-to-noon window', () => {
     const events = [
       sleep('night-1', at('2026-07-09', 22), at('2026-07-10', 1), 'night'),
-      sleep('night-2', at('2026-07-10', 2), at('2026-07-10', 7, 30), 'night'),
+      sleep('night-2', at('2026-07-10', 1, 30), at('2026-07-10', 7, 30), 'night'),
       sleep('day-nap', at('2026-07-10', 9), at('2026-07-10', 10), 'nap'),
     ];
 
     const model = buildRhythmModel(events, '2026-07-10', 'night', new Date(at('2026-07-10', 10)));
 
-    expect(model.segments.map((segment) => segment.event.id)).toEqual(['night-1', 'night-2']);
-    expect(model.totalMinutes).toBe(510);
+    expect(model.sleepSegments.map((segment) => segment.event?.id)).toEqual(['night-1', 'night-2']);
+    expect(model.wakeGaps).toHaveLength(1);
+    expect(model.wakeGaps[0]?.minutes).toBe(30);
+    expect(model.segments.map((segment) => segment.type)).toEqual(['night', 'awake', 'night']);
+    expect(model.totalMinutes).toBe(540);
     expect(model.bedAt?.getHours()).toBe(22);
     expect(model.wakeAt?.getHours()).toBe(7);
     expect(model.wakeAt?.getMinutes()).toBe(30);
@@ -69,7 +73,7 @@ describe('sleep rhythm model', () => {
     const model = buildRhythmModel([ongoing], '2026-07-10', 'day', new Date(at('2026-07-10', 15, 20)));
 
     expect(model.totalMinutes).toBe(80);
-    expect(model.segments[0].event.endedAt).toBeNull();
+    expect(model.segments[0]?.event?.endedAt).toBeNull();
   });
 
   it('creates a valid SVG arc for a sleep segment', () => {
