@@ -43,6 +43,11 @@ All notable changes to this App are documented here. The format follows
   real bedtime/wake boundaries in Night mode.
 - Exclude explicit awake events and structured awake pauses from sleep totals,
   charts, and the recent-night ribbon.
+- Show every stored frame inside an edited sleep segment instead of a misleading
+  seven-frame nearest-image subset; Start, Middle, and End now jump within the
+  complete interval timeline.
+- Restore the hidden delete action for automatically detected sleep segments
+  while preserving all associated captures and model analyses.
 
 ## [0.3.0] - 2026-07-13
 

@@ -558,6 +558,32 @@ def create_app(
         items, total = database.list_frames(limit, offset)
         return {"items": [_frame(item) for item in items], "limit": limit, "offset": offset, "total": total}
 
+    @app.get(f"{API_PREFIX}/frames/range")
+    async def frames_in_range(
+        start: datetime,
+        end: datetime,
+        location_id: str | None = Query(None, min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$"),
+        limit: int = Query(200, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        if end <= start:
+            raise HTTPException(400, "end must be after start")
+        items, total = database.list_frames_between(
+            start,
+            end,
+            location_id=location_id,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "items": [_frame(item) for item in items],
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "start": start,
+            "end": end,
+        }
+
     @app.get(f"{API_PREFIX}/frames/nearest")
     async def nearest_frames(
         at: datetime,

@@ -263,6 +263,41 @@ describe('dashboard normalization', () => {
 });
 
 describe('paginated history contract', () => {
+  it('loads every frame inside a sleep interval across API pages', async () => {
+    const first = new Response(JSON.stringify({
+      items: [
+        { id: 'frame-1', capturedAt: '2026-07-14T12:27:00Z', imageAvailable: true },
+        { id: 'frame-2', capturedAt: '2026-07-14T12:32:00Z', imageAvailable: true },
+      ],
+      limit: 200,
+      offset: 0,
+      total: 3,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const second = new Response(JSON.stringify({
+      items: [{ id: 'frame-3', capturedAt: '2026-07-14T12:37:00Z', imageAvailable: true }],
+      limit: 200,
+      offset: 2,
+      total: 3,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    try {
+      const frames = await api.getFramesBetween(
+        '2026-07-14T12:27:00Z',
+        '2026-07-14T15:07:00Z',
+        'granada',
+      );
+
+      expect(frames.map((frame) => frame.id)).toEqual(['frame-1', 'frame-2', 'frame-3']);
+      expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/frames/range?');
+      expect(String(fetchMock.mock.calls[0][0])).toContain('location_id=granada');
+      expect(String(fetchMock.mock.calls[1][0])).toContain('offset=2');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('preserves server pagination metadata and requests the selected offset', async () => {
     const response = new Response(JSON.stringify({
       items: [{

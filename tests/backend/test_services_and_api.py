@@ -214,6 +214,64 @@ def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payloa
         assert stopped.status_code == 200, stopped.text
 
 
+def test_sleep_editor_lists_every_interval_frame_and_deletion_preserves_images(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    start = utc_now() - timedelta(hours=2)
+    end = start + timedelta(hours=1)
+    frames = [
+        app.state.database.add_frame(
+            f"frame-{index}".encode(),
+            "image/jpeg",
+            start + timedelta(minutes=index * 20),
+            location_id="granada",
+        )
+        for index in range(4)
+    ]
+    app.state.database.add_frame(b"other-home", "image/jpeg", start + timedelta(minutes=10), location_id="madrid")
+    event = app.state.database.add_sleep_event(
+        SleepEventCreate(
+            started_at=start,
+            ended_at=end,
+            kind="nap",
+            source="vision",
+            location_id="granada",
+        )
+    )
+
+    with TestClient(app) as client:
+        first_page = client.get(
+            "/api/v1/frames/range",
+            params={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "location_id": "granada",
+                "limit": 2,
+            },
+        )
+        assert first_page.status_code == 200, first_page.text
+        assert first_page.json()["total"] == 4
+        assert [item["id"] for item in first_page.json()["items"]] == [frames[0].id, frames[1].id]
+
+        second_page = client.get(
+            "/api/v1/frames/range",
+            params={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "location_id": "granada",
+                "limit": 2,
+                "offset": 2,
+            },
+        )
+        assert [item["id"] for item in second_page.json()["items"]] == [frames[2].id, frames[3].id]
+        assert client.get(
+            "/api/v1/frames/range",
+            params={"start": end.isoformat(), "end": start.isoformat()},
+        ).status_code == 400
+
+        assert client.delete(f"/api/v1/sleep/{event.id}").status_code == 204
+        assert client.get(f"/api/v1/frames/{frames[0].id}/image").content == b"frame-0"
+
+
 def test_camera_snapshot_is_private_app_data(tmp_path: Path, ui_settings_payload: dict) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     ui_settings_payload["camera"].update({"enabled": True, "entity_id": "camera.nursery"})

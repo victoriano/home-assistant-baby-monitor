@@ -215,6 +215,9 @@ export class BabyMonitorApp extends LitElement {
   @state() private frameReview: FrameReviewState = {
     point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '',
   };
+  private editSleepFrameBounds: { startedAt: string; endedAt: string } | null = null;
+  private editSleepStartChanged = false;
+  private editSleepEndChanged = false;
   @state() private manualEndTouched = false;
   @state() private rhythmDate = localDateKey(new Date());
   @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
@@ -246,6 +249,7 @@ export class BabyMonitorApp extends LitElement {
   private livePeer?: RTCPeerConnection;
   private liveGeneration = 0;
   private operationalRequest = 0;
+  private frameReviewRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
       if (this.temporalPicker) { this.temporalPicker = null; return; }
@@ -641,6 +645,15 @@ export class BabyMonitorApp extends LitElement {
       notes: restored.notes,
       details: restored.details,
     };
+    // The minute-precision picker is a presentation affordance. Preserve the
+    // detector's exact seconds for evidence queries (and unrelated edits), or
+    // the capture that closed a segment can fall just outside the rounded end.
+    this.editSleepFrameBounds = {
+      startedAt: event.startedAt,
+      endedAt: event.endedAt ?? new Date().toISOString(),
+    };
+    this.editSleepStartChanged = false;
+    this.editSleepEndChanged = false;
     this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     void this.loadFrameReview('start');
   }
@@ -662,7 +675,10 @@ export class BabyMonitorApp extends LitElement {
     this.editSleepBusy = true;
     try {
       await api.patchSleep(this.editingSleep.id, {
-        startedAt: asIso(this.editSleepForm.startedAt), endedAt: this.editSleepForm.endedAt ? asIso(this.editSleepForm.endedAt) : null,
+        startedAt: this.editSleepStartChanged ? asIso(this.editSleepForm.startedAt) : this.editingSleep.startedAt,
+        endedAt: this.editSleepForm.endedAt
+          ? this.editSleepEndChanged ? asIso(this.editSleepForm.endedAt) : this.editingSleep.endedAt
+          : null,
         kind: this.editSleepForm.kind, notes: this.editSleepForm.notes, details: this.editSleepForm.details,
       });
       this.editingSleep = null;
@@ -677,15 +693,24 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private async deleteSleepEditor(): Promise<void> {
-    if (!this.editingSleep || !window.confirm(
-      this.language === 'es' ? '¿Eliminar este registro de sueño?' : 'Delete this sleep record?',
-    )) return;
+    if (!this.editingSleep) return;
+    const automatic = this.editingSleep.source !== 'manual';
+    const confirmation = this.language === 'es'
+      ? automatic
+        ? '¿Eliminar este segmento detectado automáticamente? Las capturas y sus análisis se conservarán.'
+        : '¿Eliminar este registro de sueño? Las capturas se conservarán.'
+      : automatic
+        ? 'Delete this automatically detected segment? Captures and model analyses will be preserved.'
+        : 'Delete this sleep record? Captures will be preserved.';
+    if (!window.confirm(confirmation)) return;
     this.editSleepBusy = true;
     try {
       await api.deleteSleep(this.editingSleep.id);
       this.editingSleep = null;
       await this.loadOperationalData(false);
-      this.showToast(this.language === 'es' ? 'Sueño eliminado' : 'Sleep deleted');
+      this.showToast(this.language === 'es'
+        ? 'Segmento eliminado; las capturas se conservan'
+        : 'Segment deleted; captures preserved');
     } catch (error) {
       this.inlineError = error instanceof Error
         ? error.message
@@ -734,12 +759,28 @@ export class BabyMonitorApp extends LitElement {
   private applyTemporalPicker(): void {
     if (!this.temporalPicker) return;
     const { target, value } = this.temporalPicker;
+    let reloadFrameReview = false;
     if (target === 'manual-start') this.manualForm = { ...this.manualForm, startedAt: value };
     else if (target === 'manual-end') {
       this.manualForm = { ...this.manualForm, endedAt: value };
       this.manualEndTouched = true;
-    } else if (target === 'edit-start') this.editSleepForm = { ...this.editSleepForm, startedAt: value };
-    else if (target === 'edit-end') this.editSleepForm = { ...this.editSleepForm, endedAt: value };
+    } else if (target === 'edit-start') {
+      this.editSleepForm = { ...this.editSleepForm, startedAt: value };
+      this.editSleepFrameBounds = {
+        startedAt: asIso(value),
+        endedAt: this.editSleepFrameBounds?.endedAt ?? this.editingSleep?.endedAt ?? new Date().toISOString(),
+      };
+      this.editSleepStartChanged = true;
+      reloadFrameReview = true;
+    } else if (target === 'edit-end') {
+      this.editSleepForm = { ...this.editSleepForm, endedAt: value };
+      this.editSleepFrameBounds = {
+        startedAt: this.editSleepFrameBounds?.startedAt ?? this.editingSleep?.startedAt ?? asIso(this.editSleepForm.startedAt),
+        endedAt: asIso(value),
+      };
+      this.editSleepEndChanged = true;
+      reloadFrameReview = true;
+    }
     else {
       const match = target.match(/^(manual|edit)-pause-(start|end)-(\d+)$/);
       if (match) {
@@ -757,6 +798,7 @@ export class BabyMonitorApp extends LitElement {
       }
     }
     this.temporalPicker = null;
+    if (reloadFrameReview) void this.loadFrameReview('start');
   }
 
   private setManualKind(kind: SleepKind): void {
@@ -826,21 +868,94 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private reviewPointDate(point: 'start' | 'middle' | 'end'): Date | null {
-    const start = new Date(this.editSleepForm.startedAt);
-    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
-    if (!Number.isFinite(start.getTime())) return null;
-    if (point === 'start' || !end || !Number.isFinite(end.getTime())) return start;
+    const range = this.frameReviewRange();
+    if (!range) return null;
+    const { start, end } = range;
+    if (point === 'start') return start;
     if (point === 'end') return end;
     return new Date((start.getTime() + end.getTime()) / 2);
   }
 
-  private async loadFrameReview(point: 'start' | 'middle' | 'end'): Promise<void> {
+  private frameReviewRange(): { start: Date; end: Date } | null {
+    const start = new Date(this.editSleepFrameBounds?.startedAt ?? this.editSleepForm.startedAt);
+    const configuredEnd = this.editSleepFrameBounds?.endedAt
+      ? new Date(this.editSleepFrameBounds.endedAt)
+      : this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : new Date();
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(configuredEnd.getTime()) || configuredEnd <= start) {
+      return null;
+    }
+    return { start, end: configuredEnd };
+  }
+
+  private frameIndexForPoint(frames: FrameRecord[], point: 'start' | 'middle' | 'end'): number {
+    if (!frames.length) return 0;
+    if (point === 'start') return 0;
+    if (point === 'end') return frames.length - 1;
     const requested = this.reviewPointDate(point);
-    if (!requested) return;
+    if (!requested) return 0;
+    return frames.reduce((closest, frame, index) => {
+      const currentDistance = Math.abs(new Date(frame.capturedAt).getTime() - requested.getTime());
+      const closestDistance = Math.abs(new Date(frames[closest].capturedAt).getTime() - requested.getTime());
+      return currentDistance < closestDistance ? index : closest;
+    }, 0);
+  }
+
+  private selectFrameReviewPoint(point: 'start' | 'middle' | 'end'): void {
+    if (!this.frameReview.frames.length) {
+      void this.loadFrameReview(point);
+      return;
+    }
+    const requested = this.reviewPointDate(point);
+    this.frameReview = {
+      ...this.frameReview,
+      point,
+      index: this.frameIndexForPoint(this.frameReview.frames, point),
+      requestedAt: requested?.toISOString() ?? '',
+    };
+  }
+
+  private async loadFrameReview(point: 'start' | 'middle' | 'end'): Promise<void> {
+    const requestId = ++this.frameReviewRequest;
+    const range = this.frameReviewRange();
+    const requested = this.reviewPointDate(point);
+    if (!range || !requested) {
+      this.frameReview = {
+        point,
+        frames: [],
+        index: 0,
+        loading: false,
+        error: this.language === 'es'
+          ? 'Elige un inicio y un fin válidos para revisar las capturas.'
+          : 'Choose a valid start and end to review captures.',
+        requestedAt: '',
+      };
+      return;
+    }
+    const editingId = this.editingSleep?.id;
+    // Keep the original ISO strings here. Converting through JavaScript Date
+    // truncates SQLite's microseconds to milliseconds and can drop a capture
+    // whose timestamp is exactly equal to the segment boundary.
+    const rangeStart = this.editSleepFrameBounds?.startedAt ?? range.start.toISOString();
+    const rangeEnd = this.editSleepFrameBounds?.endedAt ?? range.end.toISOString();
     this.frameReview = { point, frames: [], index: 0, loading: true, error: '', requestedAt: requested.toISOString() };
     try {
-      const frames = await api.getNearestFrames(requested.toISOString(), 7);
-      this.frameReview = { point, frames, index: 0, loading: false, error: '', requestedAt: requested.toISOString() };
+      const frames = await api.getFramesBetween(
+        rangeStart,
+        rangeEnd,
+        this.editingSleep?.locationId,
+      );
+      if (
+        this.editingSleep?.id !== editingId
+        || requestId !== this.frameReviewRequest
+      ) return;
+      this.frameReview = {
+        point,
+        frames,
+        index: this.frameIndexForPoint(frames, point),
+        loading: false,
+        error: '',
+        requestedAt: requested.toISOString(),
+      };
     } catch (error) {
       this.frameReview = {
         point, frames: [], index: 0, loading: false,
@@ -853,6 +968,11 @@ export class BabyMonitorApp extends LitElement {
   private stepFrameReview(direction: number): void {
     const index = Math.max(0, Math.min(this.frameReview.frames.length - 1, this.frameReview.index + direction));
     this.frameReview = { ...this.frameReview, index };
+  }
+
+  private selectFrameReviewIndex(index: number): void {
+    const bounded = Math.max(0, Math.min(this.frameReview.frames.length - 1, index));
+    this.frameReview = { ...this.frameReview, index: bounded };
   }
 
   private isHomeAssistantContext(): boolean {
@@ -1943,13 +2063,16 @@ export class BabyMonitorApp extends LitElement {
     ] : [];
     return html`
       <section class="editor-frames">
-        <h4>${this.language === 'es' ? 'Imágenes cercanas' : 'Nearby images'}</h4>
-        <div class="frame-point-switch">
-          ${(['start', 'middle', 'end'] as const).map((point) => html`<button type="button" class=${this.frameReview.point === point ? 'active' : ''} @click=${() => this.loadFrameReview(point)}>${icon(point === 'middle' ? 'eye' : 'clock', 17)}<span>${this.language === 'es' ? ({ start: 'Inicio', middle: 'Mitad', end: 'Fin' }[point]) : ({ start: 'Start', middle: 'Middle', end: 'End' }[point])}</span></button>`)}
+        <div class="editor-frames-heading">
+          <h4>${this.language === 'es' ? 'Imágenes del segmento' : 'Images in this segment'}</h4>
+          ${this.frameReview.frames.length ? html`<span>${this.frameReview.frames.length} ${this.language === 'es' ? 'capturas' : 'captures'}</span>` : nothing}
         </div>
-        ${this.frameReview.loading ? html`<div class="frame-review-empty"><span class="spinner"></span> ${this.language === 'es' ? 'Buscando el frame más cercano…' : 'Finding the nearest frame…'}</div>` : this.frameReview.error ? html`<div class="frame-review-empty error">${this.frameReview.error}</div>` : current ? html`
+        <div class="frame-point-switch">
+          ${(['start', 'middle', 'end'] as const).map((point) => html`<button type="button" class=${this.frameReview.point === point ? 'active' : ''} ?disabled=${this.frameReview.loading} @click=${() => this.selectFrameReviewPoint(point)}>${icon(point === 'middle' ? 'eye' : 'clock', 17)}<span>${this.language === 'es' ? ({ start: 'Inicio', middle: 'Mitad', end: 'Fin' }[point]) : ({ start: 'Start', middle: 'Middle', end: 'End' }[point])}</span></button>`)}
+        </div>
+        ${this.frameReview.loading ? html`<div class="frame-review-empty"><span class="spinner"></span> ${this.language === 'es' ? 'Cargando todas las imágenes del segmento…' : 'Loading every image in this segment…'}</div>` : this.frameReview.error ? html`<div class="frame-review-empty error">${this.frameReview.error}</div>` : current ? html`
           <article class="frame-review-card">
-            ${current.imageAvailable ? html`<img src=${current.imageUrl} alt=${this.language === 'es' ? 'Frame cercano al tramo' : 'Frame near this segment'}>` : html`<div class="frame-review-missing">${icon('camera', 24)}</div>`}
+            ${current.imageAvailable ? html`<img src=${current.imageUrl} alt=${this.language === 'es' ? 'Captura del segmento' : 'Capture in this segment'}>` : html`<div class="frame-review-missing">${icon('camera', 24)}</div>`}
             <div class="frame-review-copy">
               <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
               <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
@@ -1962,10 +2085,11 @@ export class BabyMonitorApp extends LitElement {
                   </div>
                 </details>
               ` : nothing}
-              <div class="frame-stepper"><button type="button" ?disabled=${this.frameReview.index === 0} @click=${() => this.stepFrameReview(-1)}>${icon('chevron', 18)}</button><span>${this.frameReview.index + 1} / ${this.frameReview.frames.length}</span><button type="button" ?disabled=${this.frameReview.index >= this.frameReview.frames.length - 1} @click=${() => this.stepFrameReview(1)}>${icon('chevron', 18)}</button></div>
+              ${this.frameReview.frames.length > 1 ? html`<input class="frame-scrubber" type="range" min="0" max=${String(this.frameReview.frames.length - 1)} .value=${String(this.frameReview.index)} aria-label=${this.language === 'es' ? 'Recorrer capturas del segmento' : 'Browse segment captures'} @input=${(event: Event) => this.selectFrameReviewIndex(Number(inputValue(event)))}>` : nothing}
+              <div class="frame-stepper"><button type="button" aria-label=${this.language === 'es' ? 'Captura anterior' : 'Previous capture'} ?disabled=${this.frameReview.index === 0} @click=${() => this.stepFrameReview(-1)}>${icon('chevron', 18)}</button><span><strong>${this.frameReview.index + 1} / ${this.frameReview.frames.length}</strong><small>${this.language === 'es' ? 'capturas del segmento' : 'segment captures'}</small></span><button type="button" aria-label=${this.language === 'es' ? 'Captura siguiente' : 'Next capture'} ?disabled=${this.frameReview.index >= this.frameReview.frames.length - 1} @click=${() => this.stepFrameReview(1)}>${icon('chevron', 18)}</button></div>
             </div>
           </article>
-        ` : html`<div class="frame-review-empty">${this.language === 'es' ? 'Toca Inicio, Mitad o Fin para revisar la imagen más cercana.' : 'Tap Start, Middle or End to review the nearest image.'}</div>`}
+        ` : html`<div class="frame-review-empty">${this.language === 'es' ? 'No hay imágenes guardadas dentro de este segmento.' : 'There are no stored images inside this segment.'}</div>`}
       </section>
     `;
   }
@@ -2103,14 +2227,22 @@ export class BabyMonitorApp extends LitElement {
       ${this.renderFrameReview()}
       ${this.editSleepForm.kind !== 'awake' ? html`${this.renderPauses('edit', this.editSleepForm.details.pauses)}${this.renderDetailGroups('edit', this.editSleepForm.details)}` : nothing}
       <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></textarea></section>
-      ${this.editingSleep.source === 'manual' ? html`
-        <details class="editor-more-options">
-          <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Más opciones' : 'More options'}</span></summary>
-          <button type="button" class="editor-delete-action" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>
-            ${this.language === 'es' ? 'Eliminar este registro' : 'Delete this record'}
-          </button>
-        </details>
-      ` : nothing}
+      <details class="editor-more-options">
+        <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Más opciones' : 'More options'}</span></summary>
+        <div class="editor-delete-copy">
+          <strong>${this.language === 'es' ? 'Eliminar segmento' : 'Delete segment'}</strong>
+          <span>${this.language === 'es'
+            ? this.editingSleep.source === 'manual'
+              ? 'El registro desaparecerá, pero las capturas se conservarán.'
+              : 'Se elimina esta detección; las capturas y sus análisis se conservarán. Si el sueño continúa, futuras detecciones podrán iniciar un segmento nuevo.'
+            : this.editingSleep.source === 'manual'
+              ? 'The record will be removed, but captures will be preserved.'
+              : 'This detection is removed; captures and analyses are preserved. If sleep continues, future detections may start a new segment.'}</span>
+        </div>
+        <button type="button" class="editor-delete-action" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>
+          ${this.language === 'es' ? 'Eliminar este segmento' : 'Delete this segment'}
+        </button>
+      </details>
       ${this.inlineError ? html`<div class="inline-error sleep-form-error">${this.inlineError}</div>` : nothing}<div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>${this.language === 'es' ? 'Cancelar' : 'Cancel'}</button><button class="sheet-save" ?disabled=${this.editSleepBusy}>${this.editSleepBusy ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
     </form></div>`;
   }

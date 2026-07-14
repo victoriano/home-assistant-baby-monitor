@@ -249,6 +249,34 @@ class Database:
             ).fetchall()
         return [self._frame(row) for row in rows], total
 
+    def list_frames_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        location_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[FrameRecord], int]:
+        """Return every frame inside a sleep interval in chronological order."""
+
+        clauses = ["captured_at BETWEEN ? AND ?"]
+        parameters: list[str | int] = [_iso(start), _iso(end)]
+        if location_id is not None:
+            clauses.append("location_id = ?")
+            parameters.append(location_id)
+        where = " AND ".join(clauses)
+        with self._connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM frames WHERE {where}",  # noqa: S608 - clauses are static
+                parameters,
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"SELECT * FROM frames WHERE {where} ORDER BY captured_at LIMIT ? OFFSET ?",  # noqa: S608
+                [*parameters, limit, offset],
+            ).fetchall()
+        return [self._frame(row) for row in rows], total
+
     def nearest_frames(
         self,
         captured_at: datetime,

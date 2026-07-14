@@ -569,6 +569,26 @@ export const api = {
     return unwrapList(result, ['items', 'frames']).map(normalizeFrame);
   },
 
+  async getFramesBetween(start: string, end: string, locationId?: string): Promise<FrameRecord[]> {
+    const pageSize = 200;
+    const frames: FrameRecord[] = [];
+    let offset = 0;
+    while (true) {
+      const query = new URLSearchParams({
+        start,
+        end,
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      if (locationId) query.set('location_id', locationId);
+      const result = await request<unknown>(`api/v1/frames/range?${query.toString()}`);
+      const page = normalizePage(result, ['items', 'frames'], normalizeFrame, pageSize, offset);
+      frames.push(...page.items);
+      offset += page.items.length;
+      if (page.items.length === 0 || offset >= page.total) return frames;
+    }
+  },
+
   async getSleep(limit = 50, offset = 0): Promise<PageResult<SleepEvent>> {
     const result = await request<unknown>(`api/v1/sleep?limit=${limit}&offset=${offset}`);
     return normalizePage(result, ['items', 'events'], normalizeSleep, limit, offset);
