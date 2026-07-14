@@ -667,10 +667,10 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .hero-stat > span, .hero-stat > small { color: var(--quiet); font-size: 10px; }
 .hero-stat > strong { font-size: 28px; }
 .legacy-chart { display: flex; align-items: end; gap: 5px; height: 220px; padding: 32px 4px 0; overflow-x: auto; border-bottom: 1px solid var(--edge); }
-.legacy-chart-column { display: grid; grid-template-rows: 18px 1fr 18px; flex: 1 0 24px; align-items: end; height: 100%; text-align: center; }
-.legacy-chart-column strong { color: var(--quiet); font: 8px var(--font-data); }
+.legacy-chart-column { display: grid; grid-template-rows: 20px 1fr 20px; flex: 1 0 58px; align-items: end; height: 100%; text-align: center; }
+.legacy-chart-column strong { color: var(--quiet); font: 8px var(--font-data); white-space: nowrap; }
 .legacy-chart-column i { width: 70%; height: var(--height); min-height: 2px; margin: auto auto 0; border-radius: 5px 5px 0 0; background: linear-gradient(180deg,var(--indigo-bright),#626cc8); }
-.legacy-chart-column small { color: var(--faint); font: 7px var(--font-data); }
+.legacy-chart-column small { color: var(--faint); font: 8px var(--font-data); }
 .donut-legend { display: grid; gap: 12px; }
 .donut-legend > div { display: grid; grid-template-columns: 12px 1fr auto auto; gap: 10px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--edge); }
 .donut-legend i { width: 10px; height: 10px; border-radius: 50%; background: var(--color); }

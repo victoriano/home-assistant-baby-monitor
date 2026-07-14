@@ -27,6 +27,7 @@ import {
   translate,
   type TranslationKey,
 } from './i18n';
+import { formatTrendDate, medianMinutes } from './trend-format';
 import {
   cloneDefaultSettings,
   isValidHttpBaseUrl,
@@ -2274,12 +2275,12 @@ export class BabyMonitorApp extends LitElement {
     return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  private renderMetricBars(rows: Array<{ label: string; value: number }>, suffix = 'min'): TemplateResult {
+  private renderMetricBars(rows: Array<{ label: string; value: number }>): TemplateResult {
     const visible = rows.slice(-21);
     const maximum = Math.max(1, ...visible.map((row) => row.value));
     return html`<div class="legacy-chart" role="img">${visible.map((row) => html`
-      <div class="legacy-chart-column" title=${`${row.label}: ${row.value} ${suffix}`}>
-        <strong>${row.value ? Math.round(row.value) : '—'}</strong><i style=${`--height:${Math.max(2, row.value / maximum * 100)}%`}></i><small>${row.label.slice(5)}</small>
+      <div class="legacy-chart-column" title=${`${formatTrendDate(row.label)}: ${formatDuration(row.value)}`}>
+        <strong>${formatDuration(row.value)}</strong><i style=${`--height:${Math.max(2, row.value / maximum * 100)}%`}></i><small>${formatTrendDate(row.label)}</small>
       </div>`)}
     </div>`;
   }
@@ -2306,8 +2307,9 @@ export class BabyMonitorApp extends LitElement {
   private renderHistory(): TemplateResult {
     const series = this.sleepSeries();
     const total = series.reduce((sum, row) => sum + row.total, 0);
-    const nap = series.reduce((sum, row) => sum + row.naps, 0);
-    const night = series.reduce((sum, row) => sum + row.night, 0);
+    const nightRows = series.filter((row) => row.night > 0);
+    const medianNight = medianMinutes(nightRows.map((row) => row.night));
+    const medianNaps = medianMinutes(series.map((row) => row.naps));
     const tabs = [
       ['summary', 'Resumen de sueño'], ['naps', 'Siestas'], ['awake', 'Tiempo despierto'], ['night', 'Sueño nocturno'],
       ['pacifier', 'Chupete'], ['head', 'Cabeza'], ['clothing', 'Ropa'], ['mouth', 'Boca'],
@@ -2320,12 +2322,12 @@ export class BabyMonitorApp extends LitElement {
         </section>
         <nav class="legacy-stats-tabs" aria-label="Estadísticas">${tabs.map(([tab, label]) => html`<button class=${this.statsTab === tab ? 'active' : ''} @click=${() => { this.statsTab = tab; if (['pacifier', 'head', 'clothing', 'mouth'].includes(tab)) void this.loadVisionStatistics(); }}>${label}</button>`)}</nav>
         ${this.statsTab === 'summary' ? html`
-          <section class="legacy-stat-grid three"><article class="legacy-stat-card hero-stat"><span>Sueño total</span><strong>${formatDuration(total)}</strong><small>${series.length} días con datos</small></article><article class="legacy-stat-card hero-stat"><span>Sueño nocturno</span><strong>${formatDuration(night)}</strong><small>${total ? Math.round(night / total * 100) : 0}% del total</small></article><article class="legacy-stat-card hero-stat"><span>Siestas</span><strong>${formatDuration(nap)}</strong><small>${total ? Math.round(nap / total * 100) : 0}% del total</small></article></section>
+          <section class="legacy-stat-grid three"><article class="legacy-stat-card hero-stat"><span>Sueño total</span><strong>${formatDuration(total)}</strong><small>${series.length} días con datos</small></article><article class="legacy-stat-card hero-stat"><span>Mediana nocturna</span><strong>${formatDuration(medianNight)}</strong><small>${nightRows.length} noches con datos</small></article><article class="legacy-stat-card hero-stat"><span>Mediana diaria de siestas</span><strong>${formatDuration(medianNaps)}</strong><small>${series.length} días analizados</small></article></section>
           <article class="legacy-stat-card"><h2>Sueño diario</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.total })))}</article>
         ` : this.statsTab === 'naps' ? html`<article class="legacy-stat-card"><h2>Sueño durante el día</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.naps })))}</article>
-        <section class="legacy-stat-grid"><article class="legacy-stat-card hero-stat"><span>Media diaria de siestas</span><strong>${formatDuration(series.length ? Math.round(nap / series.length) : 0)}</strong></article><article class="legacy-stat-card hero-stat"><span>Días analizados</span><strong>${series.filter((row) => row.naps).length}</strong></article></section>`
-        : this.statsTab === 'awake' ? html`<article class="legacy-stat-card"><h2>Hora de despertar</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${row.date}</span><strong>${row.wake || '—'}</strong></div>`)}</div></article>`
-        : this.statsTab === 'night' ? html`<article class="legacy-stat-card"><h2>Sueño nocturno</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.night })))}</article><article class="legacy-stat-card"><h2>Se durmió / se despertó</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${row.date}</span><strong>${row.bed || '—'} → ${row.wake || '—'}</strong></div>`)}</div></article>`
+        <section class="legacy-stat-grid"><article class="legacy-stat-card hero-stat"><span>Mediana diaria de siestas</span><strong>${formatDuration(medianNaps)}</strong></article><article class="legacy-stat-card hero-stat"><span>Días analizados</span><strong>${series.length}</strong></article></section>`
+        : this.statsTab === 'awake' ? html`<article class="legacy-stat-card"><h2>Hora de despertar</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${formatTrendDate(row.date)}</span><strong>${row.wake || '—'}</strong></div>`)}</div></article>`
+        : this.statsTab === 'night' ? html`<article class="legacy-stat-card"><h2>Sueño nocturno</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.night })))}</article><article class="legacy-stat-card"><h2>Se durmió / se despertó</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${formatTrendDate(row.date)}</span><strong>${row.bed || '—'} → ${row.wake || '—'}</strong></div>`)}</div></article>`
         : this.statsTab === 'pacifier' ? this.renderVisualStatistic('pacifier', 'Uso del chupete')
         : this.statsTab === 'head' ? this.renderVisualStatistic('head_side', 'Posición de la cabeza')
         : this.statsTab === 'clothing' ? this.renderVisualStatistic('clothing', 'Ropa detectada')
