@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 
 import { ApiError, api } from './api';
 import { icon, type IconName } from './icons';
+import { connectWebRtcVideo } from './webrtc';
 import {
   buildRhythmModel,
   localDateKey,
@@ -59,6 +60,7 @@ type HistoryKind = 'sleep' | 'cry' | 'frames';
 type TestState = { busy: boolean; ok?: boolean; message?: string };
 type Toast = { tone: 'success' | 'error' | 'info'; message: string };
 type HistoryPageState = { total: number; nextOffset: number; loading: boolean; error: string };
+type LiveTransport = 'off' | 'connecting' | 'webrtc' | 'mjpeg';
 type TemporalTarget =
   | 'manual-start'
   | 'manual-end'
@@ -199,6 +201,7 @@ export class BabyMonitorApp extends LitElement {
   @state() private historyPages = emptyHistoryPages();
   @state() private refreshingData = false;
   @state() private liveView = false;
+  @state() private liveTransport: LiveTransport = 'off';
   @state() private cameraBusy: 'snapshot' | 'label' | '' = '';
   @state() private sleepBusy: 'start' | 'stop' | 'add' | '' = '';
   @state() private manualOpen = false;
@@ -238,6 +241,10 @@ export class BabyMonitorApp extends LitElement {
 
   private pollTimer?: number;
   private toastTimer?: number;
+  private liveConnectTimer?: number;
+  private liveDisconnectTimer?: number;
+  private livePeer?: RTCPeerConnection;
+  private liveGeneration = 0;
   private operationalRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
@@ -268,6 +275,7 @@ export class BabyMonitorApp extends LitElement {
   disconnectedCallback(): void {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    this.stopLiveView();
     window.removeEventListener('keydown', this.handleKeyDown);
     super.disconnectedCallback();
   }
@@ -444,9 +452,9 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private setPage(page: AppPage): void {
+    this.stopLiveView();
     this.page = page;
     this.inlineError = '';
-    this.liveView = false;
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (page === 'camera' || page === 'data') void this.loadOperationalData(true);
     if (page === 'data') void this.loadVisionStatistics();
@@ -455,6 +463,92 @@ export class BabyMonitorApp extends LitElement {
       this.cameraSource = this.draft.camera.entityId ? 'entity' : this.draft.camera.streamUrlConfigured ? 'stream' : 'entity';
       void this.loadEntities();
       void this.loadHistoryTransfer();
+    }
+  }
+
+  private clearLiveTimers(): void {
+    if (this.liveConnectTimer) window.clearTimeout(this.liveConnectTimer);
+    if (this.liveDisconnectTimer) window.clearTimeout(this.liveDisconnectTimer);
+    this.liveConnectTimer = undefined;
+    this.liveDisconnectTimer = undefined;
+  }
+
+  private closeLivePeer(): void {
+    const video = this.querySelector<HTMLVideoElement>('.camera-live-video');
+    if (video?.srcObject && globalThis.MediaStream && video.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+    this.livePeer?.close();
+    this.livePeer = undefined;
+  }
+
+  private stopLiveView(): void {
+    this.liveGeneration += 1;
+    this.clearLiveTimers();
+    this.closeLivePeer();
+    this.liveView = false;
+    this.liveTransport = 'off';
+  }
+
+  private useMjpegFallback(generation: number): void {
+    if (!this.liveView || generation !== this.liveGeneration || this.liveTransport === 'mjpeg') return;
+    this.clearLiveTimers();
+    this.closeLivePeer();
+    this.liveTransport = 'mjpeg';
+  }
+
+  private handleWebRtcPlaying(): void {
+    if (!this.liveView || this.liveTransport === 'mjpeg') return;
+    if (this.liveConnectTimer) window.clearTimeout(this.liveConnectTimer);
+    this.liveConnectTimer = undefined;
+    this.liveTransport = 'webrtc';
+  }
+
+  private handleWebRtcState(generation: number): void {
+    const state = this.livePeer?.connectionState;
+    if (!this.liveView || generation !== this.liveGeneration) return;
+    if (state === 'failed' || state === 'closed') {
+      this.useMjpegFallback(generation);
+      return;
+    }
+    if (state === 'disconnected' && !this.liveDisconnectTimer) {
+      this.liveDisconnectTimer = window.setTimeout(() => {
+        this.liveDisconnectTimer = undefined;
+        if (this.livePeer?.connectionState === 'disconnected') this.useMjpegFallback(generation);
+      }, 2_000);
+    } else if (state === 'connected' && this.liveDisconnectTimer) {
+      window.clearTimeout(this.liveDisconnectTimer);
+      this.liveDisconnectTimer = undefined;
+    }
+  }
+
+  private async toggleLiveView(): Promise<void> {
+    if (this.liveView) {
+      this.stopLiveView();
+      return;
+    }
+    const generation = ++this.liveGeneration;
+    this.liveView = true;
+    this.liveTransport = 'connecting';
+    await this.updateComplete;
+    const video = this.querySelector<HTMLVideoElement>('.camera-live-video');
+    if (!video) {
+      this.useMjpegFallback(generation);
+      return;
+    }
+    this.liveConnectTimer = window.setTimeout(() => this.useMjpegFallback(generation), 8_000);
+    try {
+      const peer = await connectWebRtcVideo(video, (offer) => api.negotiateWebRtc(offer));
+      if (!this.liveView || generation !== this.liveGeneration) {
+        peer.close();
+        return;
+      }
+      this.livePeer = peer;
+      peer.onconnectionstatechange = () => this.handleWebRtcState(generation);
+      this.handleWebRtcState(generation);
+    } catch {
+      this.useMjpegFallback(generation);
     }
   }
 
@@ -548,6 +642,7 @@ export class BabyMonitorApp extends LitElement {
       details: restored.details,
     };
     this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
+    void this.loadFrameReview('start');
   }
 
   private async saveSleepEditor(): Promise<void> {
@@ -972,6 +1067,10 @@ export class BabyMonitorApp extends LitElement {
       const frame = await api.refreshSnapshot();
       this.summary = { ...this.summary, latestFrame: frame, updatedAt: new Date().toISOString() };
       this.frames = [frame, ...this.frames.filter((item) => item.id !== frame.id)];
+      // Labeling the new frame can open or close a sleep event. Refresh the
+      // complete operational state immediately instead of leaving the card and
+      // rhythm stale until the next 30-second poll.
+      await this.loadOperationalData(false);
       return frame;
     } catch (error) {
       this.showToast(error instanceof Error ? error.message : this.t('liveUnavailable'), 'error');
@@ -992,6 +1091,7 @@ export class BabyMonitorApp extends LitElement {
       const labeled = await api.labelFrame(source.id);
       this.summary = { ...this.summary, latestFrame: labeled, updatedAt: new Date().toISOString() };
       this.frames = [labeled, ...this.frames.filter((item) => item.id !== labeled.id)];
+      await this.loadOperationalData(false);
       this.showToast(this.t('imageLabeled'));
     } catch (error) {
       this.showToast(error instanceof Error ? error.message : this.t('testFailed'), 'error');
@@ -1403,20 +1503,31 @@ export class BabyMonitorApp extends LitElement {
       `;
     }
     const frame = this.summary.latestFrame;
-    const imageUrl = this.liveView ? api.liveCameraUrl() : frame?.imageUrl;
+    const liveStatus = this.liveTransport === 'webrtc'
+      ? 'liveLowLatency'
+      : this.liveTransport === 'mjpeg'
+        ? 'liveFallback'
+        : 'liveConnecting';
     return html`
       <article class="camera-card">
         <div class="camera-visual">
-          ${imageUrl
-            ? html`<img src=${imageUrl} alt=${this.t('imageAlt')} @error=${() => { if (this.liveView) { this.liveView = false; this.showToast(this.t('liveUnavailable'), 'error'); } }}>`
+          ${frame?.imageUrl
+            ? html`<img class="camera-live-poster" src=${frame.imageUrl} alt=${this.t('imageAlt')}>`
             : html`<div class="camera-placeholder">${icon('camera', 34)}<span>${this.t('cameraRefreshing')}</span></div>`}
+          ${this.liveView
+            ? this.liveTransport === 'mjpeg'
+              ? html`<img class="camera-live-stream" src=${api.liveCameraUrl()} alt=${this.t('imageAlt')} @error=${() => { this.stopLiveView(); this.showToast(this.t('liveUnavailable'), 'error'); }}>`
+              : html`<video class=${`camera-live-video ${this.liveTransport === 'webrtc' ? 'ready' : ''}`} autoplay muted playsinline aria-label=${this.t('imageAlt')} @playing=${() => this.handleWebRtcPlaying()}></video>`
+            : nothing}
           <div class="camera-overlay">
             <span class=${this.liveView ? 'live-badge active' : 'live-badge'}>${this.liveView ? html`<i></i> LIVE` : this.t('snapshot')}</span>
-            ${frame ? html`<small>${formatRelative(frame.capturedAt, this.language)}</small>` : nothing}
+            ${this.liveView
+              ? html`<small>${this.t(liveStatus)}</small>`
+              : frame ? html`<small>${formatRelative(frame.capturedAt, this.language)}</small>` : nothing}
           </div>
         </div>
         <div class="camera-body">
-          <div class="camera-heading"><div><span>${this.t('cameraTitle')}</span><strong>${frame ? this.t('latestCapture', { time: formatClock(frame.capturedAt, this.language) }) : this.t('noVisionLabel')}</strong></div></div>
+          <div class="camera-heading"><div><span>${this.t('cameraTitle')}</span><strong>${this.liveView ? this.t(liveStatus) : frame ? this.t('latestCapture', { time: formatClock(frame.capturedAt, this.language) }) : this.t('noVisionLabel')}</strong></div></div>
           ${frame?.label ? html`
             <div class="vision-observation">
               <span>${icon('sparkle', 17)}</span>
@@ -1428,7 +1539,7 @@ export class BabyMonitorApp extends LitElement {
             <button class="button compact secondary" ?disabled=${Boolean(this.cameraBusy)} @click=${() => this.refreshSnapshot()}>
               ${this.cameraBusy === 'snapshot' ? html`<span class="spinner"></span>` : icon('camera', 16)} ${this.t('snapshot')}
             </button>
-            <button class=${`button compact ${this.liveView ? 'active' : 'secondary'}`} @click=${() => { this.liveView = !this.liveView; }}>
+            <button class=${`button compact ${this.liveView ? 'active' : 'secondary'}`} @click=${() => { void this.toggleLiveView(); }}>
               ${icon('eye', 16)} ${this.t(this.liveView ? 'stopLive' : 'live')}
             </button>
             <button class="button compact secondary" ?disabled=${Boolean(this.cameraBusy)} @click=${() => this.labelSnapshot()}>
@@ -1550,8 +1661,25 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private openRhythmSegment(segment: RhythmSegment): void {
-    if (segment.prediction) this.selectedPrediction = segment.prediction;
-    else if (segment.event) this.openSleepEditor(segment.event);
+    if (segment.prediction) {
+      this.selectedPrediction = segment.prediction;
+      return;
+    }
+    if (segment.event) {
+      this.openSleepEditor(segment.event);
+      return;
+    }
+    if (segment.type !== 'awake') return;
+    this.inlineError = '';
+    this.manualForm = {
+      startedAt: localDateTime(segment.start),
+      endedAt: localDateTime(segment.end),
+      kind: 'awake',
+      notes: '',
+      details: EMPTY_DETAILS(),
+    };
+    this.manualEndTouched = true;
+    this.manualOpen = true;
   }
 
   private renderDailyRhythm(): TemplateResult {
@@ -1629,7 +1757,7 @@ export class BabyMonitorApp extends LitElement {
                   class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
                   d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
                 ></path>
-                ${segment.event || segment.prediction ? svg`
+                ${segment.event || segment.prediction || segment.type === 'awake' ? svg`
                   <path
                     class="rhythm-hit"
                     d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
@@ -1779,6 +1907,40 @@ export class BabyMonitorApp extends LitElement {
     const delta = requested && captured
       ? Math.round(Math.abs(captured.getTime() - requested.getTime()) / 60_000)
       : null;
+    const humanValue = (value: string | boolean | null | string[]): string => {
+      if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
+      if (value == null || value === 'unknown') return this.language === 'es' ? 'Sin determinar' : 'Unknown';
+      if (typeof value === 'boolean') return value
+        ? (this.language === 'es' ? 'Sí' : 'Yes')
+        : (this.language === 'es' ? 'No' : 'No');
+      const labels: Record<string, [string, string]> = {
+        awake: ['Despierto', 'Awake'],
+        asleep: ['Dormido', 'Asleep'],
+        uncertain: ['Incierto', 'Uncertain'],
+        yes: ['Sí', 'Yes'],
+        no: ['No', 'No'],
+        left: ['Izquierda', 'Left'],
+        right: ['Derecha', 'Right'],
+        back: ['Boca arriba', 'On back'],
+        face_down: ['Boca abajo', 'Face down'],
+      };
+      return labels[value]?.[this.language === 'es' ? 0 : 1] ?? value.replaceAll('_', ' ');
+    };
+    const modelMetadata = current?.label ? [
+      [this.language === 'es' ? 'Proveedor' : 'Provider', current.provider || '—'],
+      [this.language === 'es' ? 'Modelo' : 'Model', current.model || '—'],
+      [this.language === 'es' ? 'Estado' : 'State', humanValue(current.label.state)],
+      [this.language === 'es' ? 'Confianza' : 'Confidence', `${Math.round(current.label.confidence * 100)}%`],
+      [this.language === 'es' ? 'Bebé presente' : 'Baby present', humanValue(current.label.babyPresent)],
+      [this.language === 'es' ? 'En la cuna' : 'In crib', humanValue(current.label.inCrib)],
+      [this.language === 'es' ? 'Cara visible' : 'Face visible', humanValue(current.label.faceVisible)],
+      [this.language === 'es' ? 'Orientación de la cabeza' : 'Head side', humanValue(current.label.headSide)],
+      [this.language === 'es' ? 'Posición del cuerpo' : 'Body position', humanValue(current.label.bodyPosition)],
+      [this.language === 'es' ? 'Ropa' : 'Clothing', humanValue(current.label.clothingItems)],
+      [this.language === 'es' ? 'Chupete' : 'Pacifier', humanValue(current.label.pacifier)],
+      [this.language === 'es' ? 'Boca abierta' : 'Mouth open', humanValue(current.label.mouthOpen)],
+      [this.language === 'es' ? 'Etiquetas' : 'Tags', humanValue(current.label.tags)],
+    ] : [];
     return html`
       <section class="editor-frames">
         <h4>${this.language === 'es' ? 'Imágenes cercanas' : 'Nearby images'}</h4>
@@ -1792,6 +1954,14 @@ export class BabyMonitorApp extends LitElement {
               <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
               <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
               ${current.label ? html`<div class="frame-labels"><span>${current.label.state}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${current.label.inCrib == null ? '—' : current.label.inCrib ? (this.language === 'es' ? 'en cuna' : 'in crib') : (this.language === 'es' ? 'fuera de cuna' : 'out of crib')}</span></div>` : nothing}
+              ${current.label ? html`
+                <details class="frame-model-details">
+                  <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Ver análisis del modelo' : 'View model analysis'}</span></summary>
+                  <div class="frame-model-metadata">
+                    ${modelMetadata.map(([label, value]) => html`<div><span>${label}</span><strong>${value}</strong></div>`)}
+                  </div>
+                </details>
+              ` : nothing}
               <div class="frame-stepper"><button type="button" ?disabled=${this.frameReview.index === 0} @click=${() => this.stepFrameReview(-1)}>${icon('chevron', 18)}</button><span>${this.frameReview.index + 1} / ${this.frameReview.frames.length}</span><button type="button" ?disabled=${this.frameReview.index >= this.frameReview.frames.length - 1} @click=${() => this.stepFrameReview(1)}>${icon('chevron', 18)}</button></div>
             </div>
           </article>
@@ -1925,7 +2095,6 @@ export class BabyMonitorApp extends LitElement {
       : this.editSleepForm.kind === 'awake' ? 'Awake period' : this.editSleepForm.kind === 'night' ? 'Night sleep' : 'Nap';
     return html`<div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.editingSleep = null; }}><form class="manual-dialog manual-form legacy-sleep-form sleep-edit-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.saveSleepEditor(); }}>
       <button type="button" class="dialog-close" @click=${() => { this.editingSleep = null; }}>&times;</button>
-      <button type="button" class="editor-delete" ?disabled=${this.editSleepBusy || this.editingSleep.source !== 'manual'} title=${this.editingSleep.source === 'manual' ? (this.language === 'es' ? 'Eliminar entrada manual' : 'Delete manual entry') : (this.language === 'es' ? 'Solo se pueden borrar entradas manuales' : 'Only manual entries can be deleted')} @click=${() => this.deleteSleepEditor()}>×</button>
       <header class="sleep-form-hero"><span>${icon(this.editSleepForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span><small>${this.language === 'es' ? 'Editar segmento' : 'Edit segment'}</small><h2>${title}</h2></header>
       <div class="sleep-time-editor">${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.editSleepForm.startedAt, 'edit-start', this.editSleepForm.startedAt)}<i>–</i>${this.renderTemporalButton(this.language === 'es' ? 'Fin' : 'End', this.editSleepForm.endedAt, 'edit-end', this.editSleepForm.endedAt || this.suggestedEnd(this.editSleepForm.startedAt, this.editSleepForm.kind))}</div>
       <div class="editor-duration">${minutes ? `${formatDuration(minutes)} ${this.language === 'es' ? 'de duración' : 'duration'}` : (this.language === 'es' ? 'Sueño activo' : 'Active sleep')} · ${formatDateTime(this.editingSleep.startedAt, this.language)}</div>
@@ -1934,6 +2103,14 @@ export class BabyMonitorApp extends LitElement {
       ${this.renderFrameReview()}
       ${this.editSleepForm.kind !== 'awake' ? html`${this.renderPauses('edit', this.editSleepForm.details.pauses)}${this.renderDetailGroups('edit', this.editSleepForm.details)}` : nothing}
       <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></textarea></section>
+      ${this.editingSleep.source === 'manual' ? html`
+        <details class="editor-more-options">
+          <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Más opciones' : 'More options'}</span></summary>
+          <button type="button" class="editor-delete-action" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>
+            ${this.language === 'es' ? 'Eliminar este registro' : 'Delete this record'}
+          </button>
+        </details>
+      ` : nothing}
       ${this.inlineError ? html`<div class="inline-error sleep-form-error">${this.inlineError}</div>` : nothing}<div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>${this.language === 'es' ? 'Cancelar' : 'Cancel'}</button><button class="sheet-save" ?disabled=${this.editSleepBusy}>${this.editSleepBusy ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
     </form></div>`;
   }
@@ -2148,7 +2325,22 @@ export class BabyMonitorApp extends LitElement {
           this.inlineError = '';
         })}</div>
         ${this.cameraSource === 'entity'
-          ? html`<div class="field"><span>${this.t('cameraEntity')}</span>${this.renderSinglePicker(this.entities.camera, this.draft.camera.entityId, this.t('noCamera'), (id) => this.updateDraft((draft) => { draft.camera.entityId = id; }))}</div>`
+          ? html`
+            <details class="camera-setup-guide">
+              <summary>${icon('camera', 16)}<span>${this.t('boifunGuideTitle')}</span></summary>
+              <div class="camera-setup-guide-body">
+                <p>${this.t('boifunGuideIntro')}</p>
+                <ol>
+                  <li>${this.t('boifunGuideStepOne')}</li>
+                  <li>${this.t('boifunGuideStepTwo')}</li>
+                  <li>${this.t('boifunGuideStepThree')}</li>
+                  <li>${this.t('boifunGuideStepFour')}</li>
+                </ol>
+                <small>${this.t('boifunGuideNetworkHint')}</small>
+              </div>
+            </details>
+            <div class="field"><span>${this.t('cameraEntity')}</span>${this.renderSinglePicker(this.entities.camera, this.draft.camera.entityId, this.t('noCamera'), (id) => this.updateDraft((draft) => { draft.camera.entityId = id; }))}</div>
+          `
           : html`<label class="field"><span>${this.t('cameraStream')}</span><input type="password" autocomplete="new-password" .value=${this.draft.camera.streamUrl ?? ''} placeholder=${this.t('streamPlaceholder')} @input=${(event: Event) => this.setSecretValue('camera_stream_url', inputValue(event))}>${this.renderSecretNote(this.draft.camera.streamUrlConfigured, 'camera_stream_url')}</label>`}
         <label class="field range-field"><span><b>${this.t('captureInterval')}</b><output>${Math.round(this.draft.camera.captureIntervalSeconds / 60)} min</output></span><input type="range" min="1" max="60" step="1" .value=${String(Math.round(this.draft.camera.captureIntervalSeconds / 60))} @input=${(event: Event) => this.updateDraft((draft) => { draft.camera.captureIntervalSeconds = Number(inputValue(event)) * 60; })}></label>
         ${this.renderTestButton('camera')}

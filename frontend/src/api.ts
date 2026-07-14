@@ -644,6 +644,20 @@ export const api = {
     return apiUrl('api/v1/camera/live');
   },
 
+  async negotiateWebRtc(offer: string): Promise<string> {
+    const response = await fetch(apiUrl('api/v1/camera/webrtc'), {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/sdp', 'Content-Type': 'application/sdp' },
+      body: offer,
+    });
+    const answer = await response.text();
+    if (!response.ok) throw new ApiError(errorMessage(answer, response.statusText || 'WebRTC failed'), response.status, answer);
+    if (!answer.startsWith('v=0')) throw new ApiError('The WebRTC answer was invalid.', 502, answer);
+    return answer;
+  },
+
   async testSettings(kind: 'home_assistant' | 'camera' | 'cry' | 'lights' | 'notifications' | 'vision', settings: AppSettings): Promise<ConnectionTestResult> {
     const result = asRecord(await request<unknown>(`api/v1/settings/test/${kind}`, {
       method: 'POST',

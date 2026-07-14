@@ -22,9 +22,18 @@ All notable changes to this App are documented here. The format follows
   comments, and nearest start/middle/end camera frames.
 - Additive storage for structured sleep details and pauses; existing databases
   upgrade in place and portable CSV exports retain the new fields.
+- An in-app Boifun Baby 6T guide for enabling ONVIF, adding the integration to
+  Home Assistant, and selecting the resulting camera entity.
 
 ### Changed
 
+- Live camera sessions now negotiate WebRTC for low latency and show MJPEG only
+  as an explicit fallback; the latest stored frame remains visible until the
+  first WebRTC frame is playing.
+- Cry light alerts adapt to each entity's supported colour mode, including
+  XY-only Hue lights, while preserving and restoring the previous state.
+- Cry notifications and light alerts start concurrently so a slow Home
+  Assistant integration cannot delay the other alert path.
 - The Day rhythm now uses the original light visual treatment, while Night
   remains dark.
 

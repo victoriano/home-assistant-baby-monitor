@@ -71,7 +71,18 @@ async def test_gemini_interactions_payload_matches_current_rest_contract() -> No
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-goog-api-key"] == "secret"
         captured.update(json.loads(request.content))
-        return httpx.Response(200, json={"output_text": json.dumps(LABEL)})
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "steps": [
+                    {
+                        "type": "model_output",
+                        "content": [{"type": "text", "text": json.dumps(LABEL)}],
+                    }
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await GeminiInteractionsProvider("secret", None, client=client).label(b"jpeg", "image/jpeg", "low")
@@ -87,6 +98,13 @@ async def test_gemini_interactions_payload_matches_current_rest_contract() -> No
         "mime_type": "application/json",
         "schema": VISION_SCHEMA,
     }
+
+
+async def test_gemini_interactions_rejects_incomplete_response() -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"status": "failed", "steps": []}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ProviderError, match="did not complete"):
+            await GeminiInteractionsProvider("secret", None, client=client).label(b"jpeg", "image/jpeg", "low")
 
 
 async def test_openai_compatible_uses_chat_completions_without_redirects() -> None:

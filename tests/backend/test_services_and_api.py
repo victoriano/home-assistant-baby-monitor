@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 from baby_monitor.main import create_app
 from baby_monitor.models import (
@@ -47,6 +49,7 @@ def test_frontend_missing_assets_do_not_fall_back_to_html(tmp_path: Path) -> Non
         current = client.get("/assets/current.js")
         assert current.status_code == 200
         assert "javascript" in current.headers["content-type"]
+        assert current.headers["cache-control"] == "no-cache, max-age=0, must-revalidate"
 
         missing = client.get("/assets/previous-build.js")
         assert missing.status_code == 404
@@ -74,14 +77,83 @@ async def test_cry_alert_preserves_and_restores_selected_lights(tmp_path: Path) 
     service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
     event = await service.set_state("on", observed_at=utc_now(), source="manual", metadata={"test": True})
     assert event is not None
-    assert fake.calls[0][0:2] == ("scene", "create")
-    assert fake.calls[1][0:2] == ("light", "turn_on")
-    assert fake.calls[1][2]["entity_id"] == ["light.nursery", "light.hall"]
+    assert any(call[0:2] == ("scene", "create") for call in fake.calls)
+    light_calls = [call for call in fake.calls if call[0:2] == ("light", "turn_on")]
+    assert [call[2]["entity_id"] for call in light_calls] == ["light.nursery", "light.hall"]
     notification = next(call for call in fake.calls if call[0:2] == ("notify", "mobile_app_parent"))
     assert notification[2]["target"] == ["parent_phone"]
     closed = await service.set_state("off", observed_at=utc_now() + timedelta(seconds=1), source="manual")
     assert closed is not None and closed.ended_at is not None
     assert any(call[0:2] == ("scene", "turn_on") for call in fake.calls)
+    await service.close()
+
+
+async def test_cry_notification_is_not_blocked_by_slow_lights(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    app.state.settings.patch(
+        SettingsPatch(
+            lights=LightAlertConfig(entity_ids=["light.nursery"]),
+            notifications=NotificationConfig(service="notify.mobile_app_parent"),
+        )
+    )
+    fake = FakeHomeAssistant()
+    light_started = asyncio.Event()
+    release_light = asyncio.Event()
+    notification_sent = asyncio.Event()
+
+    async def call_service(domain: str, service_name: str, data: dict[str, Any]) -> list:
+        fake.calls.append((domain, service_name, data))
+        if (domain, service_name) == ("scene", "create"):
+            light_started.set()
+            await release_light.wait()
+        if domain == "notify":
+            notification_sent.set()
+        return []
+
+    fake.call_service = call_service  # type: ignore[method-assign]
+    service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
+    task = asyncio.create_task(service.set_state("on", observed_at=utc_now(), source="audio"))
+    await asyncio.wait_for(light_started.wait(), 0.5)
+    await asyncio.wait_for(notification_sent.wait(), 0.5)
+    release_light.set()
+    await task
+    await service.close()
+
+
+async def test_cry_alert_uses_xy_for_hue_style_lights(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    app.state.settings.patch(
+        SettingsPatch(
+            lights=LightAlertConfig(
+                entity_ids=["light.hue_strip"],
+                duration_seconds=300,
+                brightness_percent=35,
+                color_rgb=(255, 125, 72),
+            )
+        )
+    )
+    fake = FakeHomeAssistant()
+
+    async def get_state(entity_id: str) -> dict[str, Any]:
+        return {
+            "entity_id": entity_id,
+            "state": "on",
+            "attributes": {
+                "brightness": 120,
+                "color_mode": "xy",
+                "supported_color_modes": ["xy"],
+                "xy_color": [0.3, 0.32],
+            },
+        }
+
+    fake.get_state = get_state  # type: ignore[method-assign]
+    service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
+    await service.set_state("on", observed_at=utc_now(), source="audio")
+
+    alert = next(call for call in fake.calls if call[0:2] == ("light", "turn_on"))
+    assert alert[2]["entity_id"] == "light.hue_strip"
+    assert alert[2]["xy_color"] == [0.5842, 0.3506]
+    assert "rgb_color" not in alert[2]
     await service.close()
 
 
@@ -160,6 +232,44 @@ def test_camera_snapshot_is_private_app_data(tmp_path: Path, ui_settings_payload
         assert image.content == b"fake-private-jpeg"
         assert image.headers["cache-control"] == "no-store"
         assert not (tmp_path / "www").exists()
+
+
+def test_camera_webrtc_negotiates_through_the_fixed_local_relay(tmp_path: Path, ui_settings_payload: dict) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    ui_settings_payload["camera"].update({"enabled": True, "entity_id": "camera.nursery"})
+    answer = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+    app.state.go2rtc.negotiate = AsyncMock(return_value=answer)
+    offer = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+
+    with TestClient(app) as client:
+        assert client.put("/api/v1/settings", json=ui_settings_payload).status_code == 200
+        response = client.post(
+            "/api/v1/camera/webrtc",
+            content=offer,
+            headers={"Content-Type": "application/sdp"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/sdp")
+    assert response.text == answer
+    app.state.go2rtc.negotiate.assert_awaited_once_with(offer)
+
+
+def test_camera_webrtc_rejects_invalid_sdp_without_contacting_relay(tmp_path: Path, ui_settings_payload: dict) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    ui_settings_payload["camera"].update({"enabled": True, "entity_id": "camera.nursery"})
+    app.state.go2rtc.negotiate = AsyncMock(side_effect=ValueError("invalid WebRTC SDP offer"))
+
+    with TestClient(app) as client:
+        assert client.put("/api/v1/settings", json=ui_settings_payload).status_code == 200
+        response = client.post(
+            "/api/v1/camera/webrtc",
+            content="not-sdp",
+            headers={"Content-Type": "application/sdp"},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid WebRTC SDP offer"}
 
 
 def test_entity_discovery_does_not_expose_home_assistant_attributes(tmp_path: Path) -> None:
@@ -247,6 +357,178 @@ async def test_two_consecutive_vision_labels_start_and_stop_sleep(tmp_path: Path
     await service._reconcile_vision_sleep(fourth.id)
     closed = app.state.database.get_sleep_event(event.id)
     assert closed is not None and closed.ended_at == third.captured_at
+
+
+async def test_empty_crib_closes_sleep_across_an_unusable_frame(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(minutes=30)
+    asleep = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep in crib",
+        tags=["crib"],
+        in_crib=True,
+    )
+    first = app.state.database.add_frame(b"sleep-one", "image/jpeg", base, label=asleep)
+    second = app.state.database.add_frame(b"sleep-two", "image/jpeg", base + timedelta(minutes=5), label=asleep)
+    await service._reconcile_vision_sleep(second.id)
+    event = app.state.database.open_sleep_event()
+    assert event is not None and event.started_at == first.captured_at
+
+    empty = VisionLabel(
+        baby_present=False,
+        state="uncertain",
+        confidence=1,
+        description="The crib is clearly empty",
+        tags=["empty_crib"],
+        in_crib=False,
+    )
+    unusable = VisionLabel(
+        baby_present=False,
+        state="uncertain",
+        confidence=1,
+        description="Camera static",
+        tags=["corrupted", "no_visibility"],
+        in_crib=False,
+    )
+    first_empty = app.state.database.add_frame(b"empty-one", "image/jpeg", base + timedelta(minutes=10), label=empty)
+    app.state.database.add_frame(b"static", "image/jpeg", base + timedelta(minutes=15), label=unusable)
+    second_empty = app.state.database.add_frame(b"empty-two", "image/jpeg", base + timedelta(minutes=20), label=empty)
+    await service._reconcile_vision_sleep(second_empty.id)
+
+    closed = app.state.database.get_sleep_event(event.id)
+    assert closed is not None and closed.ended_at == first_empty.captured_at
+
+
+async def test_baby_outside_crib_closes_sleep_even_when_asleep(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(minutes=25)
+    asleep_in_crib = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep in crib",
+        tags=["crib"],
+        in_crib=True,
+    )
+    first = app.state.database.add_frame(b"sleep-one", "image/jpeg", base, label=asleep_in_crib)
+    second = app.state.database.add_frame(b"sleep-two", "image/jpeg", base + timedelta(minutes=5), label=asleep_in_crib)
+    await service._reconcile_vision_sleep(second.id)
+    event = app.state.database.open_sleep_event()
+    assert event is not None and event.started_at == first.captured_at
+
+    asleep_outside = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep outside the crib",
+        tags=["outside_crib"],
+        in_crib=False,
+    )
+    first_outside = app.state.database.add_frame(
+        b"outside-one", "image/jpeg", base + timedelta(minutes=10), label=asleep_outside
+    )
+    second_outside = app.state.database.add_frame(
+        b"outside-two", "image/jpeg", base + timedelta(minutes=15), label=asleep_outside
+    )
+    await service._reconcile_vision_sleep(second_outside.id)
+
+    closed = app.state.database.get_sleep_event(event.id)
+    assert closed is not None and closed.ended_at == first_outside.captured_at
+
+
+async def test_uncertain_in_crib_frame_does_not_hide_sleep_start(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(minutes=15)
+    asleep = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep",
+        tags=[],
+        in_crib=True,
+    )
+    uncertain = VisionLabel(
+        baby_present=True,
+        state="uncertain",
+        confidence=0.9,
+        description="Face hidden",
+        tags=[],
+        in_crib=True,
+    )
+    first = app.state.database.add_frame(b"first", "image/jpeg", base, label=asleep)
+    app.state.database.add_frame(b"uncertain", "image/jpeg", base + timedelta(minutes=5), label=uncertain)
+    last = app.state.database.add_frame(b"last", "image/jpeg", base + timedelta(minutes=10), label=asleep)
+    await service._reconcile_vision_sleep(last.id)
+
+    event = app.state.database.open_sleep_event()
+    assert event is not None and event.started_at == first.captured_at
+
+
+async def test_stale_vision_sleep_is_split_when_sleep_resumes(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(hours=6)
+    asleep = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep",
+        tags=[],
+        in_crib=True,
+    )
+    awake = VisionLabel(
+        baby_present=True,
+        state="awake",
+        confidence=0.95,
+        description="Awake",
+        tags=[],
+        in_crib=True,
+    )
+    empty = VisionLabel(
+        baby_present=False,
+        state="uncertain",
+        confidence=1,
+        description="Empty crib",
+        tags=["empty_crib"],
+        in_crib=False,
+    )
+    uncertain = VisionLabel(
+        baby_present=True,
+        state="uncertain",
+        confidence=0.9,
+        description="Face hidden",
+        tags=[],
+        in_crib=True,
+    )
+
+    first = app.state.database.add_frame(b"first", "image/jpeg", base, label=asleep)
+    second = app.state.database.add_frame(b"second", "image/jpeg", base + timedelta(minutes=5), label=asleep)
+    await service._reconcile_vision_sleep(second.id)
+    stale = app.state.database.open_sleep_event()
+    assert stale is not None
+
+    first_awake = app.state.database.add_frame(b"awake", "image/jpeg", base + timedelta(minutes=20), label=awake)
+    app.state.database.add_frame(b"empty", "image/jpeg", base + timedelta(minutes=25), label=empty)
+    resumed = app.state.database.add_frame(b"resumed", "image/jpeg", base + timedelta(hours=3), label=asleep)
+    app.state.database.add_frame(b"hidden", "image/jpeg", base + timedelta(hours=3, minutes=5), label=uncertain)
+    latest = app.state.database.add_frame(b"latest", "image/jpeg", base + timedelta(hours=3, minutes=10), label=asleep)
+
+    # This single reconciliation simulates upgrading an installation whose old
+    # detector left the morning event open across an awake gap.
+    await service._reconcile_vision_sleep(latest.id)
+    events, total = app.state.database.list_sleep_events(limit=10)
+    ordered = sorted(events, key=lambda item: item.started_at)
+    assert total == 2
+    assert ordered[0].id == stale.id
+    assert ordered[0].started_at == first.captured_at
+    assert ordered[0].ended_at == first_awake.captured_at
+    assert ordered[1].started_at == resumed.captured_at
+    assert ordered[1].ended_at is None
 
 
 def test_prediction_blends_recent_wake_intervals_with_age_baseline(tmp_path: Path) -> None:

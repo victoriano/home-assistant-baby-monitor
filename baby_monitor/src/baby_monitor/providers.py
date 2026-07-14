@@ -23,6 +23,11 @@ VISION_PROMPT = (
     "details: whether the baby is in the crib, face visibility, head side, body position, clothing, "
     "pacifier use, and whether the mouth is open. Be conservative: use unknown when occluded or unclear, "
     "never infer sleep when the baby is absent, and never infer a pacifier from a closed mouth or shadow. "
+    "When the crib is clearly visible and empty, set baby_present=false, in_crib=false and include the "
+    "tag empty_crib. When the image itself is blocked, corrupted or unusable, use state=uncertain and "
+    "include the tag image_unusable instead; an unusable image is not evidence that the crib is empty. "
+    "Confidence describes the sleep/occupancy classification, not merely confidence that the pixels are "
+    "corrupted. "
     "Return only the requested structured object."
 )
 
@@ -218,9 +223,15 @@ class GeminiInteractionsProvider(_HTTPProvider):
         # Interactions responses have evolved while in beta. Only accept known
         # text containers; never stringify the whole response (which could leak
         # metadata or accidentally accept an unstructured answer).
+        status = payload.get("status")
+        if isinstance(status, str) and status != "completed":
+            raise ProviderError("Gemini response did not complete")
         if isinstance(payload.get("output_text"), str):
             return payload["output_text"]
-        for key in ("outputs", "output"):
+        # Current REST responses expose model output under steps. Keep the
+        # earlier output containers for compatibility with beta revisions and
+        # SDK-normalized responses.
+        for key in ("steps", "outputs", "output"):
             raw = payload.get(key)
             items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
             for item in items:

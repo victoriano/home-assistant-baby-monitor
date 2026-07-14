@@ -142,6 +142,21 @@ describe('settings safety interactions', () => {
     expect(app.draft.camera.streamUrl).toBeUndefined();
   });
 
+  it('shows the Boifun Baby 6T ONVIF setup inside camera settings', () => {
+    const settings = cloneDefaultSettings();
+    settings.camera.enabled = true;
+    const app = harness(settings);
+
+    renderSettings(app.renderCameraSection(true));
+
+    expect(document.body.textContent).toContain('Boifun Baby 6T setup');
+    expect(document.body.textContent).toContain('ONVIF settings');
+    expect(document.body.textContent).toContain('port 8000');
+    expect(document.body.textContent).toContain('account admin');
+    expect(document.body.textContent).toContain('Reserve the camera’s IP');
+    expect(document.body.textContent).not.toContain('191290');
+  });
+
   it('renders and validates the standalone Home Assistant connection', () => {
     const settings = cloneDefaultSettings();
     settings.homeAssistant.mode = 'standalone';

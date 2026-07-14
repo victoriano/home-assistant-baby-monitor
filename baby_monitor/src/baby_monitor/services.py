@@ -4,7 +4,7 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime, time, timedelta
 from statistics import median
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from .database import Database, StorageError
@@ -19,6 +19,7 @@ from .models import (
     SleepEvent,
     SleepEventCreate,
     SleepEventPatch,
+    VisionLabel,
     utc_now,
 )
 from .prediction import build_sleep_plan
@@ -28,6 +29,73 @@ from .settings import SettingsService
 
 class ServiceError(RuntimeError):
     pass
+
+
+VisionSleepState = Literal["asleep", "awake"]
+
+# These labels mean that the camera could not provide evidence either way. A
+# clearly empty crib is wake evidence, but a broken/covered frame must never end
+# a sleep event just because no baby could be seen.
+_UNUSABLE_VISION_TAGS = {
+    "black_frame",
+    "blocked",
+    "camera_blocked",
+    "corrupted",
+    "image_unusable",
+    "no_visibility",
+    "obscured",
+    "static",
+}
+
+
+def _vision_sleep_state(label: VisionLabel | None) -> VisionSleepState | None:
+    """Normalize a model label into the evidence used by the sleep tracker."""
+
+    if label is None or label.confidence < 0.65:
+        return None
+    normalized_tags = {tag.strip().lower().replace("-", "_").replace(" ", "_") for tag in label.tags}
+    if normalized_tags & _UNUSABLE_VISION_TAGS:
+        return None
+    # The public providers correctly use `uncertain` when there is no baby to
+    # classify. A clearly empty crib or a baby outside it still confirms that a
+    # crib sleep has ended, matching the original Esteban tracker.
+    if label.in_crib is False:
+        return "awake"
+    if label.baby_present and label.state in {"asleep", "awake"}:
+        return label.state
+    return None
+
+
+def _confirmed_vision_transitions(
+    labels: list[tuple[datetime, VisionLabel]],
+    max_gap: timedelta,
+) -> list[tuple[VisionSleepState, datetime]]:
+    """Return state changes backed by two nearby decisive observations.
+
+    Inconclusive frames neither confirm nor contradict a transition. This is
+    important for overhead crib cameras where a face can be temporarily hidden
+    while the preceding and following observations still agree.
+    """
+
+    previous: tuple[datetime, VisionSleepState] | None = None
+    confirmed: VisionSleepState | None = None
+    transitions: list[tuple[VisionSleepState, datetime]] = []
+    for captured_at, label in labels:
+        state = _vision_sleep_state(label)
+        if state is None:
+            if previous is not None and captured_at - previous[0] > max_gap:
+                previous = None
+            continue
+        if (
+            previous is not None
+            and previous[1] == state
+            and captured_at - previous[0] <= max_gap
+            and confirmed != state
+        ):
+            transitions.append((state, previous[0]))
+            confirmed = state
+        previous = (captured_at, state)
+    return transitions
 
 
 class FrameService:
@@ -96,38 +164,36 @@ class FrameService:
         return updated
 
     async def _reconcile_vision_sleep(self, frame_id: str) -> None:
-        """Debounce two recent image labels into an automatic sleep event."""
+        """Debounce vision evidence and reconcile the current automatic event."""
 
         async with self._sleep_lock:
-            recent, _ = self.database.list_frames(limit=2)
-            if len(recent) < 2 or recent[0].id != frame_id:
-                return
-            newest, previous = recent
-            labels = (newest.label, previous.label)
-            if any(
-                label is None or not label.baby_present or label.state == "uncertain" or label.confidence < 0.65
-                for label in labels
-            ):
-                return
-            assert newest.label is not None and previous.label is not None
-            if newest.label.state != previous.label.state:
+            newest = self.database.latest_frame()
+            if newest is None or newest.id != frame_id or newest.label is None:
                 return
             settings = self.settings.get()
-            max_gap = min(1800, max(300, settings.camera.capture_interval_seconds * 3))
-            if (newest.captured_at - previous.captured_at).total_seconds() > max_gap:
+            max_gap = timedelta(seconds=min(1800, max(300, settings.camera.capture_interval_seconds * 3)))
+            open_event = self.database.open_sleep_event()
+            if open_event is not None and open_event.source != "vision":
                 return
 
-            open_event = self.database.open_sleep_event()
-            if newest.label.state == "asleep":
-                if open_event is not None:
+            # If an older build left a vision event open, replay only that open
+            # interval. This repairs its missing wake transition without
+            # rewriting closed or manually corrected history.
+            lookback = open_event.started_at if open_event is not None else newest.captured_at - max_gap
+            labels = self.database.vision_labels_between(lookback, newest.captured_at)
+            transitions = _confirmed_vision_transitions(labels, max_gap)
+            if not transitions:
+                return
+
+            if open_event is None:
+                state, started_at = transitions[-1]
+                if state != "asleep":
                     return
-                local_start = previous.captured_at.astimezone(ZoneInfo(settings.baby.timezone))
-                kind = "night" if local_start.hour >= 19 or local_start.hour < 7 else "nap"
                 try:
                     self.database.add_sleep_event(
                         SleepEventCreate(
-                            started_at=previous.captured_at,
-                            kind=kind,
+                            started_at=started_at,
+                            kind=self._sleep_kind(started_at),
                             source="vision",
                             notes="Started after two consecutive image labels.",
                             location_id=settings.baby.location_id,
@@ -137,10 +203,32 @@ class FrameService:
                     return
                 return
 
-            if open_event is not None and open_event.source == "vision":
-                ended_at = max(previous.captured_at, open_event.started_at + timedelta(microseconds=1))
-                with suppress(StorageError):
-                    self.database.update_sleep_event(open_event.id, SleepEventPatch(ended_at=ended_at))
+            current: SleepEvent | None = open_event
+            for state, observed_at in transitions:
+                if state == "awake" and current is not None:
+                    ended_at = max(observed_at, current.started_at + timedelta(microseconds=1))
+                    try:
+                        self.database.update_sleep_event(current.id, SleepEventPatch(ended_at=ended_at))
+                    except StorageError:
+                        return
+                    current = None
+                elif state == "asleep" and current is None:
+                    try:
+                        current = self.database.add_sleep_event(
+                            SleepEventCreate(
+                                started_at=observed_at,
+                                kind=self._sleep_kind(observed_at),
+                                source="vision",
+                                notes="Started after two consecutive image labels.",
+                                location_id=settings.baby.location_id,
+                            )
+                        )
+                    except StorageError:
+                        return
+
+    def _sleep_kind(self, started_at: datetime) -> Literal["nap", "night"]:
+        local_start = started_at.astimezone(ZoneInfo(self.settings.get().baby.timezone))
+        return "night" if local_start.hour >= 19 or local_start.hour < 7 else "nap"
 
 
 class CryAlertService:
@@ -165,6 +253,76 @@ class CryAlertService:
     @property
     def active(self) -> bool:
         return self.database.open_cry_event() is not None
+
+    @staticmethod
+    def _rgb_to_xy(color: tuple[int, int, int]) -> list[float]:
+        def linear(value: int) -> float:
+            channel = max(0, min(255, value)) / 255
+            return ((channel + 0.055) / 1.055) ** 2.4 if channel > 0.04045 else channel / 12.92
+
+        red, green, blue = (linear(value) for value in color)
+        x_value = red * 0.664511 + green * 0.154324 + blue * 0.162028
+        y_value = red * 0.283881 + green * 0.668433 + blue * 0.047685
+        z_value = red * 0.000088 + green * 0.072310 + blue * 0.986039
+        total = x_value + y_value + z_value
+        if total == 0:
+            return [0.3127, 0.329]
+        return [round(x_value / total, 4), round(y_value / total, 4)]
+
+    @staticmethod
+    def _rgb_to_hs(color: tuple[int, int, int]) -> list[float]:
+        import colorsys
+
+        hue, saturation, _ = colorsys.rgb_to_hsv(*(max(0, min(255, value)) / 255 for value in color))
+        return [round(hue * 360, 2), round(saturation * 100, 2)]
+
+    def _alert_light_data(
+        self,
+        entity_id: str,
+        snapshot: dict[str, Any],
+        brightness_percent: int,
+        color_rgb: tuple[int, int, int],
+    ) -> dict[str, Any]:
+        attributes = snapshot.get("attributes") if isinstance(snapshot.get("attributes"), dict) else {}
+        modes = set(attributes.get("supported_color_modes") or [])
+        data: dict[str, Any] = {"entity_id": entity_id, "brightness_pct": brightness_percent}
+        if "xy" in modes:
+            data["xy_color"] = self._rgb_to_xy(color_rgb)
+        elif modes & {"rgb", "rgbw", "rgbww"} or not modes:
+            data["rgb_color"] = list(color_rgb)
+        elif "hs" in modes:
+            data["hs_color"] = self._rgb_to_hs(color_rgb)
+        return data
+
+    @staticmethod
+    def _restore_color_data(attributes: dict[str, Any]) -> dict[str, Any]:
+        color_mode = attributes.get("color_mode")
+        preferred = {
+            "xy": "xy_color",
+            "hs": "hs_color",
+            "rgb": "rgb_color",
+            "rgbw": "rgbw_color",
+            "rgbww": "rgbww_color",
+            "color_temp": "color_temp_kelvin",
+        }.get(color_mode)
+        keys = [preferred] if preferred else []
+        keys.extend(
+            key
+            for key in (
+                "xy_color",
+                "hs_color",
+                "rgb_color",
+                "rgbw_color",
+                "rgbww_color",
+                "color_temp_kelvin",
+                "color_temp",
+            )
+            if key != preferred
+        )
+        for key in keys:
+            if key and attributes.get(key) is not None:
+                return {key: attributes[key]}
+        return {}
 
     async def set_state(
         self,
@@ -198,8 +356,12 @@ class CryAlertService:
                     location_id=self.settings.get().baby.location_id,
                 )
             )
-            await self._activate_lights_locked()
-            await self._send_notifications_locked(event)
+            # A slow light integration must not delay the caregiver alert (and
+            # vice versa). Both side effects start as soon as the event exists.
+            await asyncio.gather(
+                self._activate_lights_locked(),
+                self._send_notifications_locked(event),
+            )
             return event
 
     async def _activate_lights_locked(self) -> None:
@@ -224,17 +386,20 @@ class CryAlertService:
             self._scene_created = True
         except HomeAssistantError:
             self._scene_created = False
-        # The event remains valid if a selected light disappeared.
-        with suppress(HomeAssistantError):
-            await self.home_assistant.call_service(
-                "light",
-                "turn_on",
-                {
-                    "entity_id": config.entity_ids,
-                    "brightness_pct": config.brightness_percent,
-                    "rgb_color": list(config.color_rgb),
-                },
-            )
+        # Send per-light colour data because Hue and other integrations expose
+        # different service colour modes (notably XY-only strips).
+        for entity_id in config.entity_ids:
+            with suppress(HomeAssistantError):
+                await self.home_assistant.call_service(
+                    "light",
+                    "turn_on",
+                    self._alert_light_data(
+                        entity_id,
+                        self._fallback_states.get(entity_id, {}),
+                        config.brightness_percent,
+                        config.color_rgb,
+                    ),
+                )
         self._schedule_restore(config.duration_seconds)
 
     def _schedule_restore(self, delay: int) -> None:
@@ -274,12 +439,7 @@ class CryAlertService:
                 data: dict[str, Any] = {"entity_id": entity_id}
                 if isinstance(attributes.get("brightness"), int):
                     data["brightness"] = attributes["brightness"]
-                # Pick one supported colour representation, avoiding conflicting
-                # HA service fields in the same restore call.
-                for key in ("rgb_color", "hs_color", "xy_color", "color_temp_kelvin", "color_temp"):
-                    if attributes.get(key) is not None:
-                        data[key] = attributes[key]
-                        break
+                data.update(self._restore_color_data(attributes))
                 await self.home_assistant.call_service("light", "turn_on", data)
             except HomeAssistantError:
                 continue

@@ -32,6 +32,8 @@ credentials are included.
 ## What it does
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
+- Uses WebRTC for low-latency live video when a local go2rtc relay is available,
+  with an explicitly labelled MJPEG fallback.
 - Tracks and edits naps, night sleep, awakenings, awake pauses, settling
   context, wake-up context, mood, comments, and nearby camera frames.
 - Builds a local two-day plan with predicted naps and night sleep for today and

@@ -71,6 +71,21 @@ Choose either:
 Set the snapshot interval between 30 seconds and 24 hours. The camera can stay
 disabled while sleep tracking and cry alerts continue to work.
 
+The Live button first negotiates WebRTC with a local go2rtc relay and labels the
+transport as **WebRTC · low latency**. If that relay is unavailable, the App
+shows **MJPEG fallback** instead of presenting a delayed snapshot stream as
+low-latency video. The latest stored frame stays visible underneath the video
+until the first WebRTC frame is actually playing, avoiding a blank camera panel
+during negotiation. Standalone deployments can override the defaults with
+`BABY_MONITOR_GO2RTC_URL` (default `http://127.0.0.1:1984`) and
+`BABY_MONITOR_GO2RTC_STREAM` (default `baby_monitor_live`). Keep the go2rtc API
+private and expose WebRTC media only to trusted clients.
+
+For the fastest joins, keep the selected go2rtc stream preloaded and encode it
+with a short H.264 GOP. Hardware decoding is camera-dependent; use a custom
+encode-only template when a camera's H.264 stream cannot be decoded by the
+host's hardware accelerator.
+
 ### Cry detection (optional)
 
 Choose one source:
@@ -86,7 +101,8 @@ Use the built-in test before relying on an automatic alert.
 
 Select up to 32 `light.` entities, an alert duration, brightness, and RGB color.
 When a cry begins, the App snapshots each selected light's state, applies the
-alert, and restores the previous state after the configured duration.
+alert using the colour mode each entity actually supports (including XY-only
+Hue lights), and restores the previous state after the configured duration.
 
 Do not use safety-critical lighting where an unexpected state change could
 create a hazard.

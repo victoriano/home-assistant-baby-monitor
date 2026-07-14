@@ -44,6 +44,7 @@ from .services import CryAlertService, DashboardService, FrameService, ServiceEr
 from .settings import SettingsError, SettingsRepository, SettingsService
 from .statistics import vision_summary
 from .transfer import MAX_ARCHIVE_BYTES, HistoryTransferManager, TransferError
+from .webrtc import Go2RTCClient, Go2RTCError
 
 API_PREFIX = "/api/v1"
 
@@ -149,6 +150,7 @@ def create_app(
     cry_alerts = CryAlertService(database, settings, home_assistant)
     dashboard = DashboardService(database, settings)
     workers = RuntimeWorkers(database, settings, home_assistant, frames, cry_alerts)
+    go2rtc = Go2RTCClient()
     if start_workers is None:
         start_workers = (
             runtime in {"standalone", "home_assistant_app"} and os.environ.get("BABY_MONITOR_DISABLE_WORKERS") != "1"
@@ -204,6 +206,7 @@ def create_app(
     app.state.cry_alerts = cry_alerts
     app.state.dashboard = dashboard
     app.state.workers = workers
+    app.state.go2rtc = go2rtc
     app.state.runtime = runtime
     login_failures: dict[str, list[float]] = {}
 
@@ -619,6 +622,33 @@ def create_app(
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
+    @app.post(f"{API_PREFIX}/camera/webrtc")
+    async def camera_webrtc(request: Request) -> Response:
+        if not settings.get().camera.enabled:
+            raise HTTPException(409, "camera is disabled")
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > 128_000:
+                    raise HTTPException(413, "WebRTC SDP offer is too large")
+            except ValueError as exc:
+                raise HTTPException(400, "Content-Length is invalid") from exc
+        try:
+            raw_offer = await request.body()
+            if len(raw_offer) > 128_000:
+                raise HTTPException(413, "WebRTC SDP offer is too large")
+            offer = raw_offer.decode("utf-8")
+            answer = await app.state.go2rtc.negotiate(offer)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(400, "invalid WebRTC SDP offer") from exc
+        except Go2RTCError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return Response(
+            answer,
+            media_type="application/sdp",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
     @app.get(f"{API_PREFIX}/sleep")
     async def list_sleep(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = database.list_sleep_events(limit, offset)
@@ -725,7 +755,10 @@ def create_app(
         root = frontend_dir.resolve()
         candidate = (root / asset_path).resolve()
         if candidate.is_relative_to(root) and candidate.is_file():
-            return FileResponse(candidate, headers={"Cache-Control": "private, max-age=3600"})
+            # The Home Assistant panel lives inside an iframe whose lifecycle is
+            # controlled by the HA frontend/service worker. Always revalidate
+            # assets so reopening the panel cannot retain an older UI build.
+            return FileResponse(candidate, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
         if asset_path.startswith("assets/"):
             # Never disguise a missing content-hashed bundle as the SPA shell.
             # Browsers reject that HTML as JavaScript/CSS and the misleading 200
