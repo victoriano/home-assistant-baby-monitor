@@ -63,6 +63,7 @@ describe('sleep rhythm model', () => {
     expect(model.sleepSegments.map((segment) => segment.event?.id)).toEqual(['night-1', 'night-2']);
     expect(model.wakeGaps).toHaveLength(1);
     expect(model.wakeGaps[0]?.minutes).toBe(30);
+    expect(model.wakeGaps[0]?.locationId).toBe('madrid');
     expect(model.segments.map((segment) => segment.type)).toEqual(['night', 'awake', 'night']);
     expect(model.totalMinutes).toBe(540);
     expect(model.bedAt?.getHours()).toBe(22);
@@ -89,6 +90,29 @@ describe('sleep rhythm model', () => {
     expect(model.totalMinutes).toBe(670);
     expect(model.nightMinutes).toBe(595);
     expect(model.napMinutes).toBe(75);
+  });
+
+  it('preserves detector microseconds at inferred waking boundaries', () => {
+    const events = [
+      sleep(
+        'before-gap',
+        '2026-07-13T21:07:33.084208Z',
+        '2026-07-14T00:28:13.196542Z',
+        'night',
+      ),
+      sleep(
+        'after-gap',
+        '2026-07-14T03:28:07.485531Z',
+        '2026-07-14T04:09:14.776632Z',
+        'night',
+      ),
+    ];
+
+    const model = buildRhythmModel(events, '2026-07-14', 'night', new Date('2026-07-14T08:00:00Z'));
+
+    expect(model.wakeGaps).toHaveLength(1);
+    expect(model.wakeGaps[0]?.evidenceStartedAt).toBe(events[0].endedAt);
+    expect(model.wakeGaps[0]?.evidenceEndedAt).toBe(events[1].startedAt);
   });
 
   it('keeps the recorded night when a later morning nap is separated by a long gap', () => {

@@ -9,6 +9,9 @@ export interface RhythmSegment {
   id: string;
   event: SleepEvent | null;
   prediction: SleepPredictionTarget | null;
+  locationId: string | null;
+  evidenceStartedAt: string;
+  evidenceEndedAt: string;
   type: RhythmSegmentType;
   start: Date;
   end: Date;
@@ -85,12 +88,30 @@ function segment(
   type: RhythmSegmentType,
   start: Date,
   end: Date,
-  options: { inferred?: boolean; predicted?: boolean; minutes?: number } = {},
+  options: {
+    inferred?: boolean;
+    predicted?: boolean;
+    minutes?: number;
+    locationId?: string | null;
+    evidenceStartedAt?: string;
+    evidenceEndedAt?: string;
+  } = {},
 ): RhythmSegment {
+  const eventStartedAt = event
+    && new Date(event.startedAt).getTime() === start.getTime()
+    ? event.startedAt
+    : start.toISOString();
+  const eventEndedAt = event?.endedAt
+    && new Date(event.endedAt).getTime() === end.getTime()
+    ? event.endedAt
+    : end.toISOString();
   return {
     id,
     event,
     prediction,
+    locationId: options.locationId ?? event?.locationId ?? null,
+    evidenceStartedAt: options.evidenceStartedAt ?? eventStartedAt,
+    evidenceEndedAt: options.evidenceEndedAt ?? eventEndedAt,
     type,
     start,
     end,
@@ -200,6 +221,7 @@ function awakeGaps(sleep: RhythmSegment[], explicitAwake: RhythmSegment[]): Rhyt
     if (minutes < 10 || minutes > 240) return null;
     const represented = explicitAwake.some((awake) => awake.end > item.end && awake.start < next.start);
     if (represented) return null;
+    const locationId = item.locationId === next.locationId ? item.locationId : null;
     return segment(
       `awake-${item.end.toISOString()}-${next.start.toISOString()}`,
       null,
@@ -207,7 +229,12 @@ function awakeGaps(sleep: RhythmSegment[], explicitAwake: RhythmSegment[]): Rhyt
       'awake',
       item.end,
       next.start,
-      { inferred: true },
+      {
+        inferred: true,
+        locationId,
+        evidenceStartedAt: item.evidenceEndedAt,
+        evidenceEndedAt: next.evidenceStartedAt,
+      },
     );
   }).filter((item): item is RhythmSegment => Boolean(item));
   return [...explicitAwake, ...inferred].sort((a, b) => a.start.getTime() - b.start.getTime());

@@ -16,10 +16,15 @@ interface SleepEditorHarness {
     notes: string;
     details: SleepEventDetails;
   };
+  frameReview: {
+    frames: FrameRecord[];
+    index: number;
+  };
   loadOperationalData(initial?: boolean): Promise<void>;
   deleteSleepEditor(): Promise<void>;
   openSleepEditor(event: SleepEvent): void;
   openRhythmSegment(segment: RhythmSegment): void;
+  renderManualDialog(): TemplateResult;
   renderSleepEditor(): TemplateResult;
 }
 
@@ -158,7 +163,15 @@ describe('sleep segment editor', () => {
     expect(app.loadOperationalData).toHaveBeenCalledWith(false);
   });
 
-  it('opens an inferred night interruption as a prefilled awake entry', () => {
+  it('opens an inferred night interruption with every frame available for review', async () => {
+    const wakingFrames: FrameRecord[] = [0, 5, 10].map((minutes, index) => ({
+      ...firstFrame,
+      id: `wake-frame-${index + 1}`,
+      capturedAt: new Date(new Date('2026-07-14T04:09:00.000Z').getTime() + minutes * 60_000).toISOString(),
+      imageUrl: `/api/v1/frames/wake-frame-${index + 1}/image`,
+      label: { ...firstFrame.label!, state: index === 1 ? 'asleep' : 'awake' },
+    }));
+    vi.spyOn(api, 'getFramesBetween').mockResolvedValue(wakingFrames);
     const app = harness();
     const start = new Date('2026-07-14T04:09:00.000Z');
     const end = new Date('2026-07-14T04:24:00.000Z');
@@ -167,6 +180,9 @@ describe('sleep segment editor', () => {
       id: 'awake-gap',
       event: null,
       prediction: null,
+      locationId: 'madrid',
+      evidenceStartedAt: start.toISOString(),
+      evidenceEndedAt: end.toISOString(),
       type: 'awake',
       start,
       end,
@@ -181,5 +197,26 @@ describe('sleep segment editor', () => {
     expect(app.manualForm.kind).toBe('awake');
     expect(new Date(app.manualForm.startedAt).toISOString()).toBe(start.toISOString());
     expect(new Date(app.manualForm.endedAt).toISOString()).toBe(end.toISOString());
+    await vi.waitFor(() => expect(api.getFramesBetween).toHaveBeenCalledWith(
+      start.toISOString(),
+      end.toISOString(),
+      'madrid',
+    ));
+    await vi.waitFor(() => expect(app.frameReview.frames).toHaveLength(3));
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    render(app.renderManualDialog(), container);
+    expect(container.querySelector('.editor-frames-heading')?.textContent).toContain('Frames del despertar nocturno');
+    expect(container.querySelector('.editor-frames-heading')?.textContent).toContain('3 capturas');
+    expect(container.querySelector('.frame-review-card img')?.getAttribute('src')).toContain('wake-frame-1/image');
+    expect(container.querySelector('.frame-labels')?.textContent).toContain('Despierto');
+    expect(container.querySelector('.frame-model-details')?.textContent).toContain('Ver análisis del modelo');
+
+    container.querySelectorAll<HTMLButtonElement>('.frame-stepper button')[1].click();
+    render(app.renderManualDialog(), container);
+    expect(container.querySelector('.frame-review-card img')?.getAttribute('src')).toContain('wake-frame-2/image');
+    expect(container.querySelector('.frame-labels')?.textContent).toContain('Dormido');
+    expect(container.querySelector('.frame-stepper')?.textContent).toContain('2 / 3');
   });
 });

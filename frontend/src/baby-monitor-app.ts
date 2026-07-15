@@ -80,6 +80,7 @@ type FrameReviewState = {
   error: string;
   requestedAt: string;
 };
+type FrameReviewContext = 'edit' | 'inferred-awake';
 
 const EMPTY_DETAILS = (): SleepEventDetails => ({ tags: [], pauses: [] });
 
@@ -216,7 +217,13 @@ export class BabyMonitorApp extends LitElement {
   @state() private frameReview: FrameReviewState = {
     point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '',
   };
+  private frameReviewContext: FrameReviewContext = 'edit';
   private editSleepFrameBounds: { startedAt: string; endedAt: string } | null = null;
+  private manualFrameReviewBounds: {
+    startedAt: string;
+    endedAt: string;
+    locationId: string | null;
+  } | null = null;
   private editSleepStartChanged = false;
   private editSleepEndChanged = false;
   @state() private manualEndTouched = false;
@@ -617,6 +624,10 @@ export class BabyMonitorApp extends LitElement {
 
   private openManualForm(): void {
     this.inlineError = '';
+    this.frameReviewRequest += 1;
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     const now = new Date();
     now.setSeconds(0, 0);
     this.manualForm = {
@@ -633,11 +644,17 @@ export class BabyMonitorApp extends LitElement {
   private closeManualForm(): void {
     this.inlineError = '';
     this.temporalPicker = null;
+    this.frameReviewRequest += 1;
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     this.manualOpen = false;
   }
 
   private openSleepEditor(event: SleepEvent): void {
     const restored = this.detailsFromEvent(event);
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
     this.editingSleep = event;
     this.editSleepForm = {
       startedAt: localDateTime(new Date(event.startedAt)),
@@ -878,10 +895,15 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private frameReviewRange(): { start: Date; end: Date } | null {
-    const start = new Date(this.editSleepFrameBounds?.startedAt ?? this.editSleepForm.startedAt);
-    const configuredEnd = this.editSleepFrameBounds?.endedAt
-      ? new Date(this.editSleepFrameBounds.endedAt)
-      : this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : new Date();
+    const manualBounds = this.frameReviewContext === 'inferred-awake'
+      ? this.manualFrameReviewBounds
+      : null;
+    const start = new Date(manualBounds?.startedAt ?? this.editSleepFrameBounds?.startedAt ?? this.editSleepForm.startedAt);
+    const configuredEnd = manualBounds?.endedAt
+      ? new Date(manualBounds.endedAt)
+      : this.editSleepFrameBounds?.endedAt
+        ? new Date(this.editSleepFrameBounds.endedAt)
+        : this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : new Date();
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(configuredEnd.getTime()) || configuredEnd <= start) {
       return null;
     }
@@ -917,6 +939,7 @@ export class BabyMonitorApp extends LitElement {
 
   private async loadFrameReview(point: 'start' | 'middle' | 'end'): Promise<void> {
     const requestId = ++this.frameReviewRequest;
+    const context = this.frameReviewContext;
     const range = this.frameReviewRange();
     const requested = this.reviewPointDate(point);
     if (!range || !requested) {
@@ -932,21 +955,29 @@ export class BabyMonitorApp extends LitElement {
       };
       return;
     }
-    const editingId = this.editingSleep?.id;
+    const editingId = context === 'edit' ? this.editingSleep?.id : undefined;
     // Keep the original ISO strings here. Converting through JavaScript Date
     // truncates SQLite's microseconds to milliseconds and can drop a capture
     // whose timestamp is exactly equal to the segment boundary.
-    const rangeStart = this.editSleepFrameBounds?.startedAt ?? range.start.toISOString();
-    const rangeEnd = this.editSleepFrameBounds?.endedAt ?? range.end.toISOString();
+    const rangeStart = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.startedAt ?? range.start.toISOString()
+      : this.editSleepFrameBounds?.startedAt ?? range.start.toISOString();
+    const rangeEnd = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.endedAt ?? range.end.toISOString()
+      : this.editSleepFrameBounds?.endedAt ?? range.end.toISOString();
+    const locationId = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.locationId ?? undefined
+      : this.editingSleep?.locationId;
     this.frameReview = { point, frames: [], index: 0, loading: true, error: '', requestedAt: requested.toISOString() };
     try {
       const frames = await api.getFramesBetween(
         rangeStart,
         rangeEnd,
-        this.editingSleep?.locationId,
+        locationId,
       );
       if (
-        this.editingSleep?.id !== editingId
+        this.frameReviewContext !== context
+        || (context === 'edit' && this.editingSleep?.id !== editingId)
         || requestId !== this.frameReviewRequest
       ) return;
       this.frameReview = {
@@ -1799,8 +1830,16 @@ export class BabyMonitorApp extends LitElement {
       notes: '',
       details: EMPTY_DETAILS(),
     };
+    this.frameReviewContext = 'inferred-awake';
+    this.manualFrameReviewBounds = {
+      startedAt: segment.evidenceStartedAt,
+      endedAt: segment.evidenceEndedAt,
+      locationId: segment.locationId,
+    };
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     this.manualEndTouched = true;
     this.manualOpen = true;
+    void this.loadFrameReview('start');
   }
 
   private renderDailyRhythm(): TemplateResult {
@@ -2022,6 +2061,7 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderFrameReview(): TemplateResult {
+    const inferredAwake = this.frameReviewContext === 'inferred-awake';
     const current = this.frameReview.frames[this.frameReview.index];
     const requested = this.frameReview.requestedAt ? new Date(this.frameReview.requestedAt) : null;
     const captured = current ? new Date(current.capturedAt) : null;
@@ -2065,7 +2105,14 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <section class="editor-frames">
         <div class="editor-frames-heading">
-          <h4>${this.language === 'es' ? 'Imágenes del segmento' : 'Images in this segment'}</h4>
+          <div>
+            <h4>${inferredAwake
+              ? (this.language === 'es' ? 'Frames del despertar nocturno' : 'Night waking frames')
+              : (this.language === 'es' ? 'Imágenes del segmento' : 'Images in this segment')}</h4>
+            ${inferredAwake && this.manualFrameReviewBounds ? html`<p>${this.language === 'es'
+              ? `Todas las capturas entre ${formatClock(this.manualFrameReviewBounds.startedAt, this.language)} y ${formatClock(this.manualFrameReviewBounds.endedAt, this.language)} para comprobar la detección.`
+              : `Every capture from ${formatClock(this.manualFrameReviewBounds.startedAt, this.language)} to ${formatClock(this.manualFrameReviewBounds.endedAt, this.language)} so you can verify the detection.`}</p>` : nothing}
+          </div>
           ${this.frameReview.frames.length ? html`<span>${this.frameReview.frames.length} ${this.language === 'es' ? 'capturas' : 'captures'}</span>` : nothing}
         </div>
         <div class="frame-point-switch">
@@ -2077,7 +2124,7 @@ export class BabyMonitorApp extends LitElement {
             <div class="frame-review-copy">
               <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
               <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
-              ${current.label ? html`<div class="frame-labels"><span>${current.label.state}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${current.label.inCrib == null ? '—' : current.label.inCrib ? (this.language === 'es' ? 'en cuna' : 'in crib') : (this.language === 'es' ? 'fuera de cuna' : 'out of crib')}</span></div>` : nothing}
+              ${current.label ? html`<div class="frame-labels"><span>${humanValue(current.label.state)}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${current.label.inCrib == null ? '—' : current.label.inCrib ? (this.language === 'es' ? 'en cuna' : 'in crib') : (this.language === 'es' ? 'fuera de cuna' : 'out of crib')}</span></div>` : nothing}
               ${current.label ? html`
                 <details class="frame-model-details">
                   <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Ver análisis del modelo' : 'View model analysis'}</span></summary>
@@ -2191,6 +2238,7 @@ export class BabyMonitorApp extends LitElement {
           )}
         </div>
         ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
+        ${this.manualFrameReviewBounds ? this.renderFrameReview() : nothing}
         ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
         <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
         ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}

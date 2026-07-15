@@ -839,7 +839,9 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .theme-day .editor-more-options summary:hover, .theme-day .editor-more-options summary:focus-visible { background: rgba(76,91,151,.045); }
 .editor-frames { width: min(100%,520px); margin: 25px auto 0; }
 .editor-frames-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.editor-frames-heading > div { display: grid; gap: 4px; }
 .editor-frames-heading h4 { margin: 0; font-size: 12px; }
+.editor-frames-heading p { max-width: 390px; margin: 0; color: var(--faint); font-size: 8px; line-height: 1.45; }
 .editor-frames-heading > span { color: var(--faint); font-family: var(--font-data); font-size: 8px; }
 .frame-point-switch { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
 .frame-point-switch button { display: grid; place-items: center; gap: 3px; min-height: 56px; border: 1px solid var(--edge); border-radius: 14px; background: rgba(255,255,255,.04); color: var(--quiet); cursor: pointer; }
