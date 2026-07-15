@@ -156,36 +156,32 @@ function nightCluster(
   const window = rhythmWindow(dateKey, 'night');
   const actual = actualInWindow(events, window, now);
   const all = actual.sleep;
-  if (!all.length) return { sleep: [], awake: [], window };
-  const eveningStart = localDate(shiftDateKey(dateKey, -1), 20);
-  const morningCutoff = localDate(dateKey, 9);
-  let startIndex = all.findIndex((item) => item.start >= eveningStart);
-  if (startIndex < 0) startIndex = 0;
-  while (startIndex < all.length - 1) {
-    const current = all[startIndex];
-    const next = all[startIndex + 1];
-    const manualBoundary = current.event?.source === 'manual'
-      && current.event.notes?.startsWith('manual-boundary');
-    const sameSleepWithPause = Boolean(current.event && current.event.id === next.event?.id);
-    if (
-      minutesBetween(current.end, next.start) > 40
-      && current.end < morningCutoff
-      && !manualBoundary
-      && !sameSleepWithPause
-    ) {
-      startIndex += 1;
-      continue;
+  const nightIndexes = all.flatMap((item, index) => (item.type === 'night' ? [index] : []));
+  if (!nightIndexes.length) return { sleep: [], awake: [], window };
+
+  // Anchor the view to a recorded night event. Naps share this window because
+  // it ends at noon; they may extend an already-running night (legacy imports
+  // can split an uninterrupted morning continuation at 08:00), but a later nap
+  // must never become the night by itself. Separate night clusters more than
+  // four hours apart are treated as distinct, and the latest cluster wins.
+  let startIndex = nightIndexes[0];
+  for (const nightIndex of nightIndexes.slice(1)) {
+    const previous = all[nightIndex - 1];
+    const item = all[nightIndex];
+    const sameSleepWithPause = Boolean(previous?.event && previous.event.id === item.event?.id);
+    if (previous && minutesBetween(previous.end, item.start) > 240 && !sameSleepWithPause) {
+      startIndex = nightIndex;
     }
-    break;
   }
   const sleep: RhythmSegment[] = [];
   for (let index = startIndex; index < all.length; index += 1) {
     const item = all[index];
     const previous = sleep.at(-1);
     if (previous) {
-      const crossedMorning = previous.end >= morningCutoff || item.start >= morningCutoff;
       const sameSleepWithPause = Boolean(previous.event && previous.event.id === item.event?.id);
-      if (minutesBetween(previous.end, item.start) > 40 && crossedMorning && !sameSleepWithPause) break;
+      const gap = minutesBetween(previous.end, item.start);
+      if (!sameSleepWithPause && item.type === 'nap' && gap > 40) break;
+      if (!sameSleepWithPause && item.type === 'night' && gap > 240) break;
     }
     sleep.push(item);
   }

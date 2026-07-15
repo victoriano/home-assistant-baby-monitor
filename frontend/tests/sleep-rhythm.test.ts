@@ -70,6 +70,75 @@ describe('sleep rhythm model', () => {
     expect(model.wakeAt?.getMinutes()).toBe(30);
   });
 
+  it('keeps long overnight interruptions and a contiguous imported morning continuation', () => {
+    const events = [
+      sleep('evening-night', at('2026-07-10', 19, 30), at('2026-07-10', 20, 30), 'night'),
+      sleep('main-night', at('2026-07-10', 23, 5), at('2026-07-11', 8), 'night'),
+      sleep('imported-morning-continuation', at('2026-07-11', 8), at('2026-07-11', 9, 15), 'nap'),
+    ];
+
+    const model = buildRhythmModel(events, '2026-07-11', 'night', new Date(at('2026-07-11', 10)));
+
+    expect(model.sleepSegments.map((item) => item.event?.id)).toEqual([
+      'evening-night',
+      'main-night',
+      'imported-morning-continuation',
+    ]);
+    expect(model.wakeGaps).toHaveLength(1);
+    expect(model.wakeGaps[0]?.minutes).toBe(155);
+    expect(model.totalMinutes).toBe(670);
+    expect(model.nightMinutes).toBe(595);
+    expect(model.napMinutes).toBe(75);
+  });
+
+  it('keeps the recorded night when a later morning nap is separated by a long gap', () => {
+    const events = [
+      sleep(
+        'granada-night',
+        '2026-07-14T21:21:57.052274Z',
+        '2026-07-15T01:44:18.740963Z',
+        'night',
+      ),
+      sleep(
+        'granada-morning-nap',
+        '2026-07-15T08:23:16.741416Z',
+        '2026-07-15T09:09:32.119608Z',
+        'nap',
+      ),
+    ];
+    const now = new Date('2026-07-15T09:30:00Z');
+
+    const night = buildRhythmModel(events, '2026-07-15', 'night', now);
+    const day = buildRhythmModel(events, '2026-07-15', 'day', now);
+
+    expect(night.sleepSegments.map((item) => item.event?.id)).toEqual(['granada-night']);
+    expect(night.totalMinutes).toBe(262);
+    expect(night.nightMinutes).toBe(262);
+    expect(night.napMinutes).toBe(0);
+    expect(night.bedAt?.toISOString()).toBe('2026-07-14T21:21:57.052Z');
+    expect(night.wakeAt?.toISOString()).toBe('2026-07-15T01:44:18.740Z');
+
+    expect(day.sleepSegments.map((item) => item.event?.id)).toEqual(['granada-morning-nap']);
+    expect(day.totalMinutes).toBe(46);
+    expect(day.napMinutes).toBe(46);
+    expect(day.nightMinutes).toBe(0);
+  });
+
+  it('does not promote a morning nap into an otherwise empty night', () => {
+    const nap = sleep(
+      'morning-nap-only',
+      at('2026-07-15', 10, 23),
+      at('2026-07-15', 11, 9),
+      'nap',
+    );
+
+    const model = buildRhythmModel([nap], '2026-07-15', 'night', new Date(at('2026-07-15', 11, 30)));
+
+    expect(model.sleepSegments).toEqual([]);
+    expect(model.totalMinutes).toBe(0);
+    expect(model.napMinutes).toBe(0);
+  });
+
   it('uses the current time for an ongoing sleep', () => {
     const ongoing = sleep('ongoing', at('2026-07-10', 14), null, 'nap');
     const model = buildRhythmModel([ongoing], '2026-07-10', 'day', new Date(at('2026-07-10', 15, 20)));
