@@ -600,7 +600,7 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .rhythm-visual-card.day .rhythm-mode button.active { color: var(--amber); }
 .rhythm-marker {
   position: absolute;
-  z-index: 3;
+  z-index: 5;
   top: var(--y);
   left: var(--x);
   display: grid;
@@ -615,11 +615,57 @@ h1, h2, h3, strong { font-family: var(--font-display); }
   touch-action: manipulation;
   transform: translate(-50%, -50%);
 }
+.rhythm-marker > svg { pointer-events: none; }
+.rhythm-marker-duration,
+.rhythm-marker-start {
+  position: absolute;
+  left: 50%;
+  width: max-content;
+  max-width: 88px;
+  color: var(--linen);
+  font-family: var(--font-data);
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.rhythm-marker-duration {
+  bottom: calc(100% + 6px);
+  padding: 3px 6px;
+  border: 1px solid rgba(213, 218, 255, .14);
+  border-radius: 999px;
+  background: rgba(16, 19, 38, .82);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .16);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: -.02em;
+  backdrop-filter: blur(8px);
+}
+.rhythm-marker-start {
+  top: calc(100% + 2px);
+  color: var(--quiet);
+  font-size: 9px;
+  font-weight: 690;
+  letter-spacing: .01em;
+  text-shadow: 0 1px 7px rgba(0, 0, 0, .65);
+}
 .rhythm-marker.nap { background: #474176; color: #ddd8ff; }
+.rhythm-marker.nap:not(.predicted),
+.rhythm-marker.night-sleep:not(.predicted) { z-index: 6; }
 .rhythm-marker.awake { border: 2px solid #3a2027; background: #9f3f48; color: #fff1ee; cursor: pointer; }
 .rhythm-marker.predicted { border-style: dashed; border-color: rgba(230, 220, 255, .62); background: #33345f; color: #f1edff; }
 .rhythm-visual-card.day .rhythm-marker.nap { border-color: rgba(93, 76, 190, .22); background: #eeeaff; color: #6756cd; }
 .rhythm-visual-card.day .rhythm-marker.predicted { border-color: rgba(93, 76, 190, .35); background: #fff; color: #6756cd; box-shadow: 0 9px 24px rgba(67,77,130,.15); }
+.rhythm-visual-card.day .rhythm-marker-duration {
+  border-color: rgba(79, 68, 157, .13);
+  background: rgba(252, 251, 255, .88);
+  color: #342b70;
+  box-shadow: 0 4px 14px rgba(60, 65, 120, .10);
+}
+.rhythm-visual-card.day .rhythm-marker-start {
+  color: #5c6485;
+  text-shadow: 0 1px 5px rgba(255, 255, 255, .92);
+}
 .rhythm-endpoint { position: absolute; z-index: 4; top: var(--y); left: var(--x); display: grid; justify-items: center; min-width: 80px; color: var(--quiet); text-align: center; transform: translate(-50%, -50%); }
 .rhythm-endpoint > span { display: grid; place-items: center; width: 30px; height: 30px; margin-bottom: 5px; border: 1px solid var(--edge); border-radius: 50%; background: var(--slate-raised); color: var(--amber); }
 .rhythm-endpoint small { font-size: 8px; letter-spacing: .05em; text-transform: uppercase; }
@@ -1362,6 +1408,8 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .rhythm-mode button { min-height: 29px; padding: 0 7px; }
   .rhythm-mode button span { display: none; }
   .rhythm-marker { width: 36px; height: 36px; }
+  .rhythm-marker-duration { bottom: calc(100% + 5px); padding: 3px 5px; font-size: 9px; }
+  .rhythm-marker-start { top: calc(100% + 2px); font-size: 8px; }
   .rhythm-endpoint { min-width: 65px; }
   .rhythm-endpoint > span { width: 27px; height: 27px; }
   .rhythm-endpoint strong { font-size: 11px; }

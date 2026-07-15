@@ -1928,13 +1928,16 @@ export class BabyMonitorApp extends LitElement {
             </svg>
             ${markerSegments.map((segment) => {
               const position = rhythmMarkerPosition(segment);
+              const showRecordedSleepDetails = !segment.predicted && segment.type !== 'awake';
               const label = segment.predicted
                 ? this.language === 'es' ? segment.type === 'night' ? 'Sueño previsto' : 'Siesta prevista' : 'Predicted sleep'
                 : segment.type === 'awake' ? (this.language === 'es' ? 'Despertar por la noche' : 'Night waking') : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
               const detail = `${label} · ${formatClock(segment.prediction?.recommendedStart ?? segment.start.toISOString(), this.language)}${segment.predicted ? ` · ${this.language === 'es' ? 'previsto' : 'predicted'}` : `–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`}`;
               return html`
                 <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => this.openRhythmSegment(segment)}>
+                  ${showRecordedSleepDetails ? html`<span class="rhythm-marker-duration" aria-hidden="true">${formatDuration(segment.minutes)}</span>` : nothing}
                   ${icon(segment.predicted ? 'sparkle' : segment.type === 'awake' ? 'waves' : 'moon', 15)}
+                  ${showRecordedSleepDetails ? html`<small class="rhythm-marker-start" aria-hidden="true">${formatClock(segment.start.toISOString(), this.language)}</small>` : nothing}
                 </button>
               `;
             })}

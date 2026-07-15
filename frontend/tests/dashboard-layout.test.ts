@@ -3,13 +3,22 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { api } from '../src/api';
 import { BabyMonitorApp } from '../src/baby-monitor-app';
-import { cloneDefaultSettings, type AppSettings, type FrameRecord } from '../src/types';
+import { cloneDefaultSettings, type AppSettings, type FrameRecord, type Language, type SleepEvent } from '../src/types';
 
 interface DashboardHarness {
   settings: AppSettings;
   renderDashboard(): TemplateResult;
   loadOperationalData(showSpinner?: boolean): Promise<void>;
   refreshSnapshot(): Promise<FrameRecord | null>;
+}
+
+interface RhythmHarness {
+  settings: AppSettings;
+  language: Language;
+  rhythmDate: string;
+  rhythmMode: 'day' | 'night';
+  sleepEvents: SleepEvent[];
+  renderDailyRhythm(): TemplateResult;
 }
 
 describe('dashboard hierarchy', () => {
@@ -67,5 +76,30 @@ describe('dashboard hierarchy', () => {
     expect(await app.refreshSnapshot()).toEqual(frame);
     expect(app.loadOperationalData).toHaveBeenCalledWith(false);
     refresh.mockRestore();
+  });
+
+  it('shows duration above and start time below each recorded sleep segment', () => {
+    const app = new BabyMonitorApp() as unknown as RhythmHarness;
+    app.settings = cloneDefaultSettings();
+    app.language = 'es';
+    app.rhythmDate = '2026-07-10';
+    app.rhythmMode = 'day';
+    app.sleepEvents = [{
+      id: 'nap-with-visible-labels',
+      startedAt: '2026-07-10T10:00:00',
+      endedAt: '2026-07-10T11:30:00',
+      kind: 'nap',
+      source: 'vision',
+      notes: null,
+      details: { tags: [], pauses: [] },
+      locationId: 'granada',
+    }];
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    render(app.renderDailyRhythm(), container);
+
+    expect(container.querySelector('.rhythm-marker-duration')?.textContent).toBe('1 h 30 min');
+    expect(container.querySelector('.rhythm-marker-start')?.textContent).toBe('10:00');
   });
 });
