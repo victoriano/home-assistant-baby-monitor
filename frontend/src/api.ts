@@ -15,6 +15,12 @@ import {
   type HomeAssistantEntity,
   type ManualSleepInput,
   type PageResult,
+  type PredictionCalculation,
+  type PredictionClockSample,
+  type PredictionDurationSample,
+  type PredictionModelDetails,
+  type PredictionNumericEvidence,
+  type PredictionWakeWindowSample,
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
@@ -56,6 +62,16 @@ function asBoolean(value: unknown, fallback = false): boolean {
 
 function asNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function asNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asNumberArray(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
+    : [];
 }
 
 function asStringArray(value: unknown): string[] {
@@ -403,6 +419,7 @@ function normalizePredictionTarget(value: unknown): SleepPredictionTarget | null
   const kind = asString(data.kind);
   const recommendedStart = asString(pick(data, 'recommendedStart', 'recommended_start'));
   if ((kind !== 'nap' && kind !== 'night') || !recommendedStart) return null;
+  const calculation = normalizePredictionCalculation(data.calculation);
   return {
     kind,
     label: asString(data.label, kind === 'night' ? 'Night sleep' : 'Nap'),
@@ -412,6 +429,184 @@ function normalizePredictionTarget(value: unknown): SleepPredictionTarget | null
     durationMinutes: asNumber(pick(data, 'durationMinutes', 'duration_minutes'), kind === 'night' ? 600 : 45),
     confidence: asNumber(data.confidence),
     explanation: asString(data.explanation),
+    ...(calculation ? { calculation } : {}),
+  };
+}
+
+function normalizePredictionCalculation(value: unknown): PredictionCalculation | null {
+  const data = asRecord(value);
+  const method = asString(data.method);
+  if (method !== 'wake_window' && method !== 'bedtime_pattern') return null;
+  const rawAnchorType = asString(pick(data, 'anchorType', 'anchor_type'));
+  const anchorTypes: PredictionCalculation['anchorType'][] = [
+    'last_observed_wake',
+    'typical_morning_wake',
+    'previous_predicted_nap_end',
+    'recent_bedtime_median',
+    'age_guidance',
+  ];
+  const anchorType = anchorTypes.includes(rawAnchorType as PredictionCalculation['anchorType'])
+    ? rawAnchorType as PredictionCalculation['anchorType']
+    : method === 'wake_window' ? 'typical_morning_wake' : 'age_guidance';
+  const rawAdjustmentReason = asString(pick(data, 'adjustmentReason', 'adjustment_reason'));
+  const rawDurationSource = asString(pick(data, 'durationSource', 'duration_source'));
+  return {
+    method,
+    anchorAt: asNullableString(pick(data, 'anchorAt', 'anchor_at')),
+    anchorType,
+    baseRecommendedStart: asString(
+      pick(data, 'baseRecommendedStart', 'base_recommended_start'),
+    ),
+    adjustmentMinutes: asNumber(pick(data, 'adjustmentMinutes', 'adjustment_minutes')),
+    adjustmentReason: rawAdjustmentReason === 'past_window' ? 'past_window' : null,
+    wakeWindowMinutes: asNullableNumber(pick(data, 'wakeWindowMinutes', 'wake_window_minutes')),
+    startSampleCount: asNumber(pick(data, 'startSampleCount', 'start_sample_count')),
+    durationSampleCount: asNumber(pick(data, 'durationSampleCount', 'duration_sample_count')),
+    plannedNapNumber: asNullableNumber(pick(data, 'plannedNapNumber', 'planned_nap_number')) ?? undefined,
+    morningWakeSampleCount: asNullableNumber(
+      pick(data, 'morningWakeSampleCount', 'morning_wake_sample_count'),
+    ) ?? undefined,
+    expectedWakeAt: asNullableString(pick(data, 'expectedWakeAt', 'expected_wake_at')),
+    durationSource: rawDurationSource === 'bedtime_to_morning_wake'
+      || rawDurationSource === 'recent_night_duration'
+      ? rawDurationSource
+      : undefined,
+  };
+}
+
+function normalizeWakeWindowSample(value: unknown): PredictionWakeWindowSample | null {
+  const data = asRecord(value);
+  const previousSleepEndedAt = asString(
+    pick(data, 'previousSleepEndedAt', 'previous_sleep_ended_at'),
+  );
+  const nextSleepStartedAt = asString(
+    pick(data, 'nextSleepStartedAt', 'next_sleep_started_at'),
+  );
+  if (!previousSleepEndedAt || !nextSleepStartedAt) return null;
+  const previousKind = asString(pick(data, 'previousSleepKind', 'previous_sleep_kind'));
+  const nextKind = asString(pick(data, 'nextSleepKind', 'next_sleep_kind'));
+  return {
+    previousSleepId: asString(pick(data, 'previousSleepId', 'previous_sleep_id')),
+    previousSleepKind: previousKind === 'night' ? 'night' : 'nap',
+    previousSleepEndedAt,
+    nextSleepId: asString(pick(data, 'nextSleepId', 'next_sleep_id')),
+    nextSleepKind: nextKind === 'night' ? 'night' : 'nap',
+    nextSleepStartedAt,
+    minutes: asNumber(data.minutes),
+  };
+}
+
+function normalizeDurationSample(value: unknown): PredictionDurationSample | null {
+  const data = asRecord(value);
+  const startedAt = asString(pick(data, 'startedAt', 'started_at'));
+  const endedAt = asString(pick(data, 'endedAt', 'ended_at'));
+  if (!startedAt || !endedAt) return null;
+  return {
+    eventId: asString(pick(data, 'eventId', 'event_id')) || undefined,
+    nightDate: asString(pick(data, 'nightDate', 'night_date')) || undefined,
+    startedAt,
+    endedAt,
+    minutes: asNumber(data.minutes),
+    source: asString(data.source) || undefined,
+  };
+}
+
+function normalizeClockSample(value: unknown): PredictionClockSample | null {
+  const data = asRecord(value);
+  const at = asString(data.at);
+  if (!at) return null;
+  return {
+    date: asString(data.date),
+    at,
+    minuteOfDay: asNumber(pick(data, 'minuteOfDay', 'minute_of_day')),
+  };
+}
+
+function normalizeNumericEvidence<TSample>(
+  value: unknown,
+  normalizeSample: (item: unknown) => TSample | null,
+  fallbackFinal: number,
+): PredictionNumericEvidence<TSample> {
+  const data = asRecord(value);
+  return {
+    count: asNumber(data.count),
+    medianMinutes: asNullableNumber(pick(data, 'medianMinutes', 'median_minutes')),
+    minMinutes: asNullableNumber(pick(data, 'minMinutes', 'min_minutes')),
+    maxMinutes: asNullableNumber(pick(data, 'maxMinutes', 'max_minutes')),
+    valuesMinutes: asNumberArray(pick(data, 'valuesMinutes', 'values_minutes')),
+    finalMinutes: asNumber(pick(data, 'finalMinutes', 'final_minutes'), fallbackFinal),
+    samples: unwrapList(data.samples, ['items'])
+      .map(normalizeSample)
+      .filter((sample): sample is TSample => Boolean(sample)),
+  };
+}
+
+function normalizePredictionModelDetails(value: unknown): PredictionModelDetails | null {
+  const data = asRecord(value);
+  if (!Object.keys(data).length) return null;
+  const baseline = asRecord(data.baseline);
+  const wakeData = asRecord(pick(data, 'wakeWindows', 'wake_windows'));
+  const bedtimes = asRecord(data.bedtimes);
+  const morningWakes = asRecord(pick(data, 'morningWakes', 'morning_wakes'));
+  const confidence = asRecord(data.confidence);
+  const rawRule = asString(confidence.rule);
+  const wakeWindows = {
+    ...normalizeNumericEvidence(wakeData, normalizeWakeWindowSample, 180),
+    medianAbsoluteDeviationMinutes: asNullableNumber(
+      pick(wakeData, 'medianAbsoluteDeviationMinutes', 'median_absolute_deviation_minutes'),
+    ),
+    historyWeight: asNumber(pick(wakeData, 'historyWeight', 'history_weight')),
+  };
+  return {
+    generatedAt: asString(pick(data, 'generatedAt', 'generated_at')),
+    lookbackClosedSleepCount: asNumber(
+      pick(data, 'lookbackClosedSleepCount', 'lookback_closed_sleep_count'),
+    ),
+    baseline: {
+      ageBand: asString(pick(baseline, 'ageBand', 'age_band'), 'unknown'),
+      birthDateKnown: asBoolean(pick(baseline, 'birthDateKnown', 'birth_date_known')),
+      wakeWindowMinutes: asNumber(
+        pick(baseline, 'wakeWindowMinutes', 'wake_window_minutes'),
+        180,
+      ),
+      expectedNaps: asNumber(pick(baseline, 'expectedNaps', 'expected_naps')),
+    },
+    wakeWindows,
+    napDurations: normalizeNumericEvidence(
+      pick(data, 'napDurations', 'nap_durations'),
+      normalizeDurationSample,
+      45,
+    ),
+    bedtimes: {
+      count: asNumber(bedtimes.count),
+      medianMinuteOfDay: asNumber(
+        pick(bedtimes, 'medianMinuteOfDay', 'median_minute_of_day'),
+      ),
+      usedFallback: asBoolean(pick(bedtimes, 'usedFallback', 'used_fallback')),
+      samples: unwrapList(bedtimes.samples, ['items'])
+        .map(normalizeClockSample)
+        .filter((sample): sample is PredictionClockSample => Boolean(sample)),
+    },
+    morningWakes: {
+      count: asNumber(morningWakes.count),
+      medianMinuteOfDay: asNumber(
+        pick(morningWakes, 'medianMinuteOfDay', 'median_minute_of_day'),
+      ),
+      usedFallback: asBoolean(pick(morningWakes, 'usedFallback', 'used_fallback')),
+      samples: unwrapList(morningWakes.samples, ['items'])
+        .map(normalizeClockSample)
+        .filter((sample): sample is PredictionClockSample => Boolean(sample)),
+    },
+    nightDurations: normalizeNumericEvidence(
+      pick(data, 'nightDurations', 'night_durations'),
+      normalizeDurationSample,
+      600,
+    ),
+    confidence: {
+      value: asNumber(confidence.value),
+      sampleCount: asNumber(pick(confidence, 'sampleCount', 'sample_count')),
+      rule: rawRule === 'recent_wake_samples' ? 'recent_wake_samples' : 'age_guidance_fallback',
+    },
   };
 }
 
@@ -436,6 +631,9 @@ export function normalizeSleepPlan(value: unknown): SleepPlan {
     }];
   });
   const nextKind = asString(pick(data, 'nextKind', 'next_kind'));
+  const modelDetails = normalizePredictionModelDetails(
+    pick(data, 'modelDetails', 'model_details'),
+  );
   return {
     generatedAt: asString(pick(data, 'generatedAt', 'generated_at')),
     ageBand: asString(pick(data, 'ageBand', 'age_band'), 'unknown'),
@@ -446,6 +644,7 @@ export function normalizeSleepPlan(value: unknown): SleepPlan {
     wakeWindowMarginMinutes: asNumber(pick(data, 'wakeWindowMarginMinutes', 'wake_window_margin_minutes'), 35),
     averageNapMinutes: asNumber(pick(data, 'averageNapMinutes', 'average_nap_minutes'), 45),
     averageNightMinutes: asNumber(pick(data, 'averageNightMinutes', 'average_night_minutes'), 600),
+    ...(modelDetails ? { modelDetails } : {}),
     nextSleepAt: asNullableString(pick(data, 'nextSleepAt', 'next_sleep_at')),
     windowStart: asNullableString(pick(data, 'windowStart', 'window_start')),
     windowEnd: asNullableString(pick(data, 'windowEnd', 'window_end')),

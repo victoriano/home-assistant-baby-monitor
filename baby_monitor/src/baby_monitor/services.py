@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime, time, timedelta
-from statistics import median
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -511,12 +510,26 @@ class DashboardService:
                     if pause_end > pause_start:
                         sleep_minutes -= (pause_end - pause_start).total_seconds() / 60
 
-        prediction_history, _ = self.database.list_sleep_events(limit=30)
-        next_sleep_at, prediction_confidence, prediction_reason = self._prediction(
-            settings.baby.birth_date,
-            latest_sleep,
-            open_sleep,
+        prediction_history, _ = self.database.list_sleep_events(limit=2_000)
+        prediction_plan = build_sleep_plan(
             prediction_history,
+            birth_date=settings.baby.birth_date,
+            timezone_name=settings.baby.timezone,
+        )
+        next_sleep_at = (
+            datetime.fromisoformat(prediction_plan["nextSleepAt"])
+            if not open_sleep and prediction_plan["nextSleepAt"]
+            else None
+        )
+        prediction_window_start = (
+            datetime.fromisoformat(prediction_plan["windowStart"])
+            if next_sleep_at and prediction_plan["windowStart"]
+            else None
+        )
+        prediction_window_end = (
+            datetime.fromisoformat(prediction_plan["windowEnd"])
+            if next_sleep_at and prediction_plan["windowEnd"]
+            else None
         )
         latest_cry = self.database.latest_cry_event()
         frames, _ = self.database.list_frames(limit=1)
@@ -527,8 +540,10 @@ class DashboardService:
             "state_since": state_since,
             "current_sleep": open_sleep,
             "next_sleep_at": next_sleep_at,
-            "prediction_confidence": prediction_confidence,
-            "prediction_reason": prediction_reason,
+            "prediction_window_start": prediction_window_start,
+            "prediction_window_end": prediction_window_end,
+            "prediction_confidence": prediction_plan["confidence"] if next_sleep_at else None,
+            "prediction_reason": prediction_plan["reason"] if next_sleep_at else None,
             "sleep_today_minutes": round(sleep_minutes),
             "last_cry_at": latest_cry.detected_at if latest_cry else None,
             "cry_active": latest_cry is not None and latest_cry.ended_at is None,
@@ -545,55 +560,3 @@ class DashboardService:
             birth_date=settings.baby.birth_date,
             timezone_name=settings.baby.timezone,
         )
-
-    @staticmethod
-    def _prediction(
-        birth_date: Any,
-        latest: SleepEvent | None,
-        open_sleep: SleepEvent | None,
-        history: list[SleepEvent],
-    ) -> tuple[datetime | None, float | None, str | None]:
-        if open_sleep or latest is None or latest.ended_at is None:
-            return None, None, None
-        if birth_date is None:
-            baseline_minutes = 180
-        else:
-            age_days = max(0, (datetime.now(UTC).date() - birth_date).days)
-            if age_days < 90:
-                baseline_minutes = 75
-            elif age_days < 180:
-                baseline_minutes = 120
-            elif age_days < 270:
-                baseline_minutes = 165
-            elif age_days < 365:
-                baseline_minutes = 210
-            elif age_days < 548:
-                baseline_minutes = 270
-            elif age_days < 730:
-                baseline_minutes = 300
-            else:
-                baseline_minutes = 360
-
-        closed = sorted(
-            (event for event in history if event.kind != "awake" and event.ended_at is not None),
-            key=lambda event: event.started_at,
-        )
-        wake_intervals: list[float] = []
-        for previous, following in zip(closed, closed[1:], strict=False):
-            assert previous.ended_at is not None
-            gap_minutes = (following.started_at - previous.ended_at).total_seconds() / 60
-            if 15 <= gap_minutes <= 12 * 60:
-                wake_intervals.append(gap_minutes)
-
-        if len(wake_intervals) >= 3:
-            sample = wake_intervals[-12:]
-            learned_minutes = float(median(sample))
-            history_weight = min(0.65, 0.25 + len(sample) * 0.04)
-            wake_minutes = round(baseline_minutes * (1 - history_weight) + learned_minutes * history_weight)
-            confidence = min(0.9, 0.55 + len(sample) * 0.025)
-            reason = "Blended age guidance with recent wake intervals"
-        else:
-            wake_minutes = baseline_minutes
-            confidence = 0.5 if birth_date is None else 0.6
-            reason = "Age-based wake window while more history is collected"
-        return latest.ended_at + timedelta(minutes=wake_minutes), confidence, reason

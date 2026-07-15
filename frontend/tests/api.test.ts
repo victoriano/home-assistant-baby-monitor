@@ -238,6 +238,31 @@ describe('dashboard normalization', () => {
       ageBand: '4-5m',
       confidence: 0.81,
       wakeWindowMinutes: 135,
+      modelDetails: {
+        generatedAt: '2026-07-13T12:00:00+02:00',
+        lookbackClosedSleepCount: 18,
+        baseline: { ageBand: '4-5m', birthDateKnown: true, wakeWindowMinutes: 135, expectedNaps: 4 },
+        wakeWindows: {
+          count: 3, medianMinutes: 142, minMinutes: 130, maxMinutes: 155,
+          valuesMinutes: [130, 142, 155], finalMinutes: 139,
+          medianAbsoluteDeviationMinutes: 12, historyWeight: 0.405,
+          samples: [{
+            previousSleepId: 'sleep-a', previousSleepKind: 'nap',
+            previousSleepEndedAt: '2026-07-12T08:00:00+02:00',
+            nextSleepId: 'sleep-b', nextSleepKind: 'nap',
+            nextSleepStartedAt: '2026-07-12T10:22:00+02:00', minutes: 142,
+          }],
+        },
+        napDurations: {
+          count: 1, medianMinutes: 45, minMinutes: 45, maxMinutes: 45,
+          valuesMinutes: [45], finalMinutes: 45,
+          samples: [{ eventId: 'sleep-a', startedAt: '2026-07-12T07:15:00+02:00', endedAt: '2026-07-12T08:00:00+02:00', minutes: 45, source: 'vision' }],
+        },
+        bedtimes: { count: 1, medianMinuteOfDay: 1230, usedFallback: false, samples: [{ date: '2026-07-12', at: '2026-07-12T20:30:00+02:00', minuteOfDay: 1230 }] },
+        morningWakes: { count: 1, medianMinuteOfDay: 450, usedFallback: false, samples: [{ date: '2026-07-13', at: '2026-07-13T07:30:00+02:00', minuteOfDay: 450 }] },
+        nightDurations: { count: 1, medianMinutes: 660, minMinutes: 660, maxMinutes: 660, valuesMinutes: [660], finalMinutes: 660, samples: [{ nightDate: '2026-07-13', startedAt: '2026-07-12T20:30:00+02:00', endedAt: '2026-07-13T07:30:00+02:00', minutes: 660 }] },
+        confidence: { value: 0.645, sampleCount: 3, rule: 'recent_wake_samples' },
+      },
       plans: [{
         date: '2026-07-14',
         morningWakeAt: '2026-07-14T07:30:00+02:00',
@@ -247,6 +272,12 @@ describe('dashboard normalization', () => {
           kind: 'nap', label: 'Nap 1', recommendedStart: '2026-07-14T10:00:00+02:00',
           windowStart: '2026-07-14T09:30:00+02:00', windowEnd: '2026-07-14T10:30:00+02:00',
           durationMinutes: 45, confidence: 0.81, explanation: 'Recent rhythm',
+          calculation: {
+            method: 'wake_window', anchorAt: '2026-07-14T07:41:00+02:00',
+            anchorType: 'typical_morning_wake', baseRecommendedStart: '2026-07-14T10:00:00+02:00',
+            adjustmentMinutes: 0, adjustmentReason: null, wakeWindowMinutes: 139,
+            startSampleCount: 3, durationSampleCount: 1, plannedNapNumber: 1,
+          },
         }],
         nightPrediction: {
           kind: 'night', label: 'Night sleep', recommendedStart: '2026-07-14T20:30:00+02:00',
@@ -258,7 +289,11 @@ describe('dashboard normalization', () => {
 
     expect(plan.plans).toHaveLength(1);
     expect(plan.plans[0].dayNapPredictions[0].durationMinutes).toBe(45);
+    expect(plan.plans[0].dayNapPredictions[0].calculation?.anchorType).toBe('typical_morning_wake');
     expect(plan.plans[0].nightPrediction.kind).toBe('night');
+    expect(plan.modelDetails?.wakeWindows.medianMinutes).toBe(142);
+    expect(plan.modelDetails?.wakeWindows.samples[0].minutes).toBe(142);
+    expect(plan.modelDetails?.bedtimes.samples[0].at).toBe('2026-07-12T20:30:00+02:00');
   });
 });
 

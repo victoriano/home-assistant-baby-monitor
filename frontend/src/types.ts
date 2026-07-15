@@ -247,6 +247,92 @@ export interface SleepPredictionTarget {
   durationMinutes: number;
   confidence: number;
   explanation: string;
+  calculation?: PredictionCalculation;
+}
+
+export interface PredictionCalculation {
+  method: 'wake_window' | 'bedtime_pattern';
+  anchorAt: string | null;
+  anchorType: 'last_observed_wake' | 'typical_morning_wake' | 'previous_predicted_nap_end' | 'recent_bedtime_median' | 'age_guidance';
+  baseRecommendedStart: string;
+  adjustmentMinutes: number;
+  adjustmentReason: 'past_window' | null;
+  wakeWindowMinutes: number | null;
+  startSampleCount: number;
+  durationSampleCount: number;
+  plannedNapNumber?: number;
+  morningWakeSampleCount?: number;
+  expectedWakeAt?: string | null;
+  durationSource?: 'bedtime_to_morning_wake' | 'recent_night_duration';
+}
+
+export interface PredictionWakeWindowSample {
+  previousSleepId: string;
+  previousSleepKind: 'nap' | 'night';
+  previousSleepEndedAt: string;
+  nextSleepId: string;
+  nextSleepKind: 'nap' | 'night';
+  nextSleepStartedAt: string;
+  minutes: number;
+}
+
+export interface PredictionDurationSample {
+  eventId?: string;
+  nightDate?: string;
+  startedAt: string;
+  endedAt: string;
+  minutes: number;
+  source?: string;
+}
+
+export interface PredictionClockSample {
+  date: string;
+  at: string;
+  minuteOfDay: number;
+}
+
+export interface PredictionNumericEvidence<TSample> {
+  count: number;
+  medianMinutes: number | null;
+  minMinutes: number | null;
+  maxMinutes: number | null;
+  valuesMinutes: number[];
+  finalMinutes: number;
+  samples: TSample[];
+}
+
+export interface PredictionModelDetails {
+  generatedAt: string;
+  lookbackClosedSleepCount: number;
+  baseline: {
+    ageBand: string;
+    birthDateKnown: boolean;
+    wakeWindowMinutes: number;
+    expectedNaps: number;
+  };
+  wakeWindows: PredictionNumericEvidence<PredictionWakeWindowSample> & {
+    medianAbsoluteDeviationMinutes: number | null;
+    historyWeight: number;
+  };
+  napDurations: PredictionNumericEvidence<PredictionDurationSample>;
+  bedtimes: {
+    count: number;
+    medianMinuteOfDay: number;
+    usedFallback: boolean;
+    samples: PredictionClockSample[];
+  };
+  morningWakes: {
+    count: number;
+    medianMinuteOfDay: number;
+    usedFallback: boolean;
+    samples: PredictionClockSample[];
+  };
+  nightDurations: PredictionNumericEvidence<PredictionDurationSample>;
+  confidence: {
+    value: number;
+    sampleCount: number;
+    rule: 'recent_wake_samples' | 'age_guidance_fallback';
+  };
 }
 
 export interface SleepDayPlan {
@@ -269,6 +355,7 @@ export interface SleepPlan {
   wakeWindowMarginMinutes: number;
   averageNapMinutes: number;
   averageNightMinutes: number;
+  modelDetails?: PredictionModelDetails;
   nextSleepAt: string | null;
   windowStart: string | null;
   windowEnd: string | null;

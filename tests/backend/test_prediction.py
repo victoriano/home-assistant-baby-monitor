@@ -41,3 +41,33 @@ def test_prediction_restores_today_and_tomorrow_plans() -> None:
     assert result["nextSleepAt"] is not None
     assert 0 < result["confidence"] <= 1
 
+    details = result["modelDetails"]
+    assert details["baseline"] == {
+        "ageBand": "12-17m",
+        "birthDateKnown": True,
+        "wakeWindowMinutes": 240,
+        "expectedNaps": 2,
+    }
+    assert details["wakeWindows"]["valuesMinutes"] == [180.0, 385.0, 195.0, 175.0, 380.0]
+    assert details["wakeWindows"]["medianMinutes"] == 195.0
+    assert details["wakeWindows"]["historyWeight"] == 0.475
+    assert details["wakeWindows"]["finalMinutes"] == result["wakeWindowMinutes"] == 219
+    assert details["napDurations"]["medianMinutes"] == 47.5
+    assert details["bedtimes"]["count"] == 2
+    assert details["morningWakes"]["count"] == 2
+
+    first_nap = result["plans"][0]["dayNapPredictions"][0]
+    calculation = first_nap["calculation"]
+    assert calculation["method"] == "wake_window"
+    assert calculation["anchorType"] == "last_observed_wake"
+    assert calculation["startSampleCount"] == 5
+    anchor = datetime.fromisoformat(calculation["anchorAt"])
+    base = datetime.fromisoformat(calculation["baseRecommendedStart"])
+    assert base == anchor + timedelta(minutes=result["wakeWindowMinutes"])
+    assert calculation["adjustmentReason"] == "past_window"
+
+    night = result["plans"][0]["nightPrediction"]
+    assert night["calculation"]["method"] == "bedtime_pattern"
+    assert night["calculation"]["anchorType"] == "recent_bedtime_median"
+    assert night["calculation"]["startSampleCount"] == details["bedtimes"]["count"]
+    assert night["calculation"]["morningWakeSampleCount"] == details["morningWakes"]["count"]

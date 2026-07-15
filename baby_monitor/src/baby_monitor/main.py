@@ -535,8 +535,8 @@ def create_app(
             "currentSleep": _sleep(result["current_sleep"]) if result["current_sleep"] else None,
             "prediction": {
                 "nextSleepAt": next_sleep,
-                "windowStart": next_sleep - timedelta(minutes=30) if next_sleep else None,
-                "windowEnd": next_sleep + timedelta(minutes=30) if next_sleep else None,
+                "windowStart": result["prediction_window_start"],
+                "windowEnd": result["prediction_window_end"],
                 "confidence": result["prediction_confidence"],
                 "reason": result["prediction_reason"],
             },

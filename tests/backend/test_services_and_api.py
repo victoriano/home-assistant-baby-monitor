@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -605,8 +605,14 @@ def test_prediction_blends_recent_wake_intervals_with_age_baseline(tmp_path: Pat
         )
     assert latest is not None and latest.ended_at is not None
 
-    result = DashboardService(app.state.database, app.state.settings).summary()
-    learned_minutes = (result["next_sleep_at"] - latest.ended_at).total_seconds() / 60
-    assert 120 < learned_minutes < 180
+    dashboard = DashboardService(app.state.database, app.state.settings)
+    result = dashboard.summary()
+    plan = dashboard.predictions()
+    assert abs((result["next_sleep_at"] - datetime.fromisoformat(plan["nextSleepAt"])).total_seconds()) < 1
+    assert (
+        abs((result["prediction_window_start"] - datetime.fromisoformat(plan["windowStart"])).total_seconds()) < 1
+    )
+    assert abs((result["prediction_window_end"] - datetime.fromisoformat(plan["windowEnd"])).total_seconds()) < 1
+    assert result["prediction_confidence"] == plan["confidence"]
     assert result["prediction_confidence"] > 0.6
     assert "recent wake intervals" in result["prediction_reason"]

@@ -2186,6 +2186,60 @@ export class BabyMonitorApp extends LitElement {
   private renderPredictionDialog(): TemplateResult | typeof nothing {
     const target = this.selectedPrediction;
     if (!target) return nothing;
+    const calculation = target.calculation;
+    const model = this.sleepPlan?.modelDetails;
+    const subject = this.settings.baby.name.trim() || (this.language === 'es' ? 'El bebé' : 'The baby');
+    const spanish = this.language === 'es';
+    const historyPercent = model ? Math.round(model.wakeWindows.historyWeight * 100) : 0;
+    const agePercent = 100 - historyPercent;
+    const ageLabels: Record<string, string> = {
+      unknown: spanish ? 'edad sin configurar' : 'age not configured',
+      '0-3m': spanish ? '0–3 meses' : '0–3 months',
+      '4-5m': spanish ? '4–5 meses' : '4–5 months',
+      '6-8m': spanish ? '6–8 meses' : '6–8 months',
+      '9-11m': spanish ? '9–11 meses' : '9–11 months',
+      '12-17m': spanish ? '12–17 meses' : '12–17 months',
+      '18-23m': spanish ? '18–23 meses' : '18–23 months',
+      '24m+': spanish ? '24 meses o más' : '24 months or older',
+    };
+    const ageLabel = model ? ageLabels[model.baseline.ageBand] ?? model.baseline.ageBand : '';
+    const anchorLabels: Record<string, string> = spanish ? {
+      last_observed_wake: 'Último despertar observado',
+      typical_morning_wake: 'Despertar habitual de la mañana',
+      previous_predicted_nap_end: 'Fin previsto de la siesta anterior',
+      recent_bedtime_median: 'Mediana de acostarse reciente',
+      age_guidance: 'Referencia por edad',
+    } : {
+      last_observed_wake: 'Last observed wake-up',
+      typical_morning_wake: 'Typical morning wake-up',
+      previous_predicted_nap_end: 'Predicted end of the previous nap',
+      recent_bedtime_median: 'Recent median bedtime',
+      age_guidance: 'Age guidance',
+    };
+    const anchorLabel = calculation ? anchorLabels[calculation.anchorType] : '';
+    const learnedWake = model?.wakeWindows.medianMinutes;
+    const wakeRange = model?.wakeWindows.minMinutes != null && model.wakeWindows.maxMinutes != null
+      ? `${formatDuration(model.wakeWindows.minMinutes)}–${formatDuration(model.wakeWindows.maxMinutes)}`
+      : '—';
+    const wakeSpread = model?.wakeWindows.minMinutes != null && model.wakeWindows.maxMinutes != null
+      ? model.wakeWindows.maxMinutes - model.wakeWindows.minMinutes
+      : 0;
+    const variabilityWarning = wakeSpread >= 180
+      ? (spanish ? ' Hay mucha dispersión: conviene revisar las muestras extremas.' : ' The spread is wide, so the extreme samples are worth reviewing.')
+      : '';
+    const pattern = target.kind === 'nap'
+      ? learnedWake != null && model
+        ? spanish
+          ? `La mediana reciente de ${subject} es ${formatDuration(learnedWake)} (rango observado ${wakeRange}). El historial pesa ahora un ${historyPercent}% y la referencia por edad un ${agePercent}%.${variabilityWarning}`
+          : `${subject}'s recent median is ${formatDuration(learnedWake)} (observed range ${wakeRange}). Personal history currently weighs ${historyPercent}% and age guidance ${agePercent}%.${variabilityWarning}`
+        : spanish
+          ? `Todavía no hay tres ventanas despierto válidas. Esta hora se apoya principalmente en la referencia por edad y se irá personalizando.`
+          : `There are not yet three valid wake windows. This time relies mainly on age guidance and will personalize as history grows.`
+      : model
+        ? spanish
+          ? `${subject} suele acostarse alrededor de ${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)} y despertarse sobre las ${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}. La duración nocturna agrupada tiene una mediana de ${formatDuration(model.nightDurations.finalMinutes)}.`
+          : `${subject} usually goes to bed around ${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)} and wakes around ${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}. Grouped night sleep has a median duration of ${formatDuration(model.nightDurations.finalMinutes)}.`
+        : target.explanation;
     return html`
       <div class=${`manual-dialog-backdrop prediction-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.selectedPrediction = null; }}>
         <section class="manual-dialog prediction-dialog" role="dialog" aria-modal="true">
@@ -2195,9 +2249,109 @@ export class BabyMonitorApp extends LitElement {
           <h2>${this.language === 'es' ? target.kind === 'night' ? 'Sueño largo previsto' : 'Siesta prevista' : target.label}</h2>
           <div class="prediction-dialog-time"><div><span>${this.language === 'es' ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(target.recommendedStart, this.language)}</strong></div><i>–</i><div><span>${this.language === 'es' ? 'Fin estimado' : 'Estimated end'}</span><strong>${formatClock(new Date(new Date(target.recommendedStart).getTime() + target.durationMinutes * 60_000).toISOString(), this.language)}</strong></div></div>
           <div class="prediction-dialog-grid"><div><span>${this.language === 'es' ? 'Ventana' : 'Window'}</span><strong>${formatClock(target.windowStart, this.language)}–${formatClock(target.windowEnd, this.language)}</strong></div><div><span>${this.language === 'es' ? 'Duración' : 'Duration'}</span><strong>${formatDuration(target.durationMinutes)}</strong></div><div><span>${this.language === 'es' ? 'Confianza' : 'Confidence'}</span><strong>${Math.round(target.confidence * 100)}%</strong></div></div>
-          <p>${this.language === 'es' ? 'Calculado con las ventanas despierto, las duraciones y los horarios recientes guardados en este historial.' : target.explanation}</p>
+          ${calculation && model ? html`
+            <section class="prediction-receipt">
+              <header><span>${icon('sparkle', 17)}</span><div><strong>${spanish ? `Cómo llegamos a las ${formatClock(target.recommendedStart, this.language)}` : `How we reached ${formatClock(target.recommendedStart, this.language)}`}</strong><small>${spanish ? 'Un cálculo local que puedes comprobar' : 'A local calculation you can verify'}</small></div></header>
+              ${target.kind === 'nap' && calculation.anchorAt && calculation.wakeWindowMinutes != null ? html`
+                <div class="prediction-equation">
+                  <div><span>${spanish ? 'Partimos de' : 'Starting from'}</span><strong>${formatClock(calculation.anchorAt, this.language)}</strong><small>${anchorLabel}</small></div>
+                  <b>+</b>
+                  <div><span>${spanish ? 'Ventana ajustada' : 'Adjusted wake window'}</span><strong>${formatDuration(calculation.wakeWindowMinutes)}</strong><small>${calculation.startSampleCount} ${spanish ? 'muestras recientes' : 'recent samples'}</small></div>
+                  <b>=</b>
+                  <div class="result"><span>${spanish ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(calculation.baseRecommendedStart || target.recommendedStart, this.language)}</strong><small>${calculation.adjustmentMinutes ? (spanish ? 'antes de salvaguardas' : 'before safeguards') : (spanish ? 'resultado exacto' : 'exact result')}</small></div>
+                </div>
+                ${calculation.adjustmentMinutes ? html`<p class="prediction-adjustment">${icon('clock', 15)} ${spanish ? `La ventana original ya había pasado al actualizar el plan. Se desplazó ${formatDuration(calculation.adjustmentMinutes)} para no recomendar una hora caducada: ${formatClock(target.recommendedStart, this.language)}.` : `The original window had already passed when the plan refreshed. It was moved by ${formatDuration(calculation.adjustmentMinutes)} so it would not recommend an expired time: ${formatClock(target.recommendedStart, this.language)}.`}</p>` : nothing}
+              ` : html`
+                <div class="prediction-equation night-equation">
+                  <div><span>${spanish ? 'Patrón usado' : 'Pattern used'}</span><strong>${model.bedtimes.count || '—'}</strong><small>${model.bedtimes.count ? (spanish ? 'noches recientes' : 'recent nights') : (spanish ? 'referencia por edad' : 'age guidance')}</small></div>
+                  <b>→</b>
+                  <div><span>${spanish ? 'Mediana de acostarse' : 'Median bedtime'}</span><strong>${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)}</strong><small>${calculation.anchorType === 'age_guidance' ? (spanish ? 'valor inicial' : 'initial value') : (spanish ? 'patrón personal' : 'personal pattern')}</small></div>
+                  <b>=</b>
+                  <div class="result"><span>${spanish ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(target.recommendedStart, this.language)}</strong><small>${calculation.expectedWakeAt ? `${spanish ? 'despertar ~' : 'wake ~'} ${formatClock(calculation.expectedWakeAt, this.language)}` : ''}</small></div>
+                </div>
+              `}
+            </section>
+
+            <section class="prediction-learning"><span>${icon('moon', 17)}</span><div><strong>${spanish ? 'Lo que estamos aprendiendo' : 'What we are learning'}</strong><p>${pattern}</p></div></section>
+
+            <details class="prediction-method">
+              <summary>${icon('chevron', 15)}<div><strong>${spanish ? 'Ver datos y método' : 'See data and method'}</strong><small>${spanish ? 'Medianas, pesos y muestras exactas' : 'Medians, weights and exact samples'}</small></div></summary>
+              <div class="prediction-method-body">
+                <div class="prediction-evidence-grid">
+                  ${target.kind === 'nap' ? html`
+                    <div><span>${spanish ? 'Base por edad' : 'Age baseline'}</span><strong>${formatDuration(model.baseline.wakeWindowMinutes)}</strong><small>${ageLabel} · ${model.baseline.expectedNaps} ${spanish ? 'siestas esperadas' : 'expected naps'}</small></div>
+                    <div><span>${spanish ? 'Mediana personal' : 'Personal median'}</span><strong>${learnedWake == null ? '—' : formatDuration(learnedWake)}</strong><small>${model.wakeWindows.count} ${spanish ? 'ventanas válidas' : 'valid windows'}</small></div>
+                    <div><span>${spanish ? 'Objetivo final' : 'Final target'}</span><strong>${formatDuration(model.wakeWindows.finalMinutes)}</strong><small>${historyPercent}% ${spanish ? 'historial' : 'history'} · ${agePercent}% ${spanish ? 'edad' : 'age'}</small></div>
+                    <div><span>${spanish ? 'Margen' : 'Margin'}</span><strong>±${formatDuration(this.sleepPlan?.wakeWindowMarginMinutes ?? 0)}</strong><small>${spanish ? 'según variabilidad' : 'from variability'}</small></div>
+                    <div><span>${spanish ? 'Duración de siesta' : 'Nap duration'}</span><strong>${formatDuration(model.napDurations.finalMinutes)}</strong><small>${model.napDurations.count} ${spanish ? 'siestas recientes' : 'recent naps'}</small></div>
+                  ` : html`
+                    <div><span>${spanish ? 'Inicio nocturno' : 'Night start'}</span><strong>${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)}</strong><small>${model.bedtimes.count} ${spanish ? 'noches recientes' : 'recent nights'}</small></div>
+                    <div><span>${spanish ? 'Despertar matinal' : 'Morning wake'}</span><strong>${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}</strong><small>${model.morningWakes.count} ${spanish ? 'mañanas recientes' : 'recent mornings'}</small></div>
+                    <div><span>${spanish ? 'Duración nocturna' : 'Night duration'}</span><strong>${formatDuration(model.nightDurations.finalMinutes)}</strong><small>${model.nightDurations.count} ${spanish ? 'noches agrupadas' : 'grouped nights'}</small></div>
+                    <div><span>${spanish ? 'Duración prevista' : 'Expected duration'}</span><strong>${formatDuration(target.durationMinutes)}</strong><small>${calculation.durationSource === 'recent_night_duration' ? (spanish ? 'mediana de duración' : 'duration median') : (spanish ? 'de acostarse a despertar' : 'bedtime to wake-up')}</small></div>
+                  `}
+                  <div><span>${spanish ? 'Confianza global' : 'Overall confidence'}</span><strong>${Math.round(target.confidence * 100)}%</strong><small>${model.confidence.sampleCount} ${spanish ? 'ventanas recientes' : 'recent windows'}</small></div>
+                </div>
+
+                <div class="prediction-formula">
+                  <strong>${spanish ? 'Cómo funciona por debajo' : 'How it works underneath'}</strong>
+                  ${target.kind === 'nap' ? html`
+                    <p>${learnedWake != null ? (spanish
+                      ? `Ventana = redondeo de ${formatDuration(model.baseline.wakeWindowMinutes)} × ${agePercent}% + ${formatDuration(learnedWake)} × ${historyPercent}% = ${formatDuration(model.wakeWindows.finalMinutes)}.`
+                      : `Wake window = rounded ${formatDuration(model.baseline.wakeWindowMinutes)} × ${agePercent}% + ${formatDuration(learnedWake)} × ${historyPercent}% = ${formatDuration(model.wakeWindows.finalMinutes)}.`) : (spanish ? 'Sin tres muestras válidas se usa directamente la referencia por edad.' : 'With fewer than three valid samples, age guidance is used directly.')}</p>
+                    <p>${spanish ? `La ventana de tolerancia usa la desviación mediana de las muestras × 1,7, limitada entre 25 y 75 minutos; con menos de cuatro muestras son 35 minutos.` : `The tolerance window uses median sample deviation × 1.7, clamped between 25 and 75 minutes; with fewer than four samples it is 35 minutes.`}</p>
+                  ` : html`<p>${spanish ? 'El inicio es la mediana de hasta 10 noches recientes. El fin usa la mediana de hasta 14 despertares matinales; si el intervalo resultante cae fuera de 6–13 horas, se usa la mediana de duración nocturna.' : 'Start time is the median of up to 10 recent nights. End time uses the median of up to 14 morning wake-ups; if that span falls outside 6–13 hours, median night duration is used.'}</p>`}
+                  <p>${model.confidence.rule === 'recent_wake_samples'
+                    ? (spanish ? `Confianza = mínimo(92%, 57% + ${model.confidence.sampleCount} muestras × 2,5 puntos) = ${Math.round(model.confidence.value * 100)}%.` : `Confidence = min(92%, 57% + ${model.confidence.sampleCount} samples × 2.5 points) = ${Math.round(model.confidence.value * 100)}%.`)
+                    : (spanish ? `A falta de historial suficiente, la confianza inicial es ${Math.round(model.confidence.value * 100)}%.` : `Without enough history, initial confidence is ${Math.round(model.confidence.value * 100)}%.`)}</p>
+                  <p>${spanish ? `Se revisan como máximo 80 tramos cerrados. Solo entran ventanas despierto de 15 min a 12 h y siestas de 15 min a 3 h.` : `At most 80 closed sleep periods are reviewed. Only wake windows from 15 min to 12 h and naps from 15 min to 3 h are accepted.`}</p>
+                </div>
+
+                ${this.renderPredictionSamples(target)}
+
+                <p class="prediction-local-note">${icon('lock', 15)} ${spanish ? 'El predictor es determinista y local: no llama a Gemini ni vuelve a mirar las fotos. Usa los tramos de sueño ya guardados, así que una detección visual errónea puede influir hasta que corrijas ese tramo.' : 'The predictor is deterministic and local: it does not call Gemini or inspect images again. It uses saved sleep periods, so an incorrect visual detection can influence it until that period is corrected.'}</p>
+                <p class="prediction-generated">${spanish ? 'Calculado' : 'Calculated'} · ${formatDateTime(model.generatedAt, this.language)}</p>
+              </div>
+            </details>
+          ` : html`<p>${spanish ? 'Calculado con las ventanas despierto, las duraciones y los horarios recientes guardados en este historial.' : target.explanation}</p>`}
         </section>
       </div>
+    `;
+  }
+
+  private formatPredictionMinute(value: number): string {
+    if (!Number.isFinite(value)) return '—';
+    const normalized = ((Math.round(value) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
+  }
+
+  private renderPredictionSamples(target: SleepPredictionTarget): TemplateResult | typeof nothing {
+    const model = this.sleepPlan?.modelDetails;
+    if (!model) return nothing;
+    const spanish = this.language === 'es';
+    if (target.kind === 'nap') {
+      const wakeSamples = model.wakeWindows.samples.slice().reverse();
+      const durationSamples = model.napDurations.samples.slice().reverse();
+      if (!wakeSamples.length && !durationSamples.length) return nothing;
+      return html`
+        <section class="prediction-samples">
+          <h3>${spanish ? 'Muestras exactas usadas' : 'Exact samples used'}</h3>
+          ${wakeSamples.length ? html`<h4>${spanish ? 'Ventanas despierto' : 'Wake windows'}</h4><ol>${wakeSamples.map((sample) => html`<li><span>${formatDateTime(sample.previousSleepEndedAt, this.language)} → ${formatClock(sample.nextSleepStartedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+          ${durationSamples.length ? html`<h4>${spanish ? 'Duraciones de siesta' : 'Nap durations'}</h4><ol>${durationSamples.map((sample) => html`<li><span>${formatDateTime(sample.startedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+        </section>
+      `;
+    }
+    const bedtimes = model.bedtimes.samples.slice().reverse();
+    const wakes = model.morningWakes.samples.slice().reverse();
+    const durations = model.nightDurations.samples.slice().reverse();
+    if (!bedtimes.length && !wakes.length && !durations.length) return nothing;
+    return html`
+      <section class="prediction-samples night-samples">
+        <h3>${spanish ? 'Noches exactas usadas' : 'Exact nights used'}</h3>
+        ${bedtimes.length ? html`<h4>${spanish ? 'Horas de acostarse' : 'Bedtimes'}</h4><ol>${bedtimes.map((sample) => html`<li><span>${formatDateTime(sample.at, this.language)}</span><strong>${formatClock(sample.at, this.language)}</strong></li>`)}</ol>` : nothing}
+        ${wakes.length ? html`<h4>${spanish ? 'Despertares matinales' : 'Morning wake-ups'}</h4><ol>${wakes.map((sample) => html`<li><span>${formatDateTime(sample.at, this.language)}</span><strong>${formatClock(sample.at, this.language)}</strong></li>`)}</ol>` : nothing}
+        ${durations.length ? html`<h4>${spanish ? 'Duraciones nocturnas agrupadas' : 'Grouped night durations'}</h4><ol>${durations.map((sample) => html`<li><span>${sample.nightDate || formatDateTime(sample.startedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+      </section>
     `;
   }
 

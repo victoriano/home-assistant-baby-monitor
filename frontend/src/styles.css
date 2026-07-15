@@ -908,7 +908,7 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .temporal-quick button { min-height: 34px; border: 1px solid var(--edge); border-radius: 10px; background: var(--slate-soft); color: var(--quiet); font-size: 8px; }
 .temporal-confirm { width: min(100%,360px); margin: 15px auto 0; }
 
-.prediction-dialog { position: relative; display: grid; justify-items: center; padding: 34px 25px 27px; border: 1px solid var(--edge); background: var(--slate-room); color: var(--linen); text-align: center; }
+.prediction-dialog { position: relative; display: grid; justify-items: center; width: min(760px,100%); padding: 34px 25px 27px; border: 1px solid var(--edge); background: var(--slate-room); color: var(--linen); text-align: center; }
 .prediction-dialog-icon { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 10px; border: 1px dashed rgba(168,178,255,.35); border-radius: 50%; background: var(--indigo-wash); color: var(--indigo-bright); }
 .prediction-dialog > small { color: var(--faint); font-size: 8px; letter-spacing: .10em; text-transform: uppercase; }
 .prediction-dialog h2 { margin: 5px 0 20px; font-size: 24px; }
@@ -921,6 +921,55 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .prediction-dialog-grid div { display: grid; gap: 4px; padding: 11px 7px; border: 1px solid var(--edge); border-radius: 12px; }
 .prediction-dialog-grid strong { font-size: 10px; }
 .prediction-dialog > p { max-width: 470px; margin: 17px 0 0; color: var(--quiet); font-size: 10px; line-height: 1.55; }
+.prediction-receipt { width: 100%; margin-top: 20px; padding: 15px; border: 1px solid rgba(168,178,255,.25); border-radius: 18px; background: linear-gradient(145deg, var(--indigo-wash), rgba(139,152,244,.035)); text-align: left; }
+.prediction-receipt > header { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.prediction-receipt > header > span { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border-radius: 50%; background: var(--indigo-wash); color: var(--indigo-bright); }
+.prediction-receipt > header > div { display: grid; gap: 2px; }
+.prediction-receipt > header strong { font-size: 12px; }
+.prediction-receipt > header small { color: var(--faint); font-size: 8px; }
+.prediction-equation { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr); gap: 8px; align-items: stretch; }
+.prediction-equation > div { display: grid; align-content: center; gap: 3px; min-width: 0; min-height: 84px; padding: 11px; border: 1px solid var(--edge); border-radius: 13px; background: var(--night-deep); }
+.prediction-equation > div.result { border-color: rgba(143,199,175,.28); background: var(--sage-wash); }
+.prediction-equation > div > span { color: var(--faint); font-size: 7px; letter-spacing: .04em; text-transform: uppercase; }
+.prediction-equation > div > strong { font: 19px var(--font-data); }
+.prediction-equation > div > small { overflow-wrap: anywhere; color: var(--quiet); font-size: 8px; line-height: 1.35; }
+.prediction-equation > b { align-self: center; color: var(--faint); font: 17px var(--font-data); }
+.prediction-adjustment { display: flex; align-items: flex-start; gap: 7px; margin: 10px 2px 0; padding: 9px 10px; border-radius: 11px; background: var(--amber-wash); color: var(--amber); font-size: 8px; line-height: 1.45; }
+.prediction-adjustment svg { flex: 0 0 auto; }
+.prediction-learning { display: grid; grid-template-columns: auto 1fr; gap: 10px; width: 100%; margin-top: 11px; padding: 14px 15px; border: 1px solid var(--edge); border-radius: 16px; background: var(--slate-raised); text-align: left; }
+.prediction-learning > span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--indigo-wash); color: var(--indigo-bright); }
+.prediction-learning > div { display: grid; gap: 4px; }
+.prediction-learning strong { font-size: 11px; }
+.prediction-learning p { margin: 0; color: var(--quiet); font-size: 9px; line-height: 1.5; }
+.prediction-method { width: 100%; margin-top: 11px; overflow: hidden; border: 1px solid var(--edge); border-radius: 16px; background: rgba(255,255,255,.015); text-align: left; }
+.prediction-method > summary { display: flex; align-items: center; gap: 9px; min-height: 58px; padding: 11px 14px; cursor: pointer; list-style: none; }
+.prediction-method > summary::-webkit-details-marker { display: none; }
+.prediction-method > summary > svg { flex: 0 0 auto; color: var(--faint); transition: transform 150ms ease; }
+.prediction-method[open] > summary > svg { transform: rotate(90deg); }
+.prediction-method > summary > div { display: grid; gap: 2px; }
+.prediction-method > summary strong { font-size: 11px; }
+.prediction-method > summary small { color: var(--faint); font-size: 8px; }
+.prediction-method-body { display: grid; gap: 12px; padding: 0 14px 15px; border-top: 1px solid var(--edge); }
+.prediction-evidence-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; padding-top: 13px; }
+.prediction-evidence-grid > div { display: grid; align-content: start; gap: 3px; min-width: 0; padding: 10px; border: 1px solid var(--edge); border-radius: 12px; background: var(--night-deep); }
+.prediction-evidence-grid span { color: var(--faint); font-size: 7px; letter-spacing: .04em; text-transform: uppercase; }
+.prediction-evidence-grid strong { font-size: 12px; }
+.prediction-evidence-grid small { color: var(--quiet); font-size: 7px; line-height: 1.35; }
+.prediction-formula { padding: 13px; border-radius: 13px; background: var(--indigo-wash); }
+.prediction-formula > strong { font-size: 10px; }
+.prediction-formula p { margin: 7px 0 0; color: var(--quiet); font: 8px/1.5 var(--font-data); }
+.prediction-samples { padding: 3px 0 0; }
+.prediction-samples h3 { margin: 0 0 10px; font-size: 11px; }
+.prediction-samples h4 { margin: 11px 0 5px; color: var(--faint); font-size: 7px; letter-spacing: .05em; text-transform: uppercase; }
+.prediction-samples ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.prediction-samples li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-height: 30px; padding: 7px 9px; border: 1px solid var(--edge); border-radius: 9px; background: var(--night-deep); }
+.prediction-samples li span { min-width: 0; color: var(--quiet); font: 8px/1.35 var(--font-data); }
+.prediction-samples li strong { flex: 0 0 auto; font: 9px var(--font-data); }
+.prediction-local-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 11px; border-radius: 12px; background: var(--sage-wash); color: var(--sage); font-size: 8px; line-height: 1.45; }
+.prediction-local-note svg { flex: 0 0 auto; }
+.prediction-generated { margin: -3px 0 0; color: var(--faint); font: 7px var(--font-data); text-align: right; }
+.theme-day .prediction-receipt { border-color: rgba(98,82,214,.18); background: linear-gradient(145deg, rgba(117,102,236,.09), rgba(255,255,255,.62)); }
+.theme-day .prediction-method { background: rgba(255,255,255,.48); }
 
 .history-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 32px; align-items: start; }
 .history-panel { padding: 22px; border-radius: var(--radius); }
@@ -1370,6 +1419,15 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .temporal-picker { max-height: 94vh; padding: 8px 12px 15px; border-radius: 25px 25px 15px 15px; }
   .temporal-column { max-height: 190px; padding-top: 63px; padding-bottom: 63px; }
   .prediction-dialog-grid { grid-template-columns: 1fr 1fr 1fr; }
+  .prediction-dialog { padding: 24px 13px 18px; }
+  .prediction-dialog-icon { width: 54px; height: 54px; margin-bottom: 7px; }
+  .prediction-dialog h2 { margin-bottom: 15px; font-size: 22px; }
+  .prediction-equation { grid-template-columns: 1fr; gap: 5px; }
+  .prediction-equation > div { min-height: 67px; }
+  .prediction-equation > b { justify-self: center; line-height: 10px; }
+  .prediction-evidence-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .prediction-samples li { align-items: flex-start; }
+  .prediction-samples li span { font-size: 7px; }
   .toast-region { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
 }
 
