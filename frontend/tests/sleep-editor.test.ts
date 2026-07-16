@@ -9,6 +9,10 @@ import type { FrameRecord, Language, SleepEvent, SleepEventDetails, SleepKind } 
 interface SleepEditorHarness {
   language: Language;
   manualOpen: boolean;
+  activeSleepOverlay: SleepEvent | null;
+  activeSleepNow: number;
+  editingSleep: SleepEvent | null;
+  sleepBusy: 'start' | 'stop' | 'add' | '';
   manualForm: {
     startedAt: string;
     endedAt: string;
@@ -22,8 +26,11 @@ interface SleepEditorHarness {
   };
   loadOperationalData(initial?: boolean): Promise<void>;
   deleteSleepEditor(): Promise<void>;
+  closeActiveSleepOverlay(): void;
+  finishActiveSleep(): Promise<void>;
   openSleepEditor(event: SleepEvent): void;
   openRhythmSegment(segment: RhythmSegment): void;
+  renderActiveSleepOverlay(): TemplateResult;
   renderManualDialog(): TemplateResult;
   renderSleepEditor(): TemplateResult;
 }
@@ -102,6 +109,7 @@ async function openAndRender(app: SleepEditorHarness, event: SleepEvent): Promis
 describe('sleep segment editor', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     document.body.innerHTML = '';
   });
 
@@ -218,5 +226,91 @@ describe('sleep segment editor', () => {
     expect(container.querySelector('.frame-review-card img')?.getAttribute('src')).toContain('wake-frame-2/image');
     expect(container.querySelector('.frame-labels')?.textContent).toContain('Dormido');
     expect(container.querySelector('.frame-stepper')?.textContent).toContain('2 / 3');
+  });
+
+  it('opens an unfinished manual sleep as the original floating live timer', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T16:08:49.000Z'));
+    const ongoing: SleepEvent = {
+      ...automaticSleep,
+      id: 'manual-active',
+      startedAt: '2026-07-14T14:01:46.000Z',
+      endedAt: null,
+      kind: 'nap',
+      source: 'manual',
+    };
+    const app = harness();
+
+    app.openRhythmSegment({
+      id: ongoing.id,
+      event: ongoing,
+      prediction: null,
+      locationId: ongoing.locationId,
+      evidenceStartedAt: ongoing.startedAt,
+      evidenceEndedAt: ongoing.startedAt,
+      type: 'nap',
+      start: new Date(ongoing.startedAt),
+      end: new Date(),
+      startRatio: 0.3,
+      endRatio: 0.5,
+      minutes: 127,
+      inferred: false,
+      predicted: false,
+    });
+
+    expect(app.activeSleepOverlay?.id).toBe(ongoing.id);
+    expect(app.editingSleep).toBeNull();
+    const container = document.createElement('div');
+    render(app.renderActiveSleepOverlay(), container);
+    expect(container.querySelector('.active-sleep-float')).not.toBeNull();
+    expect(container.querySelector('.active-sleep-clock')?.textContent).toBe('2:07:03');
+    expect(container.textContent).toContain('Siesta en curso');
+    expect(container.textContent).toContain('Empezó a las');
+    expect(container.querySelector('.active-sleep-stop')?.textContent).toContain('Finalizar ahora');
+    expect(container.querySelector('.active-sleep-edit')?.textContent).toContain('Editar detalles');
+
+    vi.advanceTimersByTime(1000);
+    render(app.renderActiveSleepOverlay(), container);
+    expect(container.querySelector('.active-sleep-clock')?.textContent).toBe('2:07:04');
+    app.closeActiveSleepOverlay();
+  });
+
+  it('stops the active timer, refreshes the public app, and closes the floating window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T16:08:49.000Z'));
+    const ongoing: SleepEvent = {
+      ...automaticSleep,
+      id: 'manual-active',
+      startedAt: '2026-07-14T14:01:46.000Z',
+      endedAt: null,
+      kind: 'night',
+      source: 'manual',
+    };
+    const stopped = { ...ongoing, endedAt: new Date().toISOString() };
+    const stopRequest = vi.spyOn(api, 'stopSleep').mockResolvedValue(stopped);
+    const app = harness();
+
+    app.openRhythmSegment({
+      id: ongoing.id,
+      event: ongoing,
+      prediction: null,
+      locationId: ongoing.locationId,
+      evidenceStartedAt: ongoing.startedAt,
+      evidenceEndedAt: ongoing.startedAt,
+      type: 'night',
+      start: new Date(ongoing.startedAt),
+      end: new Date(),
+      startRatio: 0.2,
+      endRatio: 0.6,
+      minutes: 127,
+      inferred: false,
+      predicted: false,
+    });
+    await app.finishActiveSleep();
+
+    expect(stopRequest).toHaveBeenCalledOnce();
+    expect(app.loadOperationalData).toHaveBeenCalledWith(false);
+    expect(app.activeSleepOverlay).toBeNull();
+    expect(app.sleepBusy).toBe('');
   });
 });

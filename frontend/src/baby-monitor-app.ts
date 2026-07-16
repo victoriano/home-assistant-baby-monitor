@@ -171,6 +171,15 @@ function asIso(value: string): string {
   return new Date(value).toISOString();
 }
 
+function formatElapsedClock(startedAt: string, now: number): string {
+  const elapsed = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 @customElement('baby-monitor-app')
 export class BabyMonitorApp extends LitElement {
   createRenderRoot(): HTMLElement {
@@ -208,6 +217,8 @@ export class BabyMonitorApp extends LitElement {
   @state() private sleepBusy: 'start' | 'stop' | 'add' | '' = '';
   @state() private manualOpen = false;
   @state() private editingSleep: SleepEvent | null = null;
+  @state() private activeSleepOverlay: SleepEvent | null = null;
+  @state() private activeSleepNow = Date.now();
   @state() private editSleepBusy = false;
   @state() private editSleepForm = {
     startedAt: '', endedAt: '', kind: 'nap' as SleepKind, notes: '', details: EMPTY_DETAILS(),
@@ -252,6 +263,7 @@ export class BabyMonitorApp extends LitElement {
 
   private pollTimer?: number;
   private toastTimer?: number;
+  private activeSleepTimer?: number;
   private liveConnectTimer?: number;
   private liveDisconnectTimer?: number;
   private livePeer?: RTCPeerConnection;
@@ -262,6 +274,7 @@ export class BabyMonitorApp extends LitElement {
     if (event.key === 'Escape') {
       if (this.temporalPicker) { this.temporalPicker = null; return; }
       if (this.selectedPrediction) { this.selectedPrediction = null; return; }
+      if (this.activeSleepOverlay) { this.closeActiveSleepOverlay(); return; }
       if (this.manualOpen) this.closeManualForm();
       if (this.editingSleep) this.editingSleep = null;
     }
@@ -287,6 +300,7 @@ export class BabyMonitorApp extends LitElement {
   disconnectedCallback(): void {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
     this.stopLiveView();
     window.removeEventListener('keydown', this.handleKeyDown);
     super.disconnectedCallback();
@@ -409,6 +423,13 @@ export class BabyMonitorApp extends LitElement {
     }
     if (results[4].status === 'fulfilled') this.sleepPlan = results[4].value;
     this.historyPages = nextPages;
+    if (this.activeSleepOverlay) {
+      const current = this.summary.currentSleep
+        ?? this.sleepEvents.find((event) => event.id === this.activeSleepOverlay?.id && !event.endedAt)
+        ?? null;
+      if (!current || current.id !== this.activeSleepOverlay.id || current.endedAt) this.closeActiveSleepOverlay();
+      else this.activeSleepOverlay = current;
+    }
     this.refreshingData = false;
   }
 
@@ -674,6 +695,43 @@ export class BabyMonitorApp extends LitElement {
     this.editSleepEndChanged = false;
     this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     void this.loadFrameReview('start');
+  }
+
+  private openActiveSleepOverlay(event: SleepEvent): void {
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
+    this.activeSleepOverlay = event;
+    this.activeSleepNow = Date.now();
+    this.activeSleepTimer = window.setInterval(() => {
+      this.activeSleepNow = Date.now();
+    }, 1000);
+  }
+
+  private closeActiveSleepOverlay(): void {
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
+    this.activeSleepTimer = undefined;
+    this.activeSleepOverlay = null;
+  }
+
+  private editActiveSleep(): void {
+    const event = this.activeSleepOverlay;
+    if (!event) return;
+    this.closeActiveSleepOverlay();
+    this.openSleepEditor(event);
+  }
+
+  private async finishActiveSleep(): Promise<void> {
+    if (!this.activeSleepOverlay || this.sleepBusy) return;
+    this.sleepBusy = 'stop';
+    try {
+      await api.stopSleep();
+      this.closeActiveSleepOverlay();
+      await this.loadOperationalData(false);
+      this.showToast(this.t('sleepStopped'));
+    } catch (error) {
+      this.showToast(error instanceof Error ? error.message : this.t('saveError'), 'error');
+    } finally {
+      this.sleepBusy = '';
+    }
   }
 
   private async saveSleepEditor(): Promise<void> {
@@ -1818,6 +1876,10 @@ export class BabyMonitorApp extends LitElement {
       return;
     }
     if (segment.event) {
+      if (!segment.event.endedAt && segment.event.source === 'manual') {
+        this.openActiveSleepOverlay(segment.event);
+        return;
+      }
       this.openSleepEditor(segment.event);
       return;
     }
@@ -2453,6 +2515,36 @@ export class BabyMonitorApp extends LitElement {
     </form></div>`;
   }
 
+  private renderActiveSleepOverlay(): TemplateResult | typeof nothing {
+    const event = this.activeSleepOverlay;
+    if (!event) return nothing;
+    const title = this.language === 'es'
+      ? event.kind === 'night' ? 'Sueño largo en curso' : 'Siesta en curso'
+      : event.kind === 'night' ? 'Night sleep in progress' : 'Nap in progress';
+    const started = formatClock(event.startedAt, this.language);
+    return html`
+      <aside class=${`active-sleep-float ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} role="dialog" aria-labelledby="active-sleep-title">
+        <button type="button" class="active-sleep-close" aria-label=${this.language === 'es' ? 'Cerrar' : 'Close'} @click=${() => this.closeActiveSleepOverlay()}>&times;</button>
+        <div class="active-sleep-heading">
+          <span class="active-sleep-pulse" aria-hidden="true">${icon('moon', 24)}</span>
+          <div><small>${this.language === 'es' ? 'Sueño activo' : 'Active sleep'}</small><strong id="active-sleep-title">${title}</strong></div>
+        </div>
+        <time class="active-sleep-clock" role="timer" datetime=${event.startedAt}>${formatElapsedClock(event.startedAt, this.activeSleepNow)}</time>
+        <p>${this.language === 'es' ? `Empezó a las ${started}` : `Started at ${started}`}</p>
+        <div class="active-sleep-live-line" aria-hidden="true"><span></span></div>
+        <div class="active-sleep-actions">
+          <button type="button" class="active-sleep-edit" ?disabled=${Boolean(this.sleepBusy)} @click=${() => this.editActiveSleep()}>
+            ${this.language === 'es' ? 'Editar detalles' : 'Edit details'}
+          </button>
+          <button type="button" class="active-sleep-stop" ?disabled=${Boolean(this.sleepBusy)} @click=${() => this.finishActiveSleep()}>
+            ${this.sleepBusy === 'stop' ? html`<span class="spinner"></span>` : icon('stop', 17)}
+            <span>${this.language === 'es' ? 'Finalizar ahora' : 'Stop now'}</span>
+          </button>
+        </div>
+      </aside>
+    `;
+  }
+
   private sleepSeries(): Array<{ date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }> {
     const rows = new Map<string, { date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }>();
     for (const event of this.sleepEvents) {
@@ -2899,6 +2991,7 @@ export class BabyMonitorApp extends LitElement {
       ${this.loading ? this.renderLoading() : this.fatalError ? this.renderFatalError() : this.onboarding ? this.renderOnboarding() : html`
         <div class=${`app-shell ${this.page === 'sleep' && this.rhythmMode === 'day' ? 'theme-day' : 'theme-night'}`}>${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'sleep' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'data' ? this.renderHistory() : this.renderSettings()}</div>
         ${this.renderManualDialog()}
+        ${this.renderActiveSleepOverlay()}
         ${this.renderSleepEditor()}
         ${this.renderPredictionDialog()}
         ${this.renderTemporalPicker()}
