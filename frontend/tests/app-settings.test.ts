@@ -16,6 +16,13 @@ interface SettingsHarness {
   settings: AppSettings;
   pendingSecretClears: SecretName[];
   historyTransfer: HistoryTransferStatus | null;
+  entities: {
+    camera: never[];
+    binary_sensor: never[];
+    light: never[];
+    notify: Array<{ entityId: string; name: string; available: boolean; attributes: Record<string, unknown> }>;
+    person: Array<{ entityId: string; name: string; available: boolean; attributes: Record<string, unknown> }>;
+  };
   renderCameraSection(compact?: boolean): TemplateResult;
   renderHomeAssistantSection(compact?: boolean): TemplateResult;
   renderNotificationsSection(compact?: boolean): TemplateResult;
@@ -175,7 +182,15 @@ describe('settings safety interactions', () => {
 
   it('sends a test notification through the notifications contract', async () => {
     const settings = cloneDefaultSettings();
-    settings.notifications.service = 'notify.mobile_app_parent';
+    settings.notifications.recipients = [{
+      personEntityId: 'person.parent',
+      name: 'Parent',
+      notifyService: 'notify.mobile_app_parent',
+      targets: [],
+      enabled: true,
+      language: 'en',
+      events: ['cry_started'],
+    }];
     const app = harness(settings);
     const test = vi.spyOn(api, 'testSettings').mockResolvedValue({ ok: true, message: 'Notification sent' });
 
@@ -183,6 +198,41 @@ describe('settings safety interactions', () => {
     buttonNamed('Send test notification').click();
 
     await vi.waitFor(() => expect(test).toHaveBeenCalledWith('notifications', app.draft));
+  });
+
+  it('selects Home Assistant people and gives each caregiver independent alert toggles', () => {
+    const app = harness();
+    app.entities = {
+      camera: [], binary_sensor: [], light: [],
+      notify: [{ entityId: 'notify.mobile_app_victorianos_iphone', name: "Victoriano's iPhone", available: true, attributes: {} }],
+      person: [
+        { entityId: 'person.victoriano', name: 'Victoriano', available: true, attributes: {} },
+        { entityId: 'person.marta', name: 'Marta', available: true, attributes: {} },
+      ],
+    };
+
+    renderSettings(app.renderNotificationsSection(true));
+    const labels = [...document.querySelectorAll('.people-picker label')];
+    const victoriano = labels.find((label) => label.textContent?.includes('Victoriano'));
+    const checkbox = victoriano?.querySelector('input');
+    if (!(checkbox instanceof HTMLInputElement)) throw new Error('Missing Victoriano person option');
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(app.draft.notifications.recipients).toHaveLength(1);
+    expect(app.draft.notifications.recipients[0].personEntityId).toBe('person.victoriano');
+    expect(app.draft.notifications.recipients[0].notifyService).toBe('notify.mobile_app_victorianos_iphone');
+    expect(app.draft.notifications.recipients[0].events).toEqual(['cry_started']);
+
+    document.body.replaceChildren();
+    renderSettings(app.renderNotificationsSection(true));
+    const predicted = [...document.querySelectorAll('.subscription-row')]
+      .find((row) => row.textContent?.includes('Sleep is approaching'));
+    const predictedToggle = predicted?.querySelector('input');
+    if (!(predictedToggle instanceof HTMLInputElement)) throw new Error('Missing predicted sleep toggle');
+    predictedToggle.checked = true;
+    predictedToggle.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.draft.notifications.recipients[0].events).toContain('sleep_predicted_soon');
   });
 
   it('shows the portable CSV and image export as read-only while transfer is pending', () => {

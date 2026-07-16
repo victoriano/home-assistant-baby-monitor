@@ -37,6 +37,7 @@ from .models import (
     SleepStopRequest,
     utc_now,
 )
+from .notifications import NotificationDispatcher, NotificationScheduler
 from .providers import ProviderError, build_provider
 from .runtime import RuntimeWorkers
 from .security import EncryptedSecretStore
@@ -103,10 +104,7 @@ def _sleep(event: Any) -> dict[str, Any]:
         "notes": event.notes,
         "details": {
             "tags": event.details.tags,
-            "pauses": [
-                {"startedAt": pause.started_at, "endedAt": pause.ended_at}
-                for pause in event.details.pauses
-            ],
+            "pauses": [{"startedAt": pause.started_at, "endedAt": pause.ended_at} for pause in event.details.pauses],
         },
         "locationId": event.location_id,
         "createdAt": event.created_at,
@@ -147,9 +145,18 @@ def create_app(
     settings = SettingsService(settings_repository, secret_store, runtime=runtime)
     home_assistant = HomeAssistantClient(settings)
     frames = FrameService(database, settings, home_assistant)
-    cry_alerts = CryAlertService(database, settings, home_assistant)
+    notifications = NotificationDispatcher(settings, home_assistant)
+    notification_scheduler = NotificationScheduler(data_dir, database, settings, notifications)
+    cry_alerts = CryAlertService(database, settings, home_assistant, notifications)
     dashboard = DashboardService(database, settings)
-    workers = RuntimeWorkers(database, settings, home_assistant, frames, cry_alerts)
+    workers = RuntimeWorkers(
+        database,
+        settings,
+        home_assistant,
+        frames,
+        cry_alerts,
+        notification_scheduler,
+    )
     go2rtc = Go2RTCClient()
     if start_workers is None:
         start_workers = (
@@ -204,6 +211,8 @@ def create_app(
     app.state.home_assistant = home_assistant
     app.state.frames = frames
     app.state.cry_alerts = cry_alerts
+    app.state.notifications = notifications
+    app.state.notification_scheduler = notification_scheduler
     app.state.dashboard = dashboard
     app.state.workers = workers
     app.state.go2rtc = go2rtc
@@ -439,7 +448,9 @@ def create_app(
         return _public_settings(saved, True)
 
     @app.get(f"{API_PREFIX}/home-assistant/entities")
-    async def entities(domain: Literal["camera", "binary_sensor", "light", "notify"] = Query(...)) -> dict[str, Any]:
+    async def entities(
+        domain: Literal["camera", "binary_sensor", "light", "notify", "person"] = Query(...),
+    ) -> dict[str, Any]:
         items = await home_assistant.list_entities(domain)
         return {
             "items": [
@@ -448,7 +459,11 @@ def create_app(
                     "name": item.name,
                     "state": item.state,
                     "available": item.state != "unavailable",
-                    "attributes": {},
+                    "attributes": (
+                        {"userId": item.attributes.get("user_id")}
+                        if domain == "person" and item.attributes.get("user_id")
+                        else {}
+                    ),
                 }
                 for item in items
             ]
@@ -501,16 +516,11 @@ def create_app(
                 for entity_id in candidate.lights.entity_ids:
                     await home_assistant.get_state(entity_id)
             elif kind == "notifications":
-                if not candidate.notifications.service:
+                recipients = [item for item in candidate.notifications.recipients if item.enabled]
+                if not recipients:
                     return {"ok": True, "message": "Notifications are disabled."}
-                service = candidate.notifications.service.split(".", 1)[1]
-                payload: dict[str, Any] = {
-                    "title": "Baby Monitor test",
-                    "message": "The Baby Monitor notification connection works.",
-                }
-                if candidate.notifications.targets:
-                    payload["target"] = candidate.notifications.targets
-                await home_assistant.call_service("notify", service, payload)
+                for recipient in recipients:
+                    await notifications.send_test(recipient)
             else:
                 if candidate.ai.provider == AIProviderName.DISABLED:
                     return {"ok": True, "message": "Image labeling is disabled."}

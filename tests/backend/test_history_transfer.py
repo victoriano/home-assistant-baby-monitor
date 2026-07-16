@@ -46,7 +46,7 @@ def _configured_payload(location_id: str, location_name: str) -> dict:
             "cloud_image_consent": False,
             "detail": "low",
         },
-        "notifications": {"service": None, "targets": []},
+        "notifications": {"recipients": [], "lead_minutes": 10},
         "retention": {"mode": "forever", "days": None},
         "secrets": {"camera_stream_url": "rtsp://private.example.test/camera", "clear": []},
     }

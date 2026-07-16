@@ -14,6 +14,7 @@ import {
   type HistoryTransferStatus,
   type HomeAssistantEntity,
   type ManualSleepInput,
+  type NotificationEvent,
   type PageResult,
   type PredictionCalculation,
   type PredictionClockSample,
@@ -247,6 +248,40 @@ export function normalizeSettings(value: unknown): AppSettings {
   const ai = asRecord(data.ai ?? data.vision);
   const retention = asRecord(data.retention);
   const notifications = asRecord(data.notifications);
+  const notificationEvents: NotificationEvent[] = [
+    'cry_started',
+    'sleep_started',
+    'sleep_predicted_soon',
+    'sleep_ending_soon',
+    'sleep_ended',
+    'camera_offline',
+  ];
+  const preferredNotificationLanguage = navigator.language.toLowerCase().startsWith('es') ? 'es' : 'en';
+  const recipients = unwrapList(notifications.recipients, ['items']).map((value) => {
+    const recipient = asRecord(value);
+    const rawEvents = asStringArray(recipient.events);
+    return {
+      personEntityId: asNullableString(pick(recipient, 'personEntityId', 'person_entity_id')),
+      name: asString(recipient.name, asString(pick(recipient, 'notifyService', 'notify_service'))),
+      notifyService: asString(pick(recipient, 'notifyService', 'notify_service')),
+      targets: asStringArray(recipient.targets),
+      enabled: asBoolean(recipient.enabled, true),
+      language: asString(recipient.language) === 'es' ? 'es' as const : asString(recipient.language) === 'en' ? 'en' as const : preferredNotificationLanguage,
+      events: rawEvents.filter((event): event is NotificationEvent => notificationEvents.includes(event as NotificationEvent)),
+    };
+  }).filter((recipient) => recipient.notifyService.startsWith('notify.'));
+  const legacyService = asNullableString(notifications.service);
+  if (!recipients.length && legacyService) {
+    recipients.push({
+      personEntityId: null,
+      name: legacyService.replace(/^notify\./, '').replaceAll('_', ' '),
+      notifyService: legacyService,
+      targets: asStringArray(pick(notifications, 'targets', 'entityIds', 'entity_ids')),
+      enabled: true,
+      language: preferredNotificationLanguage,
+      events: ['cry_started'],
+    });
+  }
 
   const rawCryMode = asString(pick(cry, 'mode'), defaults.cry.mode);
   const cryMode = rawCryMode === 'rtsp_audio' ? 'audio' : rawCryMode;
@@ -329,8 +364,8 @@ export function normalizeSettings(value: unknown): AppSettings {
       days: retentionMode === 'days' ? asNumber(retention.days, 30) : null,
     },
     notifications: {
-      service: asNullableString(pick(notifications, 'service')),
-      targets: asStringArray(pick(notifications, 'targets', 'entityIds', 'entity_ids')),
+      recipients,
+      leadMinutes: Math.max(5, Math.min(60, asNumber(pick(notifications, 'leadMinutes', 'lead_minutes'), 10))),
     },
   };
 }
@@ -733,7 +768,7 @@ export const api = {
     return normalizeSettings(result);
   },
 
-  async getEntities(domain: 'camera' | 'binary_sensor' | 'light' | 'notify'): Promise<HomeAssistantEntity[]> {
+  async getEntities(domain: 'camera' | 'binary_sensor' | 'light' | 'notify' | 'person'): Promise<HomeAssistantEntity[]> {
     const result = await request<unknown>(`api/v1/home-assistant/entities?domain=${encodeURIComponent(domain)}`);
     return unwrapList(result, ['items', 'entities']).map((value) => {
       const data = asRecord(value);

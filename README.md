@@ -51,6 +51,11 @@ credentials are included.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
   stream, then activates one or more selected Home Assistant lights.
 - Restores every light to its previous state after the alert.
+- Lets each Home Assistant person opt into a separate set of caregiver alerts:
+  crying, sleep start/end, an approaching predicted sleep window, the expected
+  end of an active sleep, and a stale camera. Lead time and language are
+  configurable per household/person, and alerts are deduplicated across
+  restarts.
 - Labels camera frames with Gemini, OpenAI, or a local OpenAI-compatible server
   such as Ollama. AI is optional and disabled by default.
 - Stores settings, events, and frames under `/data`; no public Home Assistant

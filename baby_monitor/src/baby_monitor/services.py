@@ -14,6 +14,7 @@ from .models import (
     CryEvent,
     CryEventCreate,
     FrameRecord,
+    NotificationEvent,
     SecretName,
     SleepEvent,
     SleepEventCreate,
@@ -21,6 +22,7 @@ from .models import (
     VisionLabel,
     utc_now,
 )
+from .notifications import NotificationDispatcher
 from .prediction import build_sleep_plan
 from .providers import ProviderError, build_provider
 from .settings import SettingsService
@@ -240,10 +242,12 @@ class CryAlertService:
         database: Database,
         settings: SettingsService,
         home_assistant: HomeAssistantClient,
+        notifications: NotificationDispatcher | None = None,
     ) -> None:
         self.database = database
         self.settings = settings
         self.home_assistant = home_assistant
+        self.notifications = notifications or NotificationDispatcher(settings, home_assistant)
         self._lock = asyncio.Lock()
         self._restore_task: asyncio.Task[None] | None = None
         self._fallback_states: dict[str, dict[str, Any]] = {}
@@ -449,19 +453,10 @@ class CryAlertService:
             self._scene_created = False
 
     async def _send_notifications_locked(self, event: CryEvent) -> None:
-        settings = self.settings.get()
-        if not settings.notifications.service:
-            return
-        service = settings.notifications.service.split(".", 1)[1]
-        payload: dict[str, Any] = {
-            "title": f"{settings.baby.name}: cry detected",
-            "message": "The baby monitor detected crying.",
-            "data": {"tag": "baby-monitor-cry", "event_id": event.id},
-        }
-        if settings.notifications.targets:
-            payload["target"] = settings.notifications.targets
-        with suppress(HomeAssistantError):
-            await self.home_assistant.call_service("notify", service, payload)
+        await self.notifications.send(
+            NotificationEvent.CRY_STARTED,
+            {"event_id": event.id, "at": event.detected_at},
+        )
 
     async def close(self) -> None:
         async with self._lock:

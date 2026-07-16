@@ -386,7 +386,15 @@ describe('paginated history contract', () => {
     });
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
     const settings = cloneDefaultSettings();
-    settings.notifications.service = 'notify.mobile_app_parent';
+    settings.notifications.recipients = [{
+      personEntityId: 'person.parent',
+      name: 'Parent',
+      notifyService: 'notify.mobile_app_parent',
+      targets: [],
+      enabled: true,
+      language: 'en',
+      events: ['cry_started'],
+    }];
     settings.ai.apiKeyConfigured = true;
     settings.homeAssistant.accessTokenConfigured = true;
     try {

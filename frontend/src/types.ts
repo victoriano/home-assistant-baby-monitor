@@ -4,6 +4,13 @@ export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
 export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';
 export type RetentionMode = 'forever' | 'days';
+export type NotificationEvent =
+  | 'cry_started'
+  | 'sleep_started'
+  | 'sleep_predicted_soon'
+  | 'sleep_ending_soon'
+  | 'sleep_ended'
+  | 'camera_offline';
 export type SleepKind = 'nap' | 'night' | 'awake' | 'unknown';
 export type SleepState = 'sleeping' | 'awake' | 'unknown';
 export type SecretName =
@@ -70,8 +77,18 @@ export interface RetentionSettings {
 }
 
 export interface NotificationSettings {
-  service: string | null;
+  recipients: NotificationRecipient[];
+  leadMinutes: number;
+}
+
+export interface NotificationRecipient {
+  personEntityId: string | null;
+  name: string;
+  notifyService: string;
   targets: string[];
+  enabled: boolean;
+  language: Language;
+  events: NotificationEvent[];
 }
 
 export interface AppSettings {
@@ -128,8 +145,16 @@ export interface SettingsPayload {
     detail: VisionSettings['detail'];
   };
   notifications: {
-    service: string | null;
-    targets: string[];
+    recipients: Array<{
+      person_entity_id: string | null;
+      name: string;
+      notify_service: string;
+      targets: string[];
+      enabled: boolean;
+      language: Language;
+      events: NotificationEvent[];
+    }>;
+    lead_minutes: number;
   };
   retention: {
     mode: RetentionMode;
@@ -501,8 +526,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     days: null,
   },
   notifications: {
-    service: null,
-    targets: [],
+    recipients: [],
+    leadMinutes: 10,
   },
 };
 
@@ -586,8 +611,16 @@ export function settingsToPayload(settings: AppSettings, clear: SecretName[] = [
       detail: settings.ai.detail,
     },
     notifications: {
-      service: settings.notifications.service,
-      targets: [...settings.notifications.targets],
+      recipients: settings.notifications.recipients.map((recipient) => ({
+        person_entity_id: recipient.personEntityId,
+        name: recipient.name,
+        notify_service: recipient.notifyService,
+        targets: [...recipient.targets],
+        enabled: recipient.enabled,
+        language: recipient.language,
+        events: [...recipient.events],
+      })),
+      lead_minutes: settings.notifications.leadMinutes,
     },
     retention: {
       mode: settings.retention.mode,

@@ -109,8 +109,31 @@ create a hazard.
 
 ### Notifications (optional)
 
-Choose a Home Assistant notification service whose name starts with `notify.`
-and any targets required by that service. Test it from Settings.
+Select one or more Home Assistant `person.` entities, then configure every
+caregiver independently. Each selected person can be enabled or muted, use
+Spanish or English, and subscribe to any combination of:
+
+- Crying starts.
+- Sleep starts.
+- A predicted nap or night sleep is approaching.
+- An active sleep is nearing its expected end.
+- Sleep ends.
+- The camera has stopped producing fresh frames.
+
+Choose a 5, 10, 15, or 20 minute lead time for the two advance alerts. The
+expected end is derived from the recent average duration for the current sleep
+type; it is guidance rather than a guarantee that the baby will wake then.
+
+Each person needs a Home Assistant Companion App device that exposes a
+`notify.mobile_app_*` service. Baby Monitor automatically suggests a service
+whose device name matches the person, but Settings keeps the mapping explicit
+so a single phone is never silently assigned to a different caregiver.
+
+Notifications are off until a person is selected. Legacy configurations are
+migrated conservatively to cry-only alerts. Delivery is deduplicated per
+person, event, and sleep/prediction even after the App restarts. Use the test
+button after checking the selected mobile service; it sends one real test
+notification to every enabled caregiver.
 
 ### AI image labels (optional)
 

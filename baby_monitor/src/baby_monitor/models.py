@@ -257,9 +257,55 @@ class RetentionPolicy(StrictModel):
         return self
 
 
-class NotificationConfig(StrictModel):
-    service: str | None = None
+class NotificationEvent(StrEnum):
+    CRY_STARTED = "cry_started"
+    SLEEP_STARTED = "sleep_started"
+    SLEEP_PREDICTED_SOON = "sleep_predicted_soon"
+    SLEEP_ENDING_SOON = "sleep_ending_soon"
+    SLEEP_ENDED = "sleep_ended"
+    CAMERA_OFFLINE = "camera_offline"
+
+
+class NotificationRecipient(StrictModel):
+    person_entity_id: str | None = None
+    name: str = Field(min_length=1, max_length=80)
+    notify_service: str
     targets: list[str] = Field(default_factory=list, max_length=20)
+    enabled: bool = True
+    language: Literal["en", "es"] = "en"
+    events: list[NotificationEvent] = Field(
+        default_factory=lambda: [NotificationEvent.CRY_STARTED],
+        max_length=len(NotificationEvent),
+    )
+
+    @field_validator("person_entity_id")
+    @classmethod
+    def person_entity(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_entity_id(value, "person")
+        return value
+
+    @field_validator("notify_service")
+    @classmethod
+    def notification_service(cls, value: str) -> str:
+        return validate_entity_id(value, "notify")
+
+    @field_validator("targets", "events")
+    @classmethod
+    def unique_values(cls, value: list[Any]) -> list[Any]:
+        if len(value) != len(set(value)):
+            raise ValueError("notification recipient values must be unique")
+        return value
+
+
+class NotificationConfig(StrictModel):
+    recipients: list[NotificationRecipient] = Field(default_factory=list, max_length=12)
+    lead_minutes: int = Field(default=10, ge=5, le=60)
+    # Accepted only so installations and older frontends can cross the upgrade
+    # without losing their existing cry alert. They are converted to a normal
+    # caregiver subscription and never persisted or returned by the new API.
+    service: str | None = Field(default=None, exclude=True)
+    targets: list[str] = Field(default_factory=list, max_length=20, exclude=True)
 
     @field_validator("service")
     @classmethod
@@ -274,6 +320,23 @@ class NotificationConfig(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("notification targets must be unique")
         return value
+
+    @model_validator(mode="after")
+    def migrate_legacy_service(self) -> NotificationConfig:
+        if self.service and not self.recipients:
+            display_name = self.service.removeprefix("notify.").replace("_", " ").title()
+            self.recipients = [
+                NotificationRecipient(
+                    name=display_name,
+                    notify_service=self.service,
+                    targets=self.targets,
+                    events=[NotificationEvent.CRY_STARTED],
+                )
+            ]
+        people = [item.person_entity_id for item in self.recipients if item.person_entity_id]
+        if len(people) != len(set(people)):
+            raise ValueError("notification people must be unique")
+        return self
 
 
 class AppSettings(StrictModel):

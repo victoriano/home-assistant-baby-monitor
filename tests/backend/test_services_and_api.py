@@ -11,6 +11,8 @@ from baby_monitor.models import (
     HAEntity,
     LightAlertConfig,
     NotificationConfig,
+    NotificationEvent,
+    NotificationRecipient,
     SettingsPatch,
     SleepEventCreate,
     VisionLabel,
@@ -70,7 +72,17 @@ async def test_cry_alert_preserves_and_restores_selected_lights(tmp_path: Path) 
                 duration_seconds=300,
                 brightness_percent=40,
             ),
-            notifications=NotificationConfig(service="notify.mobile_app_parent", targets=["parent_phone"]),
+            notifications=NotificationConfig(
+                recipients=[
+                    NotificationRecipient(
+                        person_entity_id="person.parent",
+                        name="Parent",
+                        notify_service="notify.mobile_app_parent",
+                        targets=["parent_phone"],
+                        events=[NotificationEvent.CRY_STARTED],
+                    )
+                ]
+            ),
         )
     )
     fake = FakeHomeAssistant()
@@ -93,7 +105,16 @@ async def test_cry_notification_is_not_blocked_by_slow_lights(tmp_path: Path) ->
     app.state.settings.patch(
         SettingsPatch(
             lights=LightAlertConfig(entity_ids=["light.nursery"]),
-            notifications=NotificationConfig(service="notify.mobile_app_parent"),
+            notifications=NotificationConfig(
+                recipients=[
+                    NotificationRecipient(
+                        person_entity_id="person.parent",
+                        name="Parent",
+                        notify_service="notify.mobile_app_parent",
+                        events=[NotificationEvent.CRY_STARTED],
+                    )
+                ]
+            ),
         )
     )
     fake = FakeHomeAssistant()
@@ -263,10 +284,13 @@ def test_sleep_editor_lists_every_interval_frame_and_deletion_preserves_images(t
             },
         )
         assert [item["id"] for item in second_page.json()["items"]] == [frames[2].id, frames[3].id]
-        assert client.get(
-            "/api/v1/frames/range",
-            params={"start": end.isoformat(), "end": start.isoformat()},
-        ).status_code == 400
+        assert (
+            client.get(
+                "/api/v1/frames/range",
+                params={"start": end.isoformat(), "end": start.isoformat()},
+            ).status_code
+            == 400
+        )
 
         assert client.delete(f"/api/v1/sleep/{event.id}").status_code == 204
         assert client.get(f"/api/v1/frames/{frames[0].id}/image").content == b"frame-0"
@@ -351,6 +375,34 @@ def test_entity_discovery_does_not_expose_home_assistant_attributes(tmp_path: Pa
         assert "private-camera-token" not in response.text
 
 
+def test_person_discovery_exposes_identity_without_location(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+
+    async def list_entities(_: str) -> list[HAEntity]:
+        return [
+            HAEntity(
+                entity_id="person.parent",
+                state="home",
+                name="Parent",
+                attributes={
+                    "user_id": "user-123",
+                    "latitude": 37.1,
+                    "longitude": -3.6,
+                    "source": "device_tracker.private_phone",
+                },
+            )
+        ]
+
+    app.state.home_assistant.list_entities = list_entities
+    with TestClient(app) as client:
+        response = client.get("/api/v1/home-assistant/entities?domain=person")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["attributes"] == {"userId": "user-123"}
+    assert "latitude" not in response.text
+    assert "private_phone" not in response.text
+
+
 def test_notification_connection_can_be_tested(tmp_path: Path, ui_settings_payload: dict) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     calls: list[tuple[str, str, dict[str, Any]]] = []
@@ -361,8 +413,18 @@ def test_notification_connection_can_be_tested(tmp_path: Path, ui_settings_paylo
 
     app.state.home_assistant.call_service = call_service
     ui_settings_payload["notifications"] = {
-        "service": "notify.mobile_app_parent",
-        "targets": ["parent_phone"],
+        "recipients": [
+            {
+                "person_entity_id": "person.parent",
+                "name": "Parent",
+                "notify_service": "notify.mobile_app_parent",
+                "targets": ["parent_phone"],
+                "enabled": True,
+                "language": "en",
+                "events": ["cry_started"],
+            }
+        ],
+        "lead_minutes": 10,
     }
     with TestClient(app) as client:
         response = client.post(
@@ -377,7 +439,12 @@ def test_notification_connection_can_be_tested(tmp_path: Path, ui_settings_paylo
             "mobile_app_parent",
             {
                 "title": "Baby Monitor test",
-                "message": "The Baby Monitor notification connection works.",
+                "message": "Parent will receive enabled alerts here.",
+                "data": {
+                    "tag": "baby-monitor-test",
+                    "group": "baby-monitor",
+                    "url": "/baby-monitor",
+                },
                 "target": ["parent_phone"],
             },
         )
@@ -609,9 +676,7 @@ def test_prediction_blends_recent_wake_intervals_with_age_baseline(tmp_path: Pat
     result = dashboard.summary()
     plan = dashboard.predictions()
     assert abs((result["next_sleep_at"] - datetime.fromisoformat(plan["nextSleepAt"])).total_seconds()) < 1
-    assert (
-        abs((result["prediction_window_start"] - datetime.fromisoformat(plan["windowStart"])).total_seconds()) < 1
-    )
+    assert abs((result["prediction_window_start"] - datetime.fromisoformat(plan["windowStart"])).total_seconds()) < 1
     assert abs((result["prediction_window_end"] - datetime.fromisoformat(plan["windowEnd"])).total_seconds()) < 1
     assert result["prediction_confidence"] == plan["confidence"]
     assert result["prediction_confidence"] > 0.6

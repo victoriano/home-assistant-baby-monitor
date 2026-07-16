@@ -72,8 +72,18 @@ def test_canonical_round_trip_preserves_private_connections_and_notifications(
         }
     )
     ui_settings_payload["notifications"] = {
-        "service": "notify.mobile_app_parent",
-        "targets": ["parent_phone"],
+        "recipients": [
+            {
+                "person_entity_id": "person.parent",
+                "name": "Parent",
+                "notify_service": "notify.mobile_app_parent",
+                "targets": ["parent_phone"],
+                "enabled": True,
+                "language": "en",
+                "events": ["cry_started", "sleep_predicted_soon"],
+            }
+        ],
+        "lead_minutes": 10,
     }
     secrets = {
         "home_assistant_access_token": "ha-private-token",
@@ -96,8 +106,18 @@ def test_canonical_round_trip_preserves_private_connections_and_notifications(
         assert data["ai"]["provider"] == "gemini"
         assert data["ai"]["api_key_configured"] is True
         assert data["notifications"] == {
-            "service": "notify.mobile_app_parent",
-            "targets": ["parent_phone"],
+            "recipients": [
+                {
+                    "person_entity_id": "person.parent",
+                    "name": "Parent",
+                    "notify_service": "notify.mobile_app_parent",
+                    "targets": ["parent_phone"],
+                    "enabled": True,
+                    "language": "en",
+                    "events": ["cry_started", "sleep_predicted_soon"],
+                }
+            ],
+            "lead_minutes": 10,
         }
         response_text = response.text
         for secret in secrets.values():

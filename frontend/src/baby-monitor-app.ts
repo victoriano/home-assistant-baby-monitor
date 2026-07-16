@@ -43,6 +43,8 @@ import {
   type HistoryTransferStatus,
   type HomeAssistantEntity,
   type Language,
+  type NotificationEvent,
+  type NotificationRecipient,
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
@@ -55,7 +57,7 @@ import {
   type VisionStatistics,
 } from './types';
 
-type EntityDomain = 'camera' | 'binary_sensor' | 'light' | 'notify';
+type EntityDomain = 'camera' | 'binary_sensor' | 'light' | 'notify' | 'person';
 type TestKind = 'home_assistant' | 'camera' | 'cry' | 'lights' | 'notifications' | 'vision';
 type HistoryKind = 'sleep' | 'cry' | 'frames';
 type TestState = { busy: boolean; ok?: boolean; message?: string };
@@ -130,6 +132,21 @@ const DETAIL_GROUPS = [
   },
 ] as const;
 
+const NOTIFICATION_EVENTS: Array<{
+  event: NotificationEvent;
+  icon: Parameters<typeof icon>[0];
+  title: TranslationKey;
+  hint: TranslationKey;
+  tone: 'urgent' | 'sleep' | 'prepare' | 'calm' | 'system';
+}> = [
+  { event: 'cry_started', icon: 'waves', title: 'notifyCryTitle', hint: 'notifyCryHint', tone: 'urgent' },
+  { event: 'sleep_started', icon: 'moon', title: 'notifySleepStartTitle', hint: 'notifySleepStartHint', tone: 'sleep' },
+  { event: 'sleep_predicted_soon', icon: 'clock', title: 'notifyPredictedTitle', hint: 'notifyPredictedHint', tone: 'prepare' },
+  { event: 'sleep_ending_soon', icon: 'sun', title: 'notifyEndingTitle', hint: 'notifyEndingHint', tone: 'prepare' },
+  { event: 'sleep_ended', icon: 'sun', title: 'notifyWakeTitle', hint: 'notifyWakeHint', tone: 'calm' },
+  { event: 'camera_offline', icon: 'camera', title: 'notifyCameraTitle', hint: 'notifyCameraHint', tone: 'system' },
+];
+
 const HISTORY_PAGE_LIMITS: Record<HistoryKind, number> = { sleep: 30, cry: 30, frames: 24 };
 
 function emptyHistoryPages(): Record<HistoryKind, HistoryPageState> {
@@ -201,7 +218,7 @@ export class BabyMonitorApp extends LitElement {
   @state() private pendingSecretClears: SecretName[] = [];
   @state() private cameraSource: 'entity' | 'stream' = 'entity';
   @state() private entities: Record<EntityDomain, HomeAssistantEntity[]> = {
-    camera: [], binary_sensor: [], light: [], notify: [],
+    camera: [], binary_sensor: [], light: [], notify: [], person: [],
   };
   @state() private summary: DashboardSummary = EMPTY_SUMMARY;
   @state() private sleepPlan: SleepPlan | null = null;
@@ -357,13 +374,28 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private async loadEntities(): Promise<void> {
-    const domains: EntityDomain[] = ['camera', 'binary_sensor', 'light', 'notify'];
+    const domains: EntityDomain[] = ['camera', 'binary_sensor', 'light', 'notify', 'person'];
     const results = await Promise.allSettled(domains.map((domain) => api.getEntities(domain)));
     const next = { ...this.entities };
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') next[domains[index]] = result.value;
     });
     this.entities = next;
+    this.linkLegacyNotificationRecipient();
+  }
+
+  private linkLegacyNotificationRecipient(): void {
+    const legacy = this.draft.notifications.recipients.find((recipient) => recipient.personEntityId == null);
+    if (!legacy) return;
+    const match = this.entities.person.find((person) => this.suggestedNotifyService(person) === legacy.notifyService);
+    if (!match) return;
+    const draft = structuredClone(this.draft);
+    const recipient = draft.notifications.recipients.find((item) => item.personEntityId == null && item.notifyService === legacy.notifyService);
+    if (!recipient) return;
+    recipient.personEntityId = match.entityId;
+    recipient.name = match.name;
+    recipient.language = this.language;
+    this.draft = draft;
   }
 
   private async loadOperationalData(showSpinner = true): Promise<void> {
@@ -1180,6 +1212,9 @@ export class BabyMonitorApp extends LitElement {
         && !settings.cry.audioStreamUrl?.trim()
         && (!settings.cry.audioStreamUrlConfigured || this.pendingSecretClears.includes('cry_audio_stream_url'))) {
         return this.t('requiredCryStream');
+      }
+      if (settings.notifications.recipients.some((recipient) => !recipient.notifyService.startsWith('notify.'))) {
+        return this.t('requiredNotificationDevice');
       }
     }
     if (stage === 2 || stage === 'all') {
@@ -2818,12 +2853,142 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderNotificationsSection(compact = false): TemplateResult {
+    const recipients = this.draft.notifications.recipients;
+    const selectedPeople = recipients
+      .map((recipient) => recipient.personEntityId)
+      .filter((value): value is string => Boolean(value));
+    const enabledEvents = new Set(recipients.filter((recipient) => recipient.enabled).flatMap((recipient) => recipient.events));
     const content = html`
-      <div class="field"><span>${this.t('notificationService')}</span>${this.renderSinglePicker(this.entities.notify, this.draft.notifications.service, this.t('noNotification'), (id) => this.updateDraft((draft) => { draft.notifications.service = id; }))}</div>
-      ${this.draft.notifications.service ? html`<label class="field"><span>${this.t('notificationTargets')} <em>${this.t('optional')}</em></span><input .value=${this.draft.notifications.targets.join(', ')} @input=${(event: Event) => this.updateDraft((draft) => { draft.notifications.targets = inputValue(event).split(',').map((value) => value.trim()).filter(Boolean); })}><small>${this.t('notificationTargetsHint')}</small></label>` : nothing}
-      ${this.draft.notifications.service ? this.renderTestButton('notifications', 'testNotification') : nothing}
+      <div class="notification-overview">
+        <div><strong>${this.t('notificationActiveTitle')}</strong><small>${recipients.length ? this.t('notificationPeopleCount', { count: recipients.length }) : this.t('notificationNoneConfigured')}</small></div>
+        <div class="notification-event-chips">
+          ${NOTIFICATION_EVENTS.map((item) => html`<span class=${enabledEvents.has(item.event) ? `active ${item.tone}` : ''}>${icon(item.icon, 13)} ${this.t(item.title)}</span>`)}
+        </div>
+      </div>
+      <div class="field"><span>${this.t('notificationPeople')}</span>${this.renderPeoplePicker(selectedPeople)}</div>
+      ${recipients.length ? html`
+        <div class="caregiver-list">
+          ${recipients.map((recipient, index) => this.renderNotificationRecipient(recipient, index))}
+        </div>
+        <div class="notification-timing">
+          <div><strong>${this.t('notificationAdvance')}</strong><small>${this.t('notificationAdvanceHint')}</small></div>
+          <div class="lead-options" role="radiogroup">
+            ${[5, 10, 15, 20].map((minutes) => html`<button type="button" class=${this.draft.notifications.leadMinutes === minutes ? 'active' : ''} @click=${() => this.updateDraft((draft) => { draft.notifications.leadMinutes = minutes; })}>${minutes} min</button>`)}
+          </div>
+        </div>
+        ${this.renderTestButton('notifications', 'testNotification')}
+      ` : html`<div class="notification-empty">${icon('heart', 22)}<div><strong>${this.t('notificationEmptyTitle')}</strong><small>${this.t('notificationEmptyHint')}</small></div></div>`}
     `;
     return compact ? html`<div class="compact-section subsection"><h3>${icon('heart', 18)} ${this.t('settingsNotifications')}</h3>${content}</div>` : this.renderSettingsCard('notifications', 'heart', 'settingsNotifications', 'settingsNotificationsHint', content);
+  }
+
+  private suggestedNotifyService(person: HomeAssistantEntity): string {
+    const slug = person.entityId.split('.', 2)[1] ?? '';
+    const compactSlug = slug.replaceAll('_', '');
+    const mobile = this.entities.notify.filter((entity) => entity.entityId.startsWith('notify.mobile_app_'));
+    const matching = mobile.filter((entity) => {
+      const service = entity.entityId.replace('notify.mobile_app_', '').replaceAll('_', '');
+      return service.includes(compactSlug) || compactSlug.includes(service.replace(/s$/, ''));
+    });
+    if (matching.length === 1) return matching[0].entityId;
+    return '';
+  }
+
+  private setNotificationPeople(personIds: string[]): void {
+    this.updateDraft((draft) => {
+      const previous = draft.notifications.recipients;
+      const legacy = previous.find((recipient) => recipient.personEntityId == null);
+      let legacyUsed = false;
+      draft.notifications.recipients = personIds.map((personId) => {
+        const existing = previous.find((recipient) => recipient.personEntityId === personId);
+        if (existing) return existing;
+        const person = this.entities.person.find((entity) => entity.entityId === personId);
+        const suggestion = person ? this.suggestedNotifyService(person) : '';
+        if (legacy && !legacyUsed && suggestion === legacy.notifyService) {
+          legacyUsed = true;
+          return {
+            ...legacy,
+            personEntityId: personId,
+            name: person?.name ?? legacy.name,
+            language: this.language,
+          };
+        }
+        return {
+          personEntityId: personId,
+          name: person?.name ?? personId,
+          notifyService: suggestion,
+          targets: [],
+          enabled: true,
+          language: this.language,
+          events: ['cry_started'],
+        } satisfies NotificationRecipient;
+      });
+    });
+  }
+
+  private renderPeoplePicker(selected: string[]): TemplateResult {
+    const selectedNames = selected.map((id) => this.entities.person.find((person) => person.entityId === id)?.name ?? id);
+    return html`
+      <details class="entity-picker multi-picker people-picker">
+        <summary><span>${selected.length ? this.t('notificationPeopleCount', { count: selected.length }) : this.t('notificationChoosePeople')}<small>${selectedNames.join(', ')}</small></span>${icon('chevron', 16)}</summary>
+        <div class="picker-menu checkbox-menu">
+          ${this.entities.person.length ? this.entities.person.map((person) => html`
+            <label class=${person.available ? '' : 'disabled'}>
+              <input type="checkbox" .checked=${selected.includes(person.entityId)} ?disabled=${!person.available} @change=${(event: Event) => {
+                const next = inputChecked(event) ? [...selected, person.entityId] : selected.filter((id) => id !== person.entityId);
+                this.setNotificationPeople(next);
+              }}>
+              <span class="person-option-avatar">${this.personInitials(person.name)}</span>
+              <span><strong>${person.name}</strong><small>${person.entityId}</small></span>
+            </label>
+          `) : html`<p>${this.t('notificationNoPeople')}</p>`}
+        </div>
+      </details>
+    `;
+  }
+
+  private personInitials(name: string): string {
+    return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || '·';
+  }
+
+  private renderNotificationRecipient(recipient: NotificationRecipient, index: number): TemplateResult {
+    const person = recipient.personEntityId
+      ? this.entities.person.find((entity) => entity.entityId === recipient.personEntityId)
+      : null;
+    const activeCount = recipient.enabled ? recipient.events.length : 0;
+    return html`
+      <article class=${`caregiver-card ${recipient.enabled ? '' : 'muted'}`}>
+        <header>
+          <span class="caregiver-avatar">${this.personInitials(person?.name ?? recipient.name)}</span>
+          <div><strong>${person?.name ?? recipient.name}</strong><small>${activeCount ? this.t('notificationActiveCount', { count: activeCount }) : this.t('notificationMuted')}</small></div>
+          <label class="mini-toggle" aria-label=${this.t('notificationRecipientEnabled')}><input type="checkbox" .checked=${recipient.enabled} @change=${(event: Event) => this.updateDraft((draft) => { draft.notifications.recipients[index].enabled = inputChecked(event); })}><i></i></label>
+        </header>
+        <div class="caregiver-device">
+          <div><strong>${this.t('notificationDevice')}</strong><small>${this.t('notificationDeviceHint')}</small></div>
+          ${this.renderSinglePicker(this.entities.notify, recipient.notifyService || null, this.t('notificationChooseDevice'), (service) => this.updateDraft((draft) => { draft.notifications.recipients[index].notifyService = service ?? ''; }))}
+        </div>
+        <div class="caregiver-language"><span>${this.t('notificationLanguage')}</span>${this.renderChoiceRow([
+          ['es', 'spanish'], ['en', 'english'],
+        ], recipient.language, (language) => this.updateDraft((draft) => { draft.notifications.recipients[index].language = language as Language; }))}</div>
+        <div class="subscription-list">
+          ${NOTIFICATION_EVENTS.map((item) => {
+            const checked = recipient.events.includes(item.event);
+            return html`
+              <label class=${`subscription-row ${item.tone}`}>
+                <span class="subscription-icon">${icon(item.icon, 17)}</span>
+                <span><strong>${this.t(item.title)}</strong><small>${this.t(item.hint)}</small></span>
+                <input type="checkbox" .checked=${checked} ?disabled=${!recipient.enabled} @change=${(event: Event) => this.updateDraft((draft) => {
+                  const events = draft.notifications.recipients[index].events;
+                  draft.notifications.recipients[index].events = inputChecked(event)
+                    ? [...events, item.event]
+                    : events.filter((value) => value !== item.event);
+                })}>
+              </label>
+            `;
+          })}
+        </div>
+      </article>
+    `;
   }
 
   private renderVisionSection(compact = false): TemplateResult {

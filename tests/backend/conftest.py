@@ -34,6 +34,6 @@ def ui_settings_payload() -> dict[str, Any]:
             "detail": "low",
         },
         "retention": {"mode": "forever", "days": None},
-        "notifications": {"service": None, "targets": []},
+        "notifications": {"recipients": [], "lead_minutes": 10},
         "secrets": {"clear": []},
     }
