@@ -14,7 +14,8 @@ def test_visual_statistics_preserve_legacy_attributes(tmp_path: Path) -> None:
     labels = [
         VisionLabel(
             baby_present=True,
-            in_crib=True,
+            in_crib=False,
+            sleep_surface="family_bed",
             state="asleep",
             confidence=0.9,
             description="sleeping",

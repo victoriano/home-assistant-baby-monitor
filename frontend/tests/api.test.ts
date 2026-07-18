@@ -213,6 +213,38 @@ describe('portable history transfer contract', () => {
 });
 
 describe('dashboard normalization', () => {
+  it('keeps the family bed distinct from the crib in frame evidence', () => {
+    const frame = apiTesting.normalizeFrame({
+      id: 'family-bed-frame',
+      captured_at: '2026-07-18T20:00:00Z',
+      image_available: true,
+      mime_type: 'image/jpeg',
+      size_bytes: 42,
+      label: {
+        baby_present: true,
+        state: 'asleep',
+        confidence: 0.94,
+        description: 'Baby asleep beside a parent.',
+        tags: ['family_bed', 'adult_present'],
+        in_crib: false,
+        sleep_surface: 'family_bed',
+      },
+    });
+
+    expect(frame.label?.sleepSurface).toBe('family_bed');
+    expect(frame.label?.inCrib).toBe(false);
+  });
+
+  it('derives the crib surface for historical labels without the new field', () => {
+    const frame = apiTesting.normalizeFrame({
+      id: 'legacy-crib-frame',
+      captured_at: '2026-07-18T20:00:00Z',
+      label: { baby_present: true, state: 'asleep', confidence: 0.9, in_crib: true },
+    });
+
+    expect(frame.label?.sleepSurface).toBe('crib');
+  });
+
   it('accepts prediction and current sleep in snake_case', () => {
     const summary = apiTesting.normalizeSummary({
       sleep_state: 'sleeping',

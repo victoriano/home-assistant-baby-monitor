@@ -61,6 +61,7 @@ describe('dashboard hierarchy', () => {
         description: 'Baby is awake',
         tags: ['awake'],
         inCrib: true,
+        sleepSurface: 'crib',
         faceVisible: 'yes',
         headSide: 'back',
         bodyPosition: 'back',

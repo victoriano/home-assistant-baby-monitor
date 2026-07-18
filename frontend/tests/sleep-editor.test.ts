@@ -64,6 +64,7 @@ const firstFrame: FrameRecord = {
     description: 'Dormido boca arriba.',
     tags: ['calm'],
     inCrib: true,
+    sleepSurface: 'crib',
     faceVisible: 'yes',
     headSide: 'left',
     bodyPosition: 'supine',

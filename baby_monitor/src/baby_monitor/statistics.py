@@ -117,7 +117,9 @@ def vision_summary(
         )
         day["sample_count"] += 1
         day["observed_minutes"] += minutes
-        visible = label.baby_present and label.in_crib is not False
+        # Family-bed observations are first-class visual evidence too. Keep
+        # legacy unknown/in_crib-null labels visible exactly as before.
+        visible = label.baby_present and label.resolved_sleep_surface() != "other"
         if not visible:
             continue
         visible_samples += 1

@@ -2184,6 +2184,9 @@ export class BabyMonitorApp extends LitElement {
         right: ['Derecha', 'Right'],
         back: ['Boca arriba', 'On back'],
         face_down: ['Boca abajo', 'Face down'],
+        crib: ['Cuna', 'Crib'],
+        family_bed: ['Cama familiar', 'Family bed'],
+        other: ['Otro lugar', 'Other place'],
       };
       return labels[value]?.[this.language === 'es' ? 0 : 1] ?? value.replaceAll('_', ' ');
     };
@@ -2193,7 +2196,7 @@ export class BabyMonitorApp extends LitElement {
       [this.language === 'es' ? 'Estado' : 'State', humanValue(current.label.state)],
       [this.language === 'es' ? 'Confianza' : 'Confidence', `${Math.round(current.label.confidence * 100)}%`],
       [this.language === 'es' ? 'Bebé presente' : 'Baby present', humanValue(current.label.babyPresent)],
-      [this.language === 'es' ? 'En la cuna' : 'In crib', humanValue(current.label.inCrib)],
+      [this.language === 'es' ? 'Zona de sueño' : 'Sleep surface', humanValue(current.label.sleepSurface)],
       [this.language === 'es' ? 'Cara visible' : 'Face visible', humanValue(current.label.faceVisible)],
       [this.language === 'es' ? 'Orientación de la cabeza' : 'Head side', humanValue(current.label.headSide)],
       [this.language === 'es' ? 'Posición del cuerpo' : 'Body position', humanValue(current.label.bodyPosition)],
@@ -2224,7 +2227,7 @@ export class BabyMonitorApp extends LitElement {
             <div class="frame-review-copy">
               <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
               <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
-              ${current.label ? html`<div class="frame-labels"><span>${humanValue(current.label.state)}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${current.label.inCrib == null ? '—' : current.label.inCrib ? (this.language === 'es' ? 'en cuna' : 'in crib') : (this.language === 'es' ? 'fuera de cuna' : 'out of crib')}</span></div>` : nothing}
+              ${current.label ? html`<div class="frame-labels"><span>${humanValue(current.label.state)}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${humanValue(current.label.sleepSurface)}</span></div>` : nothing}
               ${current.label ? html`
                 <details class="frame-model-details">
                   <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Ver análisis del modelo' : 'View model analysis'}</span></summary>

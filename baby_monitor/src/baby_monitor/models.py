@@ -428,6 +428,9 @@ class HAEntity(StrictModel):
         return validate_entity_id(value)
 
 
+SleepSurface = Literal["crib", "family_bed", "other", "unknown"]
+
+
 class VisionLabel(StrictModel):
     baby_present: bool
     state: Literal["awake", "asleep", "uncertain"]
@@ -435,6 +438,7 @@ class VisionLabel(StrictModel):
     description: str = Field(max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
     in_crib: bool | None = None
+    sleep_surface: SleepSurface = "unknown"
     face_visible: Literal["yes", "no", "unknown"] = "unknown"
     head_side: Literal["left", "right", "back", "face_down", "unknown"] = "unknown"
     body_position: str = Field(default="unknown", max_length=80)
@@ -450,6 +454,28 @@ class VisionLabel(StrictModel):
     ] = Field(default_factory=lambda: ["unknown"], max_length=5)
     pacifier: Literal["yes", "no", "unknown"] = "unknown"
     mouth_open: Literal["yes", "no", "unknown"] = "unknown"
+
+    @model_validator(mode="after")
+    def consistent_sleep_surface(self) -> VisionLabel:
+        if self.sleep_surface == "crib" and self.in_crib is False:
+            raise ValueError("crib sleep surface requires in_crib=true")
+        if self.sleep_surface in {"family_bed", "other"} and self.in_crib is True:
+            raise ValueError("non-crib sleep surface requires in_crib=false")
+        return self
+
+    def resolved_sleep_surface(self) -> SleepSurface:
+        """Resolve old labels while preserving their original JSON contract."""
+
+        if self.sleep_surface != "unknown":
+            return self.sleep_surface
+        normalized_tags = {tag.strip().lower().replace("-", "_").replace(" ", "_") for tag in self.tags}
+        if normalized_tags & {"adult_bed", "family_bed", "shared_bed", "parents_bed"}:
+            return "family_bed"
+        if self.in_crib is True:
+            return "crib"
+        if self.in_crib is False:
+            return "other"
+        return "unknown"
 
 
 class FrameRecord(StrictModel):

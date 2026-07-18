@@ -71,6 +71,19 @@ Choose either:
 Set the snapshot interval between 30 seconds and 24 hours. The camera can stay
 disabled while sleep tracking and cry alerts continue to work.
 
+Visual labels distinguish four surfaces: **Crib**, **Family bed**, **Other**,
+and **Unknown**. Crib and family bed are both valid for automatic sleep
+detection. A family-bed observation remains valid when an adult is visible:
+the classifier is instructed to use only the baby's eyes, posture, movement,
+and other visible baby evidence, never the adult's apparent sleep state. Two
+nearby decisive observations are still required before opening or closing a
+sleep event. If the baby is obscured by an adult or bedding, the correct label
+is Unknown rather than a guessed sleep state.
+
+This classification records visible sleep evidence only. It does not assess
+breathing, medical condition, supervision, or whether a sleep arrangement is
+safe.
+
 The Live button first negotiates WebRTC with a local go2rtc relay and labels the
 transport as **WebRTC · low latency**. If that relay is unavailable, the App
 shows **MJPEG fallback** instead of presenting a delayed snapshot stream as

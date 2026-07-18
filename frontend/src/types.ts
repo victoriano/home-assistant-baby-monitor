@@ -184,6 +184,7 @@ export interface VisionLabel {
   description: string;
   tags: string[];
   inCrib: boolean | null;
+  sleepSurface: 'crib' | 'family_bed' | 'other' | 'unknown';
   faceVisible: 'yes' | 'no' | 'unknown';
   headSide: 'left' | 'right' | 'back' | 'face_down' | 'unknown';
   bodyPosition: string;

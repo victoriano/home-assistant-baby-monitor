@@ -35,8 +35,8 @@ class ServiceError(RuntimeError):
 VisionSleepState = Literal["asleep", "awake"]
 
 # These labels mean that the camera could not provide evidence either way. A
-# clearly empty crib is wake evidence, but a broken/covered frame must never end
-# a sleep event just because no baby could be seen.
+# clearly empty monitored sleep area is wake evidence, but a broken/covered
+# frame must never end a sleep event just because no baby could be seen.
 _UNUSABLE_VISION_TAGS = {
     "black_frame",
     "blocked",
@@ -57,13 +57,19 @@ def _vision_sleep_state(label: VisionLabel | None) -> VisionSleepState | None:
     normalized_tags = {tag.strip().lower().replace("-", "_").replace(" ", "_") for tag in label.tags}
     if normalized_tags & _UNUSABLE_VISION_TAGS:
         return None
-    # The public providers correctly use `uncertain` when there is no baby to
-    # classify. A clearly empty crib or a baby outside it still confirms that a
-    # crib sleep has ended, matching the original Esteban tracker.
-    if label.in_crib is False:
+    surface = label.resolved_sleep_surface()
+    # The state belongs to the baby, never to another person visible in the
+    # frame. An empty monitored area still closes an automatic sleep.
+    if not label.baby_present:
+        return "awake" if label.in_crib is False or "baby_absent" in normalized_tags else None
+    if label.state == "awake":
         return "awake"
-    if label.baby_present and label.state in {"asleep", "awake"}:
-        return label.state
+    if label.state == "asleep":
+        if surface in {"crib", "family_bed"} or (surface == "unknown" and label.in_crib is not False):
+            return "asleep"
+        # Preserve the previous behavior for sleep on unsupported surfaces,
+        # while allowing a family bed to remain valid even though in_crib=false.
+        return "awake" if surface == "other" else None
     return None
 
 
@@ -74,8 +80,8 @@ def _confirmed_vision_transitions(
     """Return state changes backed by two nearby decisive observations.
 
     Inconclusive frames neither confirm nor contradict a transition. This is
-    important for overhead crib cameras where a face can be temporarily hidden
-    while the preceding and following observations still agree.
+    important for fixed sleep-area cameras where a face can be temporarily
+    hidden by a rail, an adult or bedding while surrounding observations agree.
     """
 
     previous: tuple[datetime, VisionSleepState] | None = None

@@ -527,7 +527,7 @@ async def test_empty_crib_closes_sleep_across_an_unusable_frame(tmp_path: Path) 
     assert closed is not None and closed.ended_at == first_empty.captured_at
 
 
-async def test_baby_outside_crib_closes_sleep_even_when_asleep(tmp_path: Path) -> None:
+async def test_moving_sleep_from_crib_to_family_bed_keeps_same_event_open(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
     base = utc_now() - timedelta(minutes=25)
@@ -538,6 +538,7 @@ async def test_baby_outside_crib_closes_sleep_even_when_asleep(tmp_path: Path) -
         description="Asleep in crib",
         tags=["crib"],
         in_crib=True,
+        sleep_surface="crib",
     )
     first = app.state.database.add_frame(b"sleep-one", "image/jpeg", base, label=asleep_in_crib)
     second = app.state.database.add_frame(b"sleep-two", "image/jpeg", base + timedelta(minutes=5), label=asleep_in_crib)
@@ -545,24 +546,114 @@ async def test_baby_outside_crib_closes_sleep_even_when_asleep(tmp_path: Path) -
     event = app.state.database.open_sleep_event()
     assert event is not None and event.started_at == first.captured_at
 
-    asleep_outside = VisionLabel(
+    asleep_with_parent = VisionLabel(
         baby_present=True,
         state="asleep",
         confidence=0.95,
-        description="Asleep outside the crib",
-        tags=["outside_crib"],
+        description="Baby asleep on the family bed beside an awake adult",
+        tags=["family_bed", "adult_present"],
         in_crib=False,
+        sleep_surface="family_bed",
     )
-    first_outside = app.state.database.add_frame(
-        b"outside-one", "image/jpeg", base + timedelta(minutes=10), label=asleep_outside
+    app.state.database.add_frame(
+        b"family-bed-one", "image/jpeg", base + timedelta(minutes=10), label=asleep_with_parent
     )
-    second_outside = app.state.database.add_frame(
-        b"outside-two", "image/jpeg", base + timedelta(minutes=15), label=asleep_outside
+    second_family_bed = app.state.database.add_frame(
+        b"family-bed-two", "image/jpeg", base + timedelta(minutes=15), label=asleep_with_parent
     )
-    await service._reconcile_vision_sleep(second_outside.id)
+    await service._reconcile_vision_sleep(second_family_bed.id)
+
+    still_open = app.state.database.get_sleep_event(event.id)
+    assert still_open is not None
+    assert still_open.started_at == first.captured_at
+    assert still_open.ended_at is None
+
+
+async def test_family_bed_starts_sleep_and_baby_state_ignores_adult(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(minutes=20)
+    asleep_with_awake_parent = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.94,
+        description="Baby asleep on family bed; adult is awake",
+        tags=["family_bed", "adult_present", "adult_awake"],
+        in_crib=False,
+        sleep_surface="family_bed",
+    )
+    first = app.state.database.add_frame(b"bed-one", "image/jpeg", base, label=asleep_with_awake_parent)
+    second = app.state.database.add_frame(
+        b"bed-two", "image/jpeg", base + timedelta(minutes=5), label=asleep_with_awake_parent
+    )
+
+    await service._reconcile_vision_sleep(second.id)
+
+    event = app.state.database.open_sleep_event()
+    assert event is not None
+    assert event.started_at == first.captured_at
+    assert event.source == "vision"
+
+    baby_awake_with_sleeping_parent = VisionLabel(
+        baby_present=True,
+        state="awake",
+        confidence=0.96,
+        description="Baby awake on family bed; adult appears asleep",
+        tags=["family_bed", "adult_present", "adult_asleep"],
+        in_crib=False,
+        sleep_surface="family_bed",
+    )
+    first_awake = app.state.database.add_frame(
+        b"bed-awake-one", "image/jpeg", base + timedelta(minutes=10), label=baby_awake_with_sleeping_parent
+    )
+    second_awake = app.state.database.add_frame(
+        b"bed-awake-two", "image/jpeg", base + timedelta(minutes=15), label=baby_awake_with_sleeping_parent
+    )
+
+    await service._reconcile_vision_sleep(second_awake.id)
 
     closed = app.state.database.get_sleep_event(event.id)
-    assert closed is not None and closed.ended_at == first_outside.captured_at
+    assert closed is not None and closed.ended_at == first_awake.captured_at
+
+
+async def test_asleep_on_an_unsupported_surface_still_closes_monitored_sleep(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    service = FrameService(app.state.database, app.state.settings, FakeHomeAssistant())  # type: ignore[arg-type]
+    base = utc_now() - timedelta(minutes=25)
+    asleep_in_crib = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Asleep in crib",
+        tags=["crib"],
+        in_crib=True,
+        sleep_surface="crib",
+    )
+    app.state.database.add_frame(b"crib-one", "image/jpeg", base, label=asleep_in_crib)
+    second = app.state.database.add_frame(b"crib-two", "image/jpeg", base + timedelta(minutes=5), label=asleep_in_crib)
+    await service._reconcile_vision_sleep(second.id)
+    event = app.state.database.open_sleep_event()
+    assert event is not None
+
+    asleep_elsewhere = VisionLabel(
+        baby_present=True,
+        state="asleep",
+        confidence=0.95,
+        description="Baby asleep while being held",
+        tags=["held"],
+        in_crib=False,
+        sleep_surface="other",
+    )
+    first_other = app.state.database.add_frame(
+        b"other-one", "image/jpeg", base + timedelta(minutes=10), label=asleep_elsewhere
+    )
+    second_other = app.state.database.add_frame(
+        b"other-two", "image/jpeg", base + timedelta(minutes=15), label=asleep_elsewhere
+    )
+    await service._reconcile_vision_sleep(second_other.id)
+
+    closed = app.state.database.get_sleep_event(event.id)
+    assert closed is not None and closed.ended_at == first_other.captured_at
 
 
 async def test_uncertain_in_crib_frame_does_not_hide_sleep_start(tmp_path: Path) -> None:

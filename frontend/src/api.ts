@@ -380,6 +380,7 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
       description: value,
       tags: [],
       inCrib: null,
+      sleepSurface: 'unknown',
       faceVisible: 'unknown',
       headSide: 'unknown',
       bodyPosition: 'unknown',
@@ -390,13 +391,28 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
   }
   const data = asRecord(value);
   const state = asString(data.state);
+  const tags = asStringArray(data.tags);
+  const inCribValue = pick(data, 'inCrib', 'in_crib');
+  const inCrib = typeof inCribValue === 'boolean' ? asBoolean(inCribValue) : null;
+  const rawSurface = asString(pick(data, 'sleepSurface', 'sleep_surface'));
+  const normalizedTags = tags.map((tag) => tag.trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_'));
+  const sleepSurface = rawSurface === 'crib' || rawSurface === 'family_bed' || rawSurface === 'other'
+    ? rawSurface
+    : normalizedTags.some((tag) => ['adult_bed', 'family_bed', 'shared_bed', 'parents_bed'].includes(tag))
+      ? 'family_bed'
+      : inCrib === true
+        ? 'crib'
+        : inCrib === false
+          ? 'other'
+          : 'unknown';
   return {
     babyPresent: asBoolean(pick(data, 'babyPresent', 'baby_present')),
     state: state === 'awake' || state === 'asleep' ? state : 'uncertain',
     confidence: asNumber(data.confidence),
     description: asString(data.description, descriptionFallback),
-    tags: asStringArray(data.tags),
-    inCrib: typeof pick(data, 'inCrib', 'in_crib') === 'boolean' ? asBoolean(pick(data, 'inCrib', 'in_crib')) : null,
+    tags,
+    inCrib,
+    sleepSurface,
     faceVisible: ['yes', 'no'].includes(asString(pick(data, 'faceVisible', 'face_visible'))) ? asString(pick(data, 'faceVisible', 'face_visible')) as 'yes' | 'no' : 'unknown',
     headSide: ['left', 'right', 'back', 'face_down'].includes(asString(pick(data, 'headSide', 'head_side'))) ? asString(pick(data, 'headSide', 'head_side')) as 'left' | 'right' | 'back' | 'face_down' : 'unknown',
     bodyPosition: asString(pick(data, 'bodyPosition', 'body_position'), 'unknown'),

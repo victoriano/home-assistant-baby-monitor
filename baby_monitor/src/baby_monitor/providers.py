@@ -18,14 +18,21 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 VISION_PROMPT = (
-    "Label this baby-monitor frame. Decide whether a baby is visible and, only from visible evidence, "
-    "whether the baby appears awake, asleep, or uncertain. Also describe only clearly visible nursery "
-    "details: whether the baby is in the crib, face visibility, head side, body position, clothing, "
-    "pacifier use, and whether the mouth is open. Be conservative: use unknown when occluded or unclear, "
-    "never infer sleep when the baby is absent, and never infer a pacifier from a closed mouth or shadow. "
-    "When the crib is clearly visible and empty, set baby_present=false, in_crib=false and include the "
-    "tag empty_crib. When the image itself is blocked, corrupted or unusable, use state=uncertain and "
-    "include the tag image_unusable instead; an unusable image is not evidence that the crib is empty. "
+    "Label this baby-monitor frame. The image may contain a crib or sidecar cot, a nearby adult/family "
+    "bed, the baby, and one or more adults. Decide whether the BABY is visible and, only from evidence "
+    "visible on the baby, whether the baby appears awake, asleep, or uncertain. Never use an adult's "
+    "posture, closed eyes, or stillness to classify the baby's state. Set sleep_surface=crib when the "
+    "baby rests on the crib/cot mattress, family_bed when the baby rests on the adult/shared-bed mattress "
+    "whether alone or beside an adult, other for another visible surface or being held, and unknown when "
+    "the baby's surface is unclear. Both crib and family_bed are valid monitored sleep surfaces. Set "
+    "in_crib=true only for sleep_surface=crib and false for family_bed or other. Also describe only clearly "
+    "visible details: face visibility, head side, body position, clothing, pacifier use, and whether the "
+    "mouth is open. Be conservative: use unknown when the baby is occluded or unclear, never infer sleep "
+    "when the baby is absent, and never infer a pacifier from a closed mouth or shadow. When the monitored "
+    "area is clearly visible without the baby, set baby_present=false, state=uncertain, in_crib=false and "
+    "include the tag baby_absent; include empty_crib too when the crib is clearly empty. When the image "
+    "itself is blocked, corrupted or unusable, use state=uncertain and include the tag image_unusable "
+    "instead; an unusable image is not evidence that either sleep surface is empty. "
     "Confidence describes the sleep/occupancy classification, not merely confidence that the pixels are "
     "corrupted. "
     "Return only the requested structured object."
@@ -40,6 +47,7 @@ VISION_SCHEMA: dict[str, Any] = {
         "description": {"type": "string", "maxLength": 500},
         "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "in_crib": {"type": "boolean"},
+        "sleep_surface": {"type": "string", "enum": ["crib", "family_bed", "other", "unknown"]},
         "face_visible": {"type": "string", "enum": ["yes", "no", "unknown"]},
         "head_side": {"type": "string", "enum": ["left", "right", "back", "face_down", "unknown"]},
         "body_position": {"type": "string", "maxLength": 80},
@@ -68,6 +76,7 @@ VISION_SCHEMA: dict[str, Any] = {
         "description",
         "tags",
         "in_crib",
+        "sleep_surface",
         "face_visible",
         "head_side",
         "body_position",

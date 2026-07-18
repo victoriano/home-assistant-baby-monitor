@@ -32,6 +32,9 @@ credentials are included.
 ## What it does
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
+- Detects the baby's sleep on either a crib/cot mattress or a visible family
+  bed, including when an adult is beside the baby; adult posture is explicitly
+  excluded from the baby's sleep classification.
 - Uses WebRTC for low-latency live video when a local go2rtc relay is available,
   with an explicitly labelled MJPEG fallback.
 - Tracks and edits naps, night sleep, awakenings, awake pauses, settling
