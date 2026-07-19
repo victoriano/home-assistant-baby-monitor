@@ -186,6 +186,34 @@ function localDateTime(date: Date): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+function parseDateOnly(value: string | null | undefined): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '');
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const date = new Date(year, month, day, 12);
+  return Number.isFinite(date.getTime())
+    && date.getFullYear() === year
+    && date.getMonth() === month
+    && date.getDate() === day
+    ? date
+    : null;
+}
+
+function dateOnlyValue(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function monthOnlyValue(date: Date): string {
+  const first = new Date(date.getFullYear(), date.getMonth(), 1, 12);
+  return dateOnlyValue(first);
+}
+
 export function rhythmModeForTime(now: Date): RhythmMode {
   const minutes = now.getHours() * 60 + now.getMinutes();
   return minutes >= 21 * 60 || minutes < 9 * 60 ? 'night' : 'day';
@@ -263,6 +291,8 @@ export class BabyMonitorApp extends LitElement {
   private editSleepEndChanged = false;
   @state() private manualEndTouched = false;
   @state() private manualOverlap: SleepOverlapWarning | null = null;
+  @state() private birthDatePickerOpen = false;
+  @state() private birthDatePickerMonth = monthOnlyValue(new Date());
   @state() private rhythmDate = localDateKey(new Date());
   @state() private rhythmMode: RhythmMode = rhythmModeForTime(new Date());
   @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
@@ -297,6 +327,7 @@ export class BabyMonitorApp extends LitElement {
   private frameReviewRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
+      if (this.birthDatePickerOpen) { this.birthDatePickerOpen = false; return; }
       if (this.temporalPicker) { this.temporalPicker = null; return; }
       if (this.selectedPrediction) { this.selectedPrediction = null; return; }
       if (this.manualOpen) this.closeManualForm();
@@ -2836,11 +2867,116 @@ export class BabyMonitorApp extends LitElement {
     `;
   }
 
+  private openBirthDatePicker(): void {
+    const selected = parseDateOnly(this.draft.baby.birthDate);
+    this.birthDatePickerMonth = monthOnlyValue(selected ?? new Date());
+    this.birthDatePickerOpen = true;
+  }
+
+  private shiftBirthDatePicker(months: number): void {
+    const visible = parseDateOnly(this.birthDatePickerMonth) ?? new Date();
+    const target = new Date(visible.getFullYear(), visible.getMonth() + months, 1, 12);
+    const currentMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12);
+    this.birthDatePickerMonth = monthOnlyValue(target > currentMonth ? currentMonth : target);
+  }
+
+  private selectBirthDate(value: string | null): void {
+    this.updateDraft((draft) => { draft.baby.birthDate = value; });
+    this.birthDatePickerOpen = false;
+  }
+
+  private formatBirthDate(value: string): string {
+    const date = parseDateOnly(value);
+    if (!date) return value;
+    return new Intl.DateTimeFormat(this.language === 'es' ? 'es-ES' : 'en-GB', this.language === 'es'
+      ? { day: '2-digit', month: '2-digit', year: 'numeric' }
+      : { day: '2-digit', month: 'short', year: 'numeric' }).format(date);
+  }
+
+  private renderBirthDatePicker(): TemplateResult | typeof nothing {
+    if (!this.birthDatePickerOpen) return nothing;
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const visible = parseDateOnly(this.birthDatePickerMonth) ?? new Date();
+    const monthStart = new Date(visible.getFullYear(), visible.getMonth(), 1, 12);
+    const offsetFromMonday = (monthStart.getDay() + 6) % 7;
+    const gridStart = new Date(monthStart);
+    gridStart.setDate(gridStart.getDate() - offsetFromMonday);
+    const days = Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(gridStart);
+      date.setDate(date.getDate() + index);
+      return date;
+    });
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    const currentMonth = new Date(today.getFullYear(), today.getMonth(), 1, 12);
+    const nextMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1, 12);
+    const nextYear = new Date(monthStart.getFullYear() + 1, monthStart.getMonth(), 1, 12);
+    const weekdays = Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale, { weekday: 'narrow' })
+      .format(new Date(2024, 0, 1 + index, 12)));
+    const selected = this.draft.baby.birthDate;
+    const fullDate = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    return html`
+      <button type="button" class="profile-date-backdrop" aria-label=${this.language === 'es' ? 'Cerrar calendario' : 'Close calendar'} @click=${() => { this.birthDatePickerOpen = false; }}></button>
+      <section id="birth-date-picker" class="profile-date-popover" role="dialog" aria-modal="true" aria-label=${this.t('birthDate')}>
+        <header>
+          <div><small>${this.language === 'es' ? 'Fecha de nacimiento' : 'Date of birth'}</small><strong>${new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(monthStart)}</strong></div>
+          <button type="button" aria-label=${this.language === 'es' ? 'Cerrar' : 'Close'} @click=${() => { this.birthDatePickerOpen = false; }}>&times;</button>
+        </header>
+        <nav class="profile-date-navigation" aria-label=${this.language === 'es' ? 'Cambiar mes y año' : 'Change month and year'}>
+          <button type="button" aria-label=${this.language === 'es' ? 'Año anterior' : 'Previous year'} @click=${() => this.shiftBirthDatePicker(-12)}><span aria-hidden="true">«</span></button>
+          <button type="button" aria-label=${this.language === 'es' ? 'Mes anterior' : 'Previous month'} @click=${() => this.shiftBirthDatePicker(-1)}><span aria-hidden="true">‹</span></button>
+          <span>${new Intl.DateTimeFormat(locale, { month: 'short', year: 'numeric' }).format(monthStart)}</span>
+          <button type="button" aria-label=${this.language === 'es' ? 'Mes siguiente' : 'Next month'} ?disabled=${nextMonth > currentMonth} @click=${() => this.shiftBirthDatePicker(1)}><span aria-hidden="true">›</span></button>
+          <button type="button" aria-label=${this.language === 'es' ? 'Año siguiente' : 'Next year'} ?disabled=${nextYear > currentMonth} @click=${() => this.shiftBirthDatePicker(12)}><span aria-hidden="true">»</span></button>
+        </nav>
+        <div class="profile-date-weekdays" aria-hidden="true">${weekdays.map((weekday) => html`<span>${weekday}</span>`)}</div>
+        <div class="profile-date-grid">
+          ${days.map((date) => {
+            const value = dateOnlyValue(date);
+            const outside = date.getMonth() !== monthStart.getMonth();
+            const future = date > today;
+            return html`<button
+              type="button"
+              class=${`${outside ? 'outside' : ''} ${selected === value ? 'selected' : ''} ${value === dateOnlyValue(today) ? 'today' : ''}`}
+              data-date=${value}
+              aria-label=${fullDate.format(date)}
+              aria-pressed=${selected === value}
+              ?disabled=${future}
+              @click=${() => this.selectBirthDate(value)}
+            >${date.getDate()}</button>`;
+          })}
+        </div>
+        <footer>
+          <small>${this.language === 'es' ? 'No se permiten fechas futuras' : 'Future dates are unavailable'}</small>
+          ${selected ? html`<button type="button" @click=${() => this.selectBirthDate(null)}>${this.language === 'es' ? 'Borrar fecha' : 'Clear date'}</button>` : nothing}
+        </footer>
+      </section>
+    `;
+  }
+
   private renderProfileSection(compact = false): TemplateResult {
+    const birthDate = this.draft.baby.birthDate;
     const content = html`
       <div class="field-grid two">
         <label class="field"><span>${this.t('babyName')}</span><input maxlength="80" autocomplete="off" .value=${this.draft.baby.name} placeholder=${this.t('babyNamePlaceholder')} @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.name = inputValue(event); })}></label>
-        <label class="field"><span>${this.t('birthDate')} <em>${this.t('optional')}</em></span><input type="date" .value=${this.draft.baby.birthDate ?? ''} @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.birthDate = inputValue(event) || null; })}></label>
+        <div class="field birth-date-field">
+          <span>${this.t('birthDate')} <em>${this.t('optional')}</em></span>
+          <button
+            type="button"
+            class=${`profile-date-trigger ${birthDate ? 'has-value' : ''}`}
+            aria-label=${`${this.t('birthDate')}: ${birthDate ? this.formatBirthDate(birthDate) : this.t('optional')}`}
+            aria-haspopup="dialog"
+            aria-controls="birth-date-picker"
+            aria-expanded=${this.birthDatePickerOpen}
+            @click=${() => this.openBirthDatePicker()}
+          >
+            <span class="profile-date-icon">${icon('calendar', 19)}</span>
+            <span><strong>${birthDate ? this.formatBirthDate(birthDate) : (this.language === 'es' ? 'Elegir fecha' : 'Choose date')}</strong><small>${birthDate ? (this.language === 'es' ? 'Día, mes y año' : 'Day, month and year') : (this.language === 'es' ? 'Mejora las predicciones por edad' : 'Improves age-aware predictions')}</small></span>
+            ${icon('chevron', 16)}
+          </button>
+          ${this.renderBirthDatePicker()}
+        </div>
       </div>
       <label class="field"><span>${this.t('timezone')}</span><input .value=${this.draft.baby.timezone} autocomplete="off" @input=${(event: Event) => this.updateDraft((draft) => { draft.baby.timezone = inputValue(event); })}></label>
       <div class="field-grid two">

@@ -1305,6 +1305,79 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 }
 .field input::placeholder { color: #596477; }
 .field input:not([type="checkbox"]):not([type="range"]):focus { border-color: rgba(168, 178, 255, 0.5); box-shadow: 0 0 0 3px rgba(139, 152, 244, 0.08); }
+.birth-date-field { position: relative; }
+.profile-date-trigger {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-small);
+  background: var(--night-deep);
+  color: var(--quiet);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.profile-date-trigger:hover { border-color: rgba(168,178,255,.34); background: var(--slate-room); }
+.profile-date-trigger[aria-expanded="true"] { border-color: rgba(168,178,255,.52); box-shadow: 0 0 0 3px rgba(139,152,244,.08); }
+.profile-date-trigger.has-value { color: var(--linen); }
+.profile-date-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--indigo-wash); color: var(--indigo-bright); }
+.profile-date-trigger > span:nth-child(2) { display: grid; gap: 1px; min-width: 0; }
+.profile-date-trigger strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.profile-date-trigger small { overflow: hidden; color: var(--faint); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.profile-date-trigger > svg { color: var(--faint); transform: rotate(90deg); transition: transform 140ms ease; }
+.profile-date-trigger[aria-expanded="true"] > svg { transform: rotate(-90deg); }
+.profile-date-backdrop { position: fixed; z-index: 250; inset: 0; width: 100%; padding: 0; border: 0; background: rgba(4,7,14,.34); backdrop-filter: blur(3px); cursor: default; }
+.profile-date-popover {
+  position: absolute;
+  z-index: 260;
+  top: calc(100% + 8px);
+  right: 0;
+  left: 0;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid var(--edge-strong);
+  border-radius: 14px;
+  background: rgba(21,27,43,.98);
+  box-shadow: 0 22px 60px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05);
+  backdrop-filter: blur(20px);
+  animation: profile-date-in 150ms ease both;
+}
+.theme-day .profile-date-backdrop { background: rgba(224,232,248,.48); }
+.theme-day .profile-date-popover { background: rgba(250,252,255,.98); box-shadow: 0 22px 55px rgba(48,61,108,.20), inset 0 1px 0 rgba(255,255,255,.9); }
+.profile-date-popover > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 2px 10px; }
+.profile-date-popover > header > div { display: grid; gap: 2px; }
+.profile-date-popover > header small { color: var(--faint); font-size: 7px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.profile-date-popover > header strong { font-size: 13px; text-transform: capitalize; }
+.profile-date-popover > header > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--faint); font-size: 20px; cursor: pointer; }
+.profile-date-popover > header > button:hover { background: var(--slate-room); color: var(--linen); }
+.profile-date-navigation { display: grid; grid-template-columns: 28px 28px minmax(0,1fr) 28px 28px; align-items: center; gap: 4px; padding: 6px; border: 1px solid var(--edge); border-radius: 10px; background: var(--night-deep); }
+.profile-date-navigation button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--quiet); cursor: pointer; }
+.profile-date-navigation button:not(:disabled):hover { background: var(--indigo-wash); color: var(--indigo-bright); }
+.profile-date-navigation button span { font-family: var(--font-data); font-size: 17px; line-height: 1; }
+.profile-date-navigation > span { overflow: hidden; color: var(--oat); font-size: 9px; font-weight: 720; text-align: center; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
+.profile-date-weekdays, .profile-date-grid { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 3px; }
+.profile-date-weekdays { padding: 10px 2px 5px; }
+.profile-date-weekdays span { color: var(--faint); font: 7px var(--font-data); text-align: center; text-transform: uppercase; }
+.profile-date-grid button { display: grid; place-items: center; min-width: 0; aspect-ratio: 1; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--oat); font: 9px var(--font-data); cursor: pointer; }
+.profile-date-grid button:not(:disabled):hover { border-color: rgba(168,178,255,.25); background: var(--indigo-wash); color: var(--indigo-bright); }
+.profile-date-grid button.outside { color: var(--faint); opacity: .55; }
+.profile-date-grid button.today { border-color: rgba(230,184,108,.28); color: var(--amber); }
+.profile-date-grid button.selected { border-color: rgba(168,178,255,.38); background: var(--indigo); color: #101527; box-shadow: 0 5px 14px rgba(89,100,183,.24); font-weight: 780; }
+.profile-date-grid button:disabled { opacity: .14; }
+.profile-date-popover > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; margin-top: 8px; padding: 8px 2px 0; border-top: 1px solid var(--edge); }
+.profile-date-popover > footer small { color: var(--faint); font-size: 7px; }
+.profile-date-popover > footer button { padding: 5px 7px; border: 0; border-radius: 7px; background: transparent; color: var(--coral); font-size: 8px; cursor: pointer; }
+.profile-date-popover > footer button:hover { background: var(--coral-wash); }
+@keyframes profile-date-in { from { opacity: 0; transform: translateY(-5px) scale(.985); } }
 .narrow-field { max-width: 220px; }
 
 .range-field > span { align-items: center; }
@@ -1634,6 +1707,21 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .history-pager { flex-wrap: wrap; }
   .history-pager-error { order: 3; width: 100%; max-width: none; }
   .field-grid.two { grid-template-columns: 1fr; }
+  .profile-date-popover {
+    position: fixed;
+    top: auto;
+    right: 14px;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    left: 14px;
+    width: auto;
+    max-height: calc(100dvh - 28px - env(safe-area-inset-bottom, 0px));
+    padding: 14px;
+    overflow-y: auto;
+    border-radius: 20px;
+    animation-name: profile-date-sheet-in;
+  }
+  .profile-date-grid button { border-radius: 10px; font-size: 10px; }
+  .profile-date-popover > footer small { max-width: 62%; }
   .choice-cards { grid-template-columns: 1fr 1fr; }
   .settings-heading .admin-badge { display: none; }
   .settings-card-heading, .settings-card-body { padding: 18px; }
@@ -1699,6 +1787,8 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .prediction-samples li span { font-size: 7px; }
   .toast-region { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
 }
+
+@keyframes profile-date-sheet-in { from { opacity: 0; transform: translateY(12px) scale(.985); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }

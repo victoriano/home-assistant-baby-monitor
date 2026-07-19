@@ -14,6 +14,9 @@ import {
 interface SettingsHarness {
   draft: AppSettings;
   settings: AppSettings;
+  language: 'en' | 'es';
+  birthDatePickerOpen: boolean;
+  birthDatePickerMonth: string;
   pendingSecretClears: SecretName[];
   historyTransfer: HistoryTransferStatus | null;
   entities: {
@@ -26,6 +29,7 @@ interface SettingsHarness {
   renderCameraSection(compact?: boolean): TemplateResult;
   renderHomeAssistantSection(compact?: boolean): TemplateResult;
   renderNotificationsSection(compact?: boolean): TemplateResult;
+  renderProfileSection(compact?: boolean): TemplateResult;
   renderVisionSection(compact?: boolean): TemplateResult;
   renderHistoryTransferSection(): TemplateResult;
   homeAssistantValidationError(): string;
@@ -55,6 +59,47 @@ function renderSettings(template: TemplateResult): void {
 }
 
 describe('settings safety interactions', () => {
+  it('uses a compact custom birth-date picker and stores an exact calendar date', () => {
+    const settings = cloneDefaultSettings();
+    settings.baby.birthDate = '2025-07-05';
+    const app = harness(settings);
+    app.language = 'es';
+
+    renderSettings(app.renderProfileSection(true));
+
+    const trigger = document.querySelector('.profile-date-trigger');
+    if (!(trigger instanceof HTMLButtonElement)) throw new Error('Missing birth-date trigger');
+    expect(document.querySelector('input[type="date"]')).toBeNull();
+    expect(trigger.textContent).toContain('05/07/2025');
+
+    trigger.click();
+    expect(app.birthDatePickerOpen).toBe(true);
+    expect(app.birthDatePickerMonth).toBe('2025-07-01');
+
+    document.body.replaceChildren();
+    renderSettings(app.renderProfileSection(true));
+    const selected = document.querySelector('button[data-date="2025-07-05"]');
+    const replacement = document.querySelector('button[data-date="2025-07-12"]');
+    expect(selected?.classList.contains('selected')).toBe(true);
+    if (!(replacement instanceof HTMLButtonElement)) throw new Error('Missing replacement calendar date');
+    replacement.click();
+
+    expect(app.draft.baby.birthDate).toBe('2025-07-12');
+    expect(app.birthDatePickerOpen).toBe(false);
+
+    document.body.replaceChildren();
+    renderSettings(app.renderProfileSection(true));
+    const updatedTrigger = document.querySelector('.profile-date-trigger');
+    if (!(updatedTrigger instanceof HTMLButtonElement)) throw new Error('Missing updated birth-date trigger');
+    expect(updatedTrigger.textContent).toContain('12/07/2025');
+    updatedTrigger.click();
+
+    document.body.replaceChildren();
+    renderSettings(app.renderProfileSection(true));
+    buttonNamed('Borrar fecha').click();
+    expect(app.draft.baby.birthDate).toBeNull();
+  });
+
   it('clears a local endpoint and cloud consent when the AI provider changes', () => {
     const settings = cloneDefaultSettings();
     settings.ai.provider = 'local';
