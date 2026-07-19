@@ -16,6 +16,7 @@ from .models import (
     CryEvent,
     CryEventCreate,
     FrameRecord,
+    SleepDetails,
     SleepEvent,
     SleepEventCreate,
     SleepEventPatch,
@@ -52,7 +53,7 @@ def _dt(value: str) -> datetime:
 
 
 class Database:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -117,6 +118,7 @@ class Database:
                     kind TEXT NOT NULL,
                     source TEXT NOT NULL,
                     notes TEXT,
+                    details_json TEXT NOT NULL DEFAULT '{}',
                     location_id TEXT NOT NULL DEFAULT 'home',
                     created_at TEXT NOT NULL
                 );
@@ -139,6 +141,10 @@ class Database:
                 columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if "location_id" not in columns:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN location_id TEXT NOT NULL DEFAULT 'home'")
+                if table == "sleep_events" and "details_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE sleep_events ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+                    )
             connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     def ready(self) -> bool:
@@ -243,6 +249,73 @@ class Database:
             ).fetchall()
         return [self._frame(row) for row in rows], total
 
+    def list_frames_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        location_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[FrameRecord], int]:
+        """Return every frame inside a sleep interval in chronological order."""
+
+        clauses = ["captured_at BETWEEN ? AND ?"]
+        parameters: list[str | int] = [_iso(start), _iso(end)]
+        if location_id is not None:
+            clauses.append("location_id = ?")
+            parameters.append(location_id)
+        where = " AND ".join(clauses)
+        with self._connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM frames WHERE {where}",  # noqa: S608 - clauses are static
+                parameters,
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"SELECT * FROM frames WHERE {where} ORDER BY captured_at LIMIT ? OFFSET ?",  # noqa: S608
+                [*parameters, limit, offset],
+            ).fetchall()
+        return [self._frame(row) for row in rows], total
+
+    def nearest_frames(
+        self,
+        captured_at: datetime,
+        limit: int = 5,
+        within_minutes: int = 360,
+    ) -> list[FrameRecord]:
+        """Return the closest private frames without exposing filesystem paths."""
+
+        lower = captured_at - timedelta(minutes=within_minutes)
+        upper = captured_at + timedelta(minutes=within_minutes)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM frames
+                   WHERE captured_at BETWEEN ? AND ?
+                   ORDER BY ABS((julianday(captured_at) - julianday(?)) * 86400), captured_at
+                   LIMIT ?""",
+                (_iso(lower), _iso(upper), _iso(captured_at), limit),
+            ).fetchall()
+        return [self._frame(row) for row in rows]
+
+    def vision_labels_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        limit: int = 250_000,
+    ) -> list[tuple[datetime, VisionLabel]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT captured_at, label_json FROM frames
+                   WHERE captured_at >= ? AND captured_at <= ? AND label_json IS NOT NULL
+                   ORDER BY captured_at ASC LIMIT ?""",
+                (_iso(start), _iso(end), limit),
+            ).fetchall()
+        return [
+            (_dt(row["captured_at"]), VisionLabel.model_validate_json(row["label_json"]))
+            for row in rows
+        ]
+
     def latest_frame(self) -> FrameRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM frames ORDER BY captured_at DESC LIMIT 1").fetchone()
@@ -307,8 +380,8 @@ class Database:
                 raise StorageError("sleep event overlaps an existing event")
             connection.execute(
                 """INSERT INTO sleep_events
-                (id, started_at, ended_at, kind, source, notes, location_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (id, started_at, ended_at, kind, source, notes, details_json, location_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     item.id,
                     _iso(item.started_at),
@@ -316,6 +389,7 @@ class Database:
                     item.kind,
                     item.source,
                     item.notes,
+                    item.details.model_dump_json(),
                     item.location_id,
                     _iso(item.created_at),
                 ),
@@ -324,6 +398,10 @@ class Database:
 
     @staticmethod
     def _sleep(row: sqlite3.Row) -> SleepEvent:
+        try:
+            details = SleepDetails.model_validate_json(row["details_json"] or "{}")
+        except (ValueError, KeyError):
+            details = SleepDetails()
         return SleepEvent(
             id=row["id"],
             started_at=_dt(row["started_at"]),
@@ -331,6 +409,7 @@ class Database:
             kind=row["kind"],
             source=row["source"],
             notes=row["notes"],
+            details=details,
             location_id=row["location_id"],
             created_at=_dt(row["created_at"]),
         )
@@ -350,13 +429,17 @@ class Database:
 
     def latest_sleep_event(self) -> SleepEvent | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM sleep_events ORDER BY started_at DESC LIMIT 1").fetchone()
+            row = connection.execute(
+                "SELECT * FROM sleep_events WHERE kind != 'awake' ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
         return self._sleep(row) if row else None
 
     def open_sleep_event(self) -> SleepEvent | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM sleep_events WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+                """SELECT * FROM sleep_events
+                   WHERE ended_at IS NULL AND kind != 'awake'
+                   ORDER BY started_at DESC LIMIT 1"""
             ).fetchone()
         return self._sleep(row) if row else None
 
@@ -372,6 +455,7 @@ class Database:
                 "kind": values.get("kind", current.kind),
                 "source": current.source,
                 "notes": values.get("notes", current.notes),
+                "details": values.get("details", current.details),
                 "location_id": current.location_id,
             }
         )
@@ -385,12 +469,13 @@ class Database:
                 raise StorageError("sleep event overlaps an existing event")
             connection.execute(
                 """UPDATE sleep_events
-                   SET started_at = ?, ended_at = ?, kind = ?, notes = ? WHERE id = ?""",
+                   SET started_at = ?, ended_at = ?, kind = ?, notes = ?, details_json = ? WHERE id = ?""",
                 (
                     _iso(merged.started_at),
                     _iso(merged.ended_at) if merged.ended_at else None,
                     merged.kind,
                     merged.notes,
+                    merged.details.model_dump_json(),
                     event_id,
                 ),
             )
@@ -609,6 +694,9 @@ class Database:
                 with self._connect() as connection:
                     if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise StorageError("imported history failed SQLite integrity_check")
+                # Archives from older public releases remain importable. Run
+                # additive migrations only after the validated database swap.
+                self._migrate()
                 self._secure_database_files()
             except Exception:
                 if installed_database:

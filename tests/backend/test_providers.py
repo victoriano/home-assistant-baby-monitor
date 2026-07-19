@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 from baby_monitor.providers import (
+    VISION_PROMPT,
     VISION_SCHEMA,
     GeminiInteractionsProvider,
     OpenAICompatibleProvider,
@@ -18,7 +19,21 @@ LABEL = {
     "confidence": 0.93,
     "description": "Baby appears asleep.",
     "tags": ["crib"],
+    "in_crib": True,
+    "sleep_surface": "crib",
 }
+
+
+def test_vision_contract_supports_crib_and_family_bed_without_using_adult_state() -> None:
+    assert VISION_SCHEMA["properties"]["sleep_surface"]["enum"] == [
+        "crib",
+        "family_bed",
+        "other",
+        "unknown",
+    ]
+    assert "sleep_surface" in VISION_SCHEMA["required"]
+    assert "Never use an adult's" in VISION_PROMPT
+    assert "Both crib and family_bed are valid monitored sleep surfaces" in VISION_PROMPT
 
 
 async def test_openai_responses_payload_is_private_and_structured() -> None:
@@ -43,6 +58,7 @@ async def test_openai_responses_payload_is_private_and_structured() -> None:
         provider = OpenAIResponsesProvider("secret", None, client=client)
         result = await provider.label(b"jpeg", "image/jpeg", "low")
     assert result.state == "asleep"
+    assert result.sleep_surface == "crib"
     assert captured["store"] is False
     assert captured["text"]["format"] == {
         "type": "json_schema",
@@ -71,7 +87,18 @@ async def test_gemini_interactions_payload_matches_current_rest_contract() -> No
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-goog-api-key"] == "secret"
         captured.update(json.loads(request.content))
-        return httpx.Response(200, json={"output_text": json.dumps(LABEL)})
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "steps": [
+                    {
+                        "type": "model_output",
+                        "content": [{"type": "text", "text": json.dumps(LABEL)}],
+                    }
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await GeminiInteractionsProvider("secret", None, client=client).label(b"jpeg", "image/jpeg", "low")
@@ -87,6 +114,13 @@ async def test_gemini_interactions_payload_matches_current_rest_contract() -> No
         "mime_type": "application/json",
         "schema": VISION_SCHEMA,
     }
+
+
+async def test_gemini_interactions_rejects_incomplete_response() -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json={"status": "failed", "steps": []}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ProviderError, match="did not complete"):
+            await GeminiInteractionsProvider("secret", None, client=client).label(b"jpeg", "image/jpeg", "low")
 
 
 async def test_openai_compatible_uses_chat_completions_without_redirects() -> None:

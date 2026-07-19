@@ -7,7 +7,7 @@ import os
 import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs
@@ -37,12 +37,15 @@ from .models import (
     SleepStopRequest,
     utc_now,
 )
+from .notifications import NotificationDispatcher, NotificationScheduler
 from .providers import ProviderError, build_provider
 from .runtime import RuntimeWorkers
 from .security import EncryptedSecretStore
 from .services import CryAlertService, DashboardService, FrameService, ServiceError
 from .settings import SettingsError, SettingsRepository, SettingsService
+from .statistics import vision_summary
 from .transfer import MAX_ARCHIVE_BYTES, HistoryTransferManager, TransferError
+from .webrtc import Go2RTCClient, Go2RTCError
 
 API_PREFIX = "/api/v1"
 
@@ -99,6 +102,10 @@ def _sleep(event: Any) -> dict[str, Any]:
         "kind": event.kind,
         "source": event.source,
         "notes": event.notes,
+        "details": {
+            "tags": event.details.tags,
+            "pauses": [{"startedAt": pause.started_at, "endedAt": pause.ended_at} for pause in event.details.pauses],
+        },
         "locationId": event.location_id,
         "createdAt": event.created_at,
     }
@@ -138,9 +145,19 @@ def create_app(
     settings = SettingsService(settings_repository, secret_store, runtime=runtime)
     home_assistant = HomeAssistantClient(settings)
     frames = FrameService(database, settings, home_assistant)
-    cry_alerts = CryAlertService(database, settings, home_assistant)
+    notifications = NotificationDispatcher(settings, home_assistant)
+    notification_scheduler = NotificationScheduler(data_dir, database, settings, notifications)
+    cry_alerts = CryAlertService(database, settings, home_assistant, notifications)
     dashboard = DashboardService(database, settings)
-    workers = RuntimeWorkers(database, settings, home_assistant, frames, cry_alerts)
+    workers = RuntimeWorkers(
+        database,
+        settings,
+        home_assistant,
+        frames,
+        cry_alerts,
+        notification_scheduler,
+    )
+    go2rtc = Go2RTCClient()
     if start_workers is None:
         start_workers = (
             runtime in {"standalone", "home_assistant_app"} and os.environ.get("BABY_MONITOR_DISABLE_WORKERS") != "1"
@@ -194,8 +211,11 @@ def create_app(
     app.state.home_assistant = home_assistant
     app.state.frames = frames
     app.state.cry_alerts = cry_alerts
+    app.state.notifications = notifications
+    app.state.notification_scheduler = notification_scheduler
     app.state.dashboard = dashboard
     app.state.workers = workers
+    app.state.go2rtc = go2rtc
     app.state.runtime = runtime
     login_failures: dict[str, list[float]] = {}
 
@@ -428,7 +448,9 @@ def create_app(
         return _public_settings(saved, True)
 
     @app.get(f"{API_PREFIX}/home-assistant/entities")
-    async def entities(domain: Literal["camera", "binary_sensor", "light", "notify"] = Query(...)) -> dict[str, Any]:
+    async def entities(
+        domain: Literal["camera", "binary_sensor", "light", "notify", "person"] = Query(...),
+    ) -> dict[str, Any]:
         items = await home_assistant.list_entities(domain)
         return {
             "items": [
@@ -437,7 +459,11 @@ def create_app(
                     "name": item.name,
                     "state": item.state,
                     "available": item.state != "unavailable",
-                    "attributes": {},
+                    "attributes": (
+                        {"userId": item.attributes.get("user_id")}
+                        if domain == "person" and item.attributes.get("user_id")
+                        else {}
+                    ),
                 }
                 for item in items
             ]
@@ -490,16 +516,11 @@ def create_app(
                 for entity_id in candidate.lights.entity_ids:
                     await home_assistant.get_state(entity_id)
             elif kind == "notifications":
-                if not candidate.notifications.service:
+                recipients = [item for item in candidate.notifications.recipients if item.enabled]
+                if not recipients:
                     return {"ok": True, "message": "Notifications are disabled."}
-                service = candidate.notifications.service.split(".", 1)[1]
-                payload: dict[str, Any] = {
-                    "title": "Baby Monitor test",
-                    "message": "The Baby Monitor notification connection works.",
-                }
-                if candidate.notifications.targets:
-                    payload["target"] = candidate.notifications.targets
-                await home_assistant.call_service("notify", service, payload)
+                for recipient in recipients:
+                    await notifications.send_test(recipient)
             else:
                 if candidate.ai.provider == AIProviderName.DISABLED:
                     return {"ok": True, "message": "Image labeling is disabled."}
@@ -524,8 +545,8 @@ def create_app(
             "currentSleep": _sleep(result["current_sleep"]) if result["current_sleep"] else None,
             "prediction": {
                 "nextSleepAt": next_sleep,
-                "windowStart": next_sleep - timedelta(minutes=30) if next_sleep else None,
-                "windowEnd": next_sleep + timedelta(minutes=30) if next_sleep else None,
+                "windowStart": result["prediction_window_start"],
+                "windowEnd": result["prediction_window_end"],
                 "confidence": result["prediction_confidence"],
                 "reason": result["prediction_reason"],
             },
@@ -538,10 +559,56 @@ def create_app(
             "updatedAt": utc_now(),
         }
 
+    @app.get(f"{API_PREFIX}/predictions")
+    async def predictions() -> dict[str, Any]:
+        return dashboard.predictions()
+
     @app.get(f"{API_PREFIX}/frames")
     async def list_frames(limit: int = Query(24, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = database.list_frames(limit, offset)
         return {"items": [_frame(item) for item in items], "limit": limit, "offset": offset, "total": total}
+
+    @app.get(f"{API_PREFIX}/frames/range")
+    async def frames_in_range(
+        start: datetime,
+        end: datetime,
+        location_id: str | None = Query(None, min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$"),
+        limit: int = Query(200, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
+        if end <= start:
+            raise HTTPException(400, "end must be after start")
+        items, total = database.list_frames_between(
+            start,
+            end,
+            location_id=location_id,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "items": [_frame(item) for item in items],
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "start": start,
+            "end": end,
+        }
+
+    @app.get(f"{API_PREFIX}/frames/nearest")
+    async def nearest_frames(
+        at: datetime,
+        limit: int = Query(5, ge=1, le=12),
+        within_minutes: int = Query(360, ge=1, le=1_440),
+    ) -> dict[str, Any]:
+        items = database.nearest_frames(at, limit, within_minutes)
+        return {"items": [_frame(item) for item in items], "requestedAt": at}
+
+    @app.get(f"{API_PREFIX}/statistics/vision")
+    async def visual_statistics(start: datetime, end: datetime) -> dict[str, Any]:
+        if end <= start:
+            raise HTTPException(400, "end must be after start")
+        rows = database.vision_labels_between(start, end)
+        return vision_summary(rows, start, end, settings.get().baby.timezone)
 
     @app.get(f"{API_PREFIX}/frames/{{frame_id}}/image")
     async def frame_image(frame_id: str) -> Response:
@@ -588,6 +655,33 @@ def create_app(
         return StreamingResponse(
             stream(),
             media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post(f"{API_PREFIX}/camera/webrtc")
+    async def camera_webrtc(request: Request) -> Response:
+        if not settings.get().camera.enabled:
+            raise HTTPException(409, "camera is disabled")
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > 128_000:
+                    raise HTTPException(413, "WebRTC SDP offer is too large")
+            except ValueError as exc:
+                raise HTTPException(400, "Content-Length is invalid") from exc
+        try:
+            raw_offer = await request.body()
+            if len(raw_offer) > 128_000:
+                raise HTTPException(413, "WebRTC SDP offer is too large")
+            offer = raw_offer.decode("utf-8")
+            answer = await app.state.go2rtc.negotiate(offer)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(400, "invalid WebRTC SDP offer") from exc
+        except Go2RTCError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return Response(
+            answer,
+            media_type="application/sdp",
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
@@ -697,7 +791,15 @@ def create_app(
         root = frontend_dir.resolve()
         candidate = (root / asset_path).resolve()
         if candidate.is_relative_to(root) and candidate.is_file():
-            return FileResponse(candidate, headers={"Cache-Control": "private, max-age=3600"})
+            # The Home Assistant panel lives inside an iframe whose lifecycle is
+            # controlled by the HA frontend/service worker. Always revalidate
+            # assets so reopening the panel cannot retain an older UI build.
+            return FileResponse(candidate, headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"})
+        if asset_path.startswith("assets/"):
+            # Never disguise a missing content-hashed bundle as the SPA shell.
+            # Browsers reject that HTML as JavaScript/CSS and the misleading 200
+            # makes deployment races much harder for an embedding panel to spot.
+            raise HTTPException(404)
         index_path = root / "index.html"
         if index_path.is_file():
             return FileResponse(index_path, headers={"Cache-Control": "no-store"})

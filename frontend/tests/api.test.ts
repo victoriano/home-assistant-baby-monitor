@@ -213,6 +213,38 @@ describe('portable history transfer contract', () => {
 });
 
 describe('dashboard normalization', () => {
+  it('keeps the family bed distinct from the crib in frame evidence', () => {
+    const frame = apiTesting.normalizeFrame({
+      id: 'family-bed-frame',
+      captured_at: '2026-07-18T20:00:00Z',
+      image_available: true,
+      mime_type: 'image/jpeg',
+      size_bytes: 42,
+      label: {
+        baby_present: true,
+        state: 'asleep',
+        confidence: 0.94,
+        description: 'Baby asleep beside a parent.',
+        tags: ['family_bed', 'adult_present'],
+        in_crib: false,
+        sleep_surface: 'family_bed',
+      },
+    });
+
+    expect(frame.label?.sleepSurface).toBe('family_bed');
+    expect(frame.label?.inCrib).toBe(false);
+  });
+
+  it('derives the crib surface for historical labels without the new field', () => {
+    const frame = apiTesting.normalizeFrame({
+      id: 'legacy-crib-frame',
+      captured_at: '2026-07-18T20:00:00Z',
+      label: { baby_present: true, state: 'asleep', confidence: 0.9, in_crib: true },
+    });
+
+    expect(frame.label?.sleepSurface).toBe('crib');
+  });
+
   it('accepts prediction and current sleep in snake_case', () => {
     const summary = apiTesting.normalizeSummary({
       sleep_state: 'sleeping',
@@ -231,9 +263,108 @@ describe('dashboard normalization', () => {
     expect(summary.prediction.confidence).toBe(0.8);
     expect(summary.sleepTodayMinutes).toBe(420);
   });
+
+  it('normalizes a complete two-day prediction plan', () => {
+    const plan = apiTesting.normalizeSleepPlan({
+      generatedAt: '2026-07-13T12:00:00+02:00',
+      ageBand: '4-5m',
+      confidence: 0.81,
+      wakeWindowMinutes: 135,
+      modelDetails: {
+        generatedAt: '2026-07-13T12:00:00+02:00',
+        lookbackClosedSleepCount: 18,
+        baseline: { ageBand: '4-5m', birthDateKnown: true, wakeWindowMinutes: 135, expectedNaps: 4 },
+        wakeWindows: {
+          count: 3, medianMinutes: 142, minMinutes: 130, maxMinutes: 155,
+          valuesMinutes: [130, 142, 155], finalMinutes: 139,
+          medianAbsoluteDeviationMinutes: 12, historyWeight: 0.405,
+          samples: [{
+            previousSleepId: 'sleep-a', previousSleepKind: 'nap',
+            previousSleepEndedAt: '2026-07-12T08:00:00+02:00',
+            nextSleepId: 'sleep-b', nextSleepKind: 'nap',
+            nextSleepStartedAt: '2026-07-12T10:22:00+02:00', minutes: 142,
+          }],
+        },
+        napDurations: {
+          count: 1, medianMinutes: 45, minMinutes: 45, maxMinutes: 45,
+          valuesMinutes: [45], finalMinutes: 45,
+          samples: [{ eventId: 'sleep-a', startedAt: '2026-07-12T07:15:00+02:00', endedAt: '2026-07-12T08:00:00+02:00', minutes: 45, source: 'vision' }],
+        },
+        bedtimes: { count: 1, medianMinuteOfDay: 1230, usedFallback: false, samples: [{ date: '2026-07-12', at: '2026-07-12T20:30:00+02:00', minuteOfDay: 1230 }] },
+        morningWakes: { count: 1, medianMinuteOfDay: 450, usedFallback: false, samples: [{ date: '2026-07-13', at: '2026-07-13T07:30:00+02:00', minuteOfDay: 450 }] },
+        nightDurations: { count: 1, medianMinutes: 660, minMinutes: 660, maxMinutes: 660, valuesMinutes: [660], finalMinutes: 660, samples: [{ nightDate: '2026-07-13', startedAt: '2026-07-12T20:30:00+02:00', endedAt: '2026-07-13T07:30:00+02:00', minutes: 660 }] },
+        confidence: { value: 0.645, sampleCount: 3, rule: 'recent_wake_samples' },
+      },
+      plans: [{
+        date: '2026-07-14',
+        morningWakeAt: '2026-07-14T07:30:00+02:00',
+        nightStartAt: '2026-07-14T20:30:00+02:00',
+        nightEndAt: '2026-07-15T07:30:00+02:00',
+        dayNapPredictions: [{
+          kind: 'nap', label: 'Nap 1', recommendedStart: '2026-07-14T10:00:00+02:00',
+          windowStart: '2026-07-14T09:30:00+02:00', windowEnd: '2026-07-14T10:30:00+02:00',
+          durationMinutes: 45, confidence: 0.81, explanation: 'Recent rhythm',
+          calculation: {
+            method: 'wake_window', anchorAt: '2026-07-14T07:41:00+02:00',
+            anchorType: 'typical_morning_wake', baseRecommendedStart: '2026-07-14T10:00:00+02:00',
+            adjustmentMinutes: 0, adjustmentReason: null, wakeWindowMinutes: 139,
+            startSampleCount: 3, durationSampleCount: 1, plannedNapNumber: 1,
+          },
+        }],
+        nightPrediction: {
+          kind: 'night', label: 'Night sleep', recommendedStart: '2026-07-14T20:30:00+02:00',
+          windowStart: '2026-07-14T20:00:00+02:00', windowEnd: '2026-07-14T21:00:00+02:00',
+          durationMinutes: 660, confidence: 0.81, explanation: 'Recent bedtime',
+        },
+      }],
+    });
+
+    expect(plan.plans).toHaveLength(1);
+    expect(plan.plans[0].dayNapPredictions[0].durationMinutes).toBe(45);
+    expect(plan.plans[0].dayNapPredictions[0].calculation?.anchorType).toBe('typical_morning_wake');
+    expect(plan.plans[0].nightPrediction.kind).toBe('night');
+    expect(plan.modelDetails?.wakeWindows.medianMinutes).toBe(142);
+    expect(plan.modelDetails?.wakeWindows.samples[0].minutes).toBe(142);
+    expect(plan.modelDetails?.bedtimes.samples[0].at).toBe('2026-07-12T20:30:00+02:00');
+  });
 });
 
 describe('paginated history contract', () => {
+  it('loads every frame inside a sleep interval across API pages', async () => {
+    const first = new Response(JSON.stringify({
+      items: [
+        { id: 'frame-1', capturedAt: '2026-07-14T12:27:00Z', imageAvailable: true },
+        { id: 'frame-2', capturedAt: '2026-07-14T12:32:00Z', imageAvailable: true },
+      ],
+      limit: 200,
+      offset: 0,
+      total: 3,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const second = new Response(JSON.stringify({
+      items: [{ id: 'frame-3', capturedAt: '2026-07-14T12:37:00Z', imageAvailable: true }],
+      limit: 200,
+      offset: 2,
+      total: 3,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    try {
+      const frames = await api.getFramesBetween(
+        '2026-07-14T12:27:00Z',
+        '2026-07-14T15:07:00Z',
+        'granada',
+      );
+
+      expect(frames.map((frame) => frame.id)).toEqual(['frame-1', 'frame-2', 'frame-3']);
+      expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/frames/range?');
+      expect(String(fetchMock.mock.calls[0][0])).toContain('location_id=granada');
+      expect(String(fetchMock.mock.calls[1][0])).toContain('offset=2');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('preserves server pagination metadata and requests the selected offset', async () => {
     const response = new Response(JSON.stringify({
       items: [{
@@ -260,6 +391,26 @@ describe('paginated history contract', () => {
     }
   });
 
+  it('round-trips structured sleep details in a manual entry request', async () => {
+    const response = new Response(JSON.stringify({
+      id: 'awake-1', startedAt: '2026-07-13T01:00:00Z', endedAt: '2026-07-13T01:20:00Z',
+      kind: 'awake', source: 'manual', notes: null, locationId: 'granada',
+      details: { tags: [], pauses: [] },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    try {
+      const event = await api.addManualSleep({
+        startedAt: '2026-07-13T01:00:00Z', endedAt: '2026-07-13T01:20:00Z',
+        kind: 'awake', notes: '', details: { tags: [], pauses: [] },
+      });
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+      expect(event.kind).toBe('awake');
+      expect(body.details).toEqual({ tags: [], pauses: [] });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('uses the notifications settings-test endpoint without serializing stored secrets', async () => {
     const response = new Response(JSON.stringify({ ok: true, message: 'Notification sent' }), {
       status: 200,
@@ -267,7 +418,15 @@ describe('paginated history contract', () => {
     });
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
     const settings = cloneDefaultSettings();
-    settings.notifications.service = 'notify.mobile_app_parent';
+    settings.notifications.recipients = [{
+      personEntityId: 'person.parent',
+      name: 'Parent',
+      notifyService: 'notify.mobile_app_parent',
+      targets: [],
+      enabled: true,
+      language: 'en',
+      events: ['cry_started'],
+    }];
     settings.ai.apiKeyConfigured = true;
     settings.homeAssistant.accessTokenConfigured = true;
     try {

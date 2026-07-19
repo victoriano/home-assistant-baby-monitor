@@ -9,6 +9,7 @@ from .database import Database
 from .home_assistant import HomeAssistantClient, HomeAssistantError
 from .media import AudioWindowReader, MediaError, analyze_pcm
 from .models import CryMode, RetentionMode, SecretName, utc_now
+from .notifications import NotificationScheduler
 from .services import CryAlertService, FrameService
 from .settings import SettingsService
 
@@ -21,12 +22,14 @@ class RuntimeWorkers:
         home_assistant: HomeAssistantClient,
         frames: FrameService,
         cry_alerts: CryAlertService,
+        notification_scheduler: NotificationScheduler,
     ) -> None:
         self.database = database
         self.settings = settings
         self.home_assistant = home_assistant
         self.frames = frames
         self.cry_alerts = cry_alerts
+        self.notification_scheduler = notification_scheduler
         self._tasks: list[asyncio.Task[None]] = []
         self.errors: dict[str, str] = {}
 
@@ -37,6 +40,7 @@ class RuntimeWorkers:
             asyncio.create_task(self._retention_loop(), name="baby-monitor-retention"),
             asyncio.create_task(self._capture_loop(), name="baby-monitor-capture"),
             asyncio.create_task(self._cry_loop(), name="baby-monitor-cry"),
+            asyncio.create_task(self._notification_loop(), name="baby-monitor-notifications"),
         ]
 
     async def stop(self) -> None:
@@ -81,6 +85,15 @@ class RuntimeWorkers:
             except Exception as exc:
                 self.errors["capture"] = type(exc).__name__
             await asyncio.sleep(10)
+
+    async def _notification_loop(self) -> None:
+        while True:
+            try:
+                await self.notification_scheduler.poll()
+                self.errors.pop("notifications", None)
+            except Exception as exc:  # notifications must never stop monitoring
+                self.errors["notifications"] = type(exc).__name__
+            await asyncio.sleep(30)
 
     async def _cry_loop(self) -> None:
         previous_sensor_state: bool | None = None

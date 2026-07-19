@@ -22,6 +22,27 @@ Set a display name, optional birth date, and IANA timezone such as
 `Europe/Madrid`. Use a stable Location ID and a readable Location name when the
 same history follows the baby between homes. One baby profile is supported.
 
+### Sleep timeline and manual entries
+
+The main rhythm view has separate Day and Night modes. Day spans the baby's
+morning wake-up through bedtime; Night spans bedtime through the following
+wake-up, so the circular segments use the real boundaries instead of fixed
+clock positions. Solid arcs are recorded sleep, narrow dashed coral arcs are
+awake periods, and dashed purple arcs are predictions.
+
+The App calculates plans locally from the profile age and recent history. It
+shows remaining predicted naps and bedtime for today, plus the complete plan
+for tomorrow. These predictions do not call an AI service and are guidance,
+not medical advice.
+
+Use the centre Add action to record a nap, awake period, or night sleep. Start
+and end use a calendar plus exact hour/minute picker. Sleep entries can also
+store awake pauses, how the baby fell asleep, how the sleep ended, mood on
+waking, and a comment. Selecting a recorded segment opens the same fields for
+editing and can show the nearest camera frame at the start, midpoint, and end.
+Entries created automatically remain editable, but only manually created
+entries can be deleted from this screen.
+
 ### Home Assistant
 
 In Home Assistant App mode, leave the connection mode on automatic. The App
@@ -50,6 +71,34 @@ Choose either:
 Set the snapshot interval between 30 seconds and 24 hours. The camera can stay
 disabled while sleep tracking and cry alerts continue to work.
 
+Visual labels distinguish four surfaces: **Crib**, **Family bed**, **Other**,
+and **Unknown**. Crib and family bed are both valid for automatic sleep
+detection. A family-bed observation remains valid when an adult is visible:
+the classifier is instructed to use only the baby's eyes, posture, movement,
+and other visible baby evidence, never the adult's apparent sleep state. Two
+nearby decisive observations are still required before opening or closing a
+sleep event. If the baby is obscured by an adult or bedding, the correct label
+is Unknown rather than a guessed sleep state.
+
+This classification records visible sleep evidence only. It does not assess
+breathing, medical condition, supervision, or whether a sleep arrangement is
+safe.
+
+The Live button first negotiates WebRTC with a local go2rtc relay and labels the
+transport as **WebRTC · low latency**. If that relay is unavailable, the App
+shows **MJPEG fallback** instead of presenting a delayed snapshot stream as
+low-latency video. The latest stored frame stays visible underneath the video
+until the first WebRTC frame is actually playing, avoiding a blank camera panel
+during negotiation. Standalone deployments can override the defaults with
+`BABY_MONITOR_GO2RTC_URL` (default `http://127.0.0.1:1984`) and
+`BABY_MONITOR_GO2RTC_STREAM` (default `baby_monitor_live`). Keep the go2rtc API
+private and expose WebRTC media only to trusted clients.
+
+For the fastest joins, keep the selected go2rtc stream preloaded and encode it
+with a short H.264 GOP. Hardware decoding is camera-dependent; use a custom
+encode-only template when a camera's H.264 stream cannot be decoded by the
+host's hardware accelerator.
+
 ### Cry detection (optional)
 
 Choose one source:
@@ -65,15 +114,39 @@ Use the built-in test before relying on an automatic alert.
 
 Select up to 32 `light.` entities, an alert duration, brightness, and RGB color.
 When a cry begins, the App snapshots each selected light's state, applies the
-alert, and restores the previous state after the configured duration.
+alert using the colour mode each entity actually supports (including XY-only
+Hue lights), and restores the previous state after the configured duration.
 
 Do not use safety-critical lighting where an unexpected state change could
 create a hazard.
 
 ### Notifications (optional)
 
-Choose a Home Assistant notification service whose name starts with `notify.`
-and any targets required by that service. Test it from Settings.
+Select one or more Home Assistant `person.` entities, then configure every
+caregiver independently. Each selected person can be enabled or muted, use
+Spanish or English, and subscribe to any combination of:
+
+- Crying starts.
+- Sleep starts.
+- A predicted nap or night sleep is approaching.
+- An active sleep is nearing its expected end.
+- Sleep ends.
+- The camera has stopped producing fresh frames.
+
+Choose a 5, 10, 15, or 20 minute lead time for the two advance alerts. The
+expected end is derived from the recent average duration for the current sleep
+type; it is guidance rather than a guarantee that the baby will wake then.
+
+Each person needs a Home Assistant Companion App device that exposes a
+`notify.mobile_app_*` service. Baby Monitor automatically suggests a service
+whose device name matches the person, but Settings keeps the mapping explicit
+so a single phone is never silently assigned to a different caregiver.
+
+Notifications are off until a person is selected. Legacy configurations are
+migrated conservatively to cry-only alerts. Delivery is deduplicated per
+person, event, and sleep/prediction even after the App restarts. Use the test
+button after checking the selected mobile service; it sends one real test
+notification to every enabled caregiver.
 
 ### AI image labels (optional)
 
@@ -208,12 +281,16 @@ baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/new-data \
   --location-id madrid \
+  --timezone Europe/Madrid \
   --apply
 ```
 
 Use a lowercase Location ID containing letters, numbers, underscores, or
 hyphens. The import copies the location onto every migrated frame and event.
 
-The target must be private and outside a Git worktree. Stop Baby Monitor before
-copying the migrated target into `/data`, retain a backup, start the App, and
+The target must be private and outside a Git worktree. The import rebuilds the
+legacy sleep timeline from its stored camera observations and retains the
+structured visual attributes used by Trends. Existing non-legacy sleep entries
+and every existing image file are preserved. Stop Baby Monitor before applying
+the import to its live data directory, retain a backup, start the App, and
 verify history and frame counts before deleting the source.

@@ -9,13 +9,16 @@ export type IconName =
   | 'eye'
   | 'heart'
   | 'history'
+  | 'home'
   | 'light'
   | 'lock'
   | 'moon'
+  | 'play'
   | 'plus'
   | 'refresh'
   | 'settings'
   | 'sparkle'
+  | 'stop'
   | 'sun'
   | 'waves';
 
@@ -37,12 +40,16 @@ function path(name: IconName): SVGTemplateResult {
       return svg`<path d="M20.8 5.7a5.4 5.4 0 0 0-7.6 0L12 6.9l-1.2-1.2a5.4 5.4 0 0 0-7.6 7.6L12 22l8.8-8.7a5.4 5.4 0 0 0 0-7.6Z"/><path d="M7 12h2l1-2 2 5 1.5-3H17"/>`;
     case 'history':
       return svg`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>`;
+    case 'home':
+      return svg`<path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/>`;
     case 'light':
       return svg`<path d="M9 18h6"/><path d="M10 22h4"/><path d="M8.2 15.2A7 7 0 1 1 15.8 15c-.7.5-.8 1.2-.8 2H9c0-.8-.1-1.3-.8-1.8Z"/>`;
     case 'lock':
       return svg`<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/>`;
     case 'moon':
       return svg`<path d="M20 15.2A8.7 8.7 0 0 1 8.8 4a9 9 0 1 0 11.2 11.2Z"/>`;
+    case 'play':
+      return svg`<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>`;
     case 'plus':
       return svg`<path d="M12 5v14M5 12h14"/>`;
     case 'refresh':
@@ -51,6 +58,8 @@ function path(name: IconName): SVGTemplateResult {
       return svg`<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>`;
     case 'sparkle':
       return svg`<path d="m12 3 1.3 3.7L17 8l-3.7 1.3L12 13l-1.3-3.7L7 8l3.7-1.3L12 3Z"/><path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/><path d="m5 13 .7 1.8 1.8.7-1.8.7L5 18l-.7-1.8-1.8-.7 1.8-.7L5 13Z"/>`;
+    case 'stop':
+      return svg`<rect x="6" y="6" width="12" height="12" rx="2"/>`;
     case 'sun':
       return svg`<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>`;
     case 'waves':

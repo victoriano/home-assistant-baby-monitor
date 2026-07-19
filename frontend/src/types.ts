@@ -1,10 +1,17 @@
 export type Language = 'en' | 'es';
-export type AppPage = 'dashboard' | 'history' | 'settings';
+export type AppPage = 'sleep' | 'data' | 'camera' | 'settings';
 export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
 export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';
 export type RetentionMode = 'forever' | 'days';
-export type SleepKind = 'nap' | 'night' | 'unknown';
+export type NotificationEvent =
+  | 'cry_started'
+  | 'sleep_started'
+  | 'sleep_predicted_soon'
+  | 'sleep_ending_soon'
+  | 'sleep_ended'
+  | 'camera_offline';
+export type SleepKind = 'nap' | 'night' | 'awake' | 'unknown';
 export type SleepState = 'sleeping' | 'awake' | 'unknown';
 export type SecretName =
   | 'home_assistant_access_token'
@@ -70,8 +77,18 @@ export interface RetentionSettings {
 }
 
 export interface NotificationSettings {
-  service: string | null;
+  recipients: NotificationRecipient[];
+  leadMinutes: number;
+}
+
+export interface NotificationRecipient {
+  personEntityId: string | null;
+  name: string;
+  notifyService: string;
   targets: string[];
+  enabled: boolean;
+  language: Language;
+  events: NotificationEvent[];
 }
 
 export interface AppSettings {
@@ -128,8 +145,16 @@ export interface SettingsPayload {
     detail: VisionSettings['detail'];
   };
   notifications: {
-    service: string | null;
-    targets: string[];
+    recipients: Array<{
+      person_entity_id: string | null;
+      name: string;
+      notify_service: string;
+      targets: string[];
+      enabled: boolean;
+      language: Language;
+      events: NotificationEvent[];
+    }>;
+    lead_minutes: number;
   };
   retention: {
     mode: RetentionMode;
@@ -158,6 +183,26 @@ export interface VisionLabel {
   confidence: number;
   description: string;
   tags: string[];
+  inCrib: boolean | null;
+  sleepSurface: 'crib' | 'family_bed' | 'other' | 'unknown';
+  faceVisible: 'yes' | 'no' | 'unknown';
+  headSide: 'left' | 'right' | 'back' | 'face_down' | 'unknown';
+  bodyPosition: string;
+  clothingItems: string[];
+  pacifier: 'yes' | 'no' | 'unknown';
+  mouthOpen: 'yes' | 'no' | 'unknown';
+}
+
+export interface VisionStatisticSegment { key: string; label: string; minutes: number; percent: number; color: string }
+export interface VisionStatisticMetric { total_minutes: number; positive_minutes?: number; negative_minutes?: number; segments: VisionStatisticSegment[] }
+export interface VisionStatistics {
+  range: { start: string; end: string };
+  sample_count: number;
+  visible_sample_count: number;
+  observed_minutes: number;
+  visible_minutes: number;
+  metrics: { pacifier: VisionStatisticMetric; mouth_open: VisionStatisticMetric; head_side: VisionStatisticMetric; clothing: VisionStatisticMetric };
+  daily: Array<{ date: string; sample_count: number; visible_sample_count: number; observed_minutes: number; visible_minutes: number; pacifier_minutes: number; mouth_open_minutes: number }>;
 }
 
 export interface FrameRecord {
@@ -181,7 +226,18 @@ export interface SleepEvent {
   kind: SleepKind;
   source: 'manual' | 'vision' | 'automatic' | 'import';
   notes: string | null;
+  details?: SleepEventDetails;
   locationId: string;
+}
+
+export interface SleepPause {
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface SleepEventDetails {
+  tags: string[];
+  pauses: SleepPause[];
 }
 
 export interface CryEvent {
@@ -208,6 +264,131 @@ export interface SleepPrediction {
   reason: string | null;
 }
 
+export interface SleepPredictionTarget {
+  kind: 'nap' | 'night';
+  label: string;
+  recommendedStart: string;
+  windowStart: string;
+  windowEnd: string;
+  durationMinutes: number;
+  confidence: number;
+  explanation: string;
+  calculation?: PredictionCalculation;
+}
+
+export interface PredictionCalculation {
+  method: 'wake_window' | 'bedtime_pattern';
+  anchorAt: string | null;
+  anchorType: 'last_observed_wake' | 'typical_morning_wake' | 'previous_predicted_nap_end' | 'recent_bedtime_median' | 'age_guidance';
+  baseRecommendedStart: string;
+  adjustmentMinutes: number;
+  adjustmentReason: 'past_window' | null;
+  wakeWindowMinutes: number | null;
+  startSampleCount: number;
+  durationSampleCount: number;
+  plannedNapNumber?: number;
+  morningWakeSampleCount?: number;
+  expectedWakeAt?: string | null;
+  durationSource?: 'bedtime_to_morning_wake' | 'recent_night_duration';
+}
+
+export interface PredictionWakeWindowSample {
+  previousSleepId: string;
+  previousSleepKind: 'nap' | 'night';
+  previousSleepEndedAt: string;
+  nextSleepId: string;
+  nextSleepKind: 'nap' | 'night';
+  nextSleepStartedAt: string;
+  minutes: number;
+}
+
+export interface PredictionDurationSample {
+  eventId?: string;
+  nightDate?: string;
+  startedAt: string;
+  endedAt: string;
+  minutes: number;
+  source?: string;
+}
+
+export interface PredictionClockSample {
+  date: string;
+  at: string;
+  minuteOfDay: number;
+}
+
+export interface PredictionNumericEvidence<TSample> {
+  count: number;
+  medianMinutes: number | null;
+  minMinutes: number | null;
+  maxMinutes: number | null;
+  valuesMinutes: number[];
+  finalMinutes: number;
+  samples: TSample[];
+}
+
+export interface PredictionModelDetails {
+  generatedAt: string;
+  lookbackClosedSleepCount: number;
+  baseline: {
+    ageBand: string;
+    birthDateKnown: boolean;
+    wakeWindowMinutes: number;
+    expectedNaps: number;
+  };
+  wakeWindows: PredictionNumericEvidence<PredictionWakeWindowSample> & {
+    medianAbsoluteDeviationMinutes: number | null;
+    historyWeight: number;
+  };
+  napDurations: PredictionNumericEvidence<PredictionDurationSample>;
+  bedtimes: {
+    count: number;
+    medianMinuteOfDay: number;
+    usedFallback: boolean;
+    samples: PredictionClockSample[];
+  };
+  morningWakes: {
+    count: number;
+    medianMinuteOfDay: number;
+    usedFallback: boolean;
+    samples: PredictionClockSample[];
+  };
+  nightDurations: PredictionNumericEvidence<PredictionDurationSample>;
+  confidence: {
+    value: number;
+    sampleCount: number;
+    rule: 'recent_wake_samples' | 'age_guidance_fallback';
+  };
+}
+
+export interface SleepDayPlan {
+  date: string;
+  morningWakeAt: string;
+  nightStartAt: string;
+  nightEndAt: string;
+  dayNapPredictions: SleepPredictionTarget[];
+  nightPrediction: SleepPredictionTarget;
+  explanation: string;
+}
+
+export interface SleepPlan {
+  generatedAt: string;
+  ageBand: string;
+  confidence: number;
+  reason: string;
+  recentSampleCount: number;
+  wakeWindowMinutes: number;
+  wakeWindowMarginMinutes: number;
+  averageNapMinutes: number;
+  averageNightMinutes: number;
+  modelDetails?: PredictionModelDetails;
+  nextSleepAt: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  nextKind: 'nap' | 'night' | null;
+  plans: SleepDayPlan[];
+}
+
 export interface DashboardSummary {
   state: SleepState;
   stateSince: string | null;
@@ -227,6 +408,7 @@ export interface ManualSleepInput {
   endedAt: string | null;
   kind: SleepKind;
   notes: string;
+  details: SleepEventDetails;
 }
 
 export interface ConnectionTestResult {
@@ -345,8 +527,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     days: null,
   },
   notifications: {
-    service: null,
-    targets: [],
+    recipients: [],
+    leadMinutes: 10,
   },
 };
 
@@ -430,8 +612,16 @@ export function settingsToPayload(settings: AppSettings, clear: SecretName[] = [
       detail: settings.ai.detail,
     },
     notifications: {
-      service: settings.notifications.service,
-      targets: [...settings.notifications.targets],
+      recipients: settings.notifications.recipients.map((recipient) => ({
+        person_entity_id: recipient.personEntityId,
+        name: recipient.name,
+        notify_service: recipient.notifyService,
+        targets: [...recipient.targets],
+        enabled: recipient.enabled,
+        language: recipient.language,
+        events: [...recipient.events],
+      })),
+      lead_minutes: settings.notifications.leadMinutes,
     },
     retention: {
       mode: settings.retention.mode,

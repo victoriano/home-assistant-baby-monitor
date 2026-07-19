@@ -257,9 +257,55 @@ class RetentionPolicy(StrictModel):
         return self
 
 
-class NotificationConfig(StrictModel):
-    service: str | None = None
+class NotificationEvent(StrEnum):
+    CRY_STARTED = "cry_started"
+    SLEEP_STARTED = "sleep_started"
+    SLEEP_PREDICTED_SOON = "sleep_predicted_soon"
+    SLEEP_ENDING_SOON = "sleep_ending_soon"
+    SLEEP_ENDED = "sleep_ended"
+    CAMERA_OFFLINE = "camera_offline"
+
+
+class NotificationRecipient(StrictModel):
+    person_entity_id: str | None = None
+    name: str = Field(min_length=1, max_length=80)
+    notify_service: str
     targets: list[str] = Field(default_factory=list, max_length=20)
+    enabled: bool = True
+    language: Literal["en", "es"] = "en"
+    events: list[NotificationEvent] = Field(
+        default_factory=lambda: [NotificationEvent.CRY_STARTED],
+        max_length=len(NotificationEvent),
+    )
+
+    @field_validator("person_entity_id")
+    @classmethod
+    def person_entity(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_entity_id(value, "person")
+        return value
+
+    @field_validator("notify_service")
+    @classmethod
+    def notification_service(cls, value: str) -> str:
+        return validate_entity_id(value, "notify")
+
+    @field_validator("targets", "events")
+    @classmethod
+    def unique_values(cls, value: list[Any]) -> list[Any]:
+        if len(value) != len(set(value)):
+            raise ValueError("notification recipient values must be unique")
+        return value
+
+
+class NotificationConfig(StrictModel):
+    recipients: list[NotificationRecipient] = Field(default_factory=list, max_length=12)
+    lead_minutes: int = Field(default=10, ge=5, le=60)
+    # Accepted only so installations and older frontends can cross the upgrade
+    # without losing their existing cry alert. They are converted to a normal
+    # caregiver subscription and never persisted or returned by the new API.
+    service: str | None = Field(default=None, exclude=True)
+    targets: list[str] = Field(default_factory=list, max_length=20, exclude=True)
 
     @field_validator("service")
     @classmethod
@@ -274,6 +320,23 @@ class NotificationConfig(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("notification targets must be unique")
         return value
+
+    @model_validator(mode="after")
+    def migrate_legacy_service(self) -> NotificationConfig:
+        if self.service and not self.recipients:
+            display_name = self.service.removeprefix("notify.").replace("_", " ").title()
+            self.recipients = [
+                NotificationRecipient(
+                    name=display_name,
+                    notify_service=self.service,
+                    targets=self.targets,
+                    events=[NotificationEvent.CRY_STARTED],
+                )
+            ]
+        people = [item.person_entity_id for item in self.recipients if item.person_entity_id]
+        if len(people) != len(set(people)):
+            raise ValueError("notification people must be unique")
+        return self
 
 
 class AppSettings(StrictModel):
@@ -365,12 +428,54 @@ class HAEntity(StrictModel):
         return validate_entity_id(value)
 
 
+SleepSurface = Literal["crib", "family_bed", "other", "unknown"]
+
+
 class VisionLabel(StrictModel):
     baby_present: bool
     state: Literal["awake", "asleep", "uncertain"]
     confidence: float = Field(ge=0, le=1)
     description: str = Field(max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
+    in_crib: bool | None = None
+    sleep_surface: SleepSurface = "unknown"
+    face_visible: Literal["yes", "no", "unknown"] = "unknown"
+    head_side: Literal["left", "right", "back", "face_down", "unknown"] = "unknown"
+    body_position: str = Field(default="unknown", max_length=80)
+    clothing_items: list[
+        Literal[
+            "diaper_only",
+            "short_sleeve_onesie",
+            "long_sleeve_onesie",
+            "sleep_sack",
+            "blanket",
+            "unknown",
+        ]
+    ] = Field(default_factory=lambda: ["unknown"], max_length=5)
+    pacifier: Literal["yes", "no", "unknown"] = "unknown"
+    mouth_open: Literal["yes", "no", "unknown"] = "unknown"
+
+    @model_validator(mode="after")
+    def consistent_sleep_surface(self) -> VisionLabel:
+        if self.sleep_surface == "crib" and self.in_crib is False:
+            raise ValueError("crib sleep surface requires in_crib=true")
+        if self.sleep_surface in {"family_bed", "other"} and self.in_crib is True:
+            raise ValueError("non-crib sleep surface requires in_crib=false")
+        return self
+
+    def resolved_sleep_surface(self) -> SleepSurface:
+        """Resolve old labels while preserving their original JSON contract."""
+
+        if self.sleep_surface != "unknown":
+            return self.sleep_surface
+        normalized_tags = {tag.strip().lower().replace("-", "_").replace(" ", "_") for tag in self.tags}
+        if normalized_tags & {"adult_bed", "family_bed", "shared_bed", "parents_bed"}:
+            return "family_bed"
+        if self.in_crib is True:
+            return "crib"
+        if self.in_crib is False:
+            return "other"
+        return "unknown"
 
 
 class FrameRecord(StrictModel):
@@ -387,12 +492,55 @@ class FrameRecord(StrictModel):
     model: str | None = None
 
 
+SleepKind = Literal["nap", "night", "awake", "unknown"]
+
+
+class SleepPause(StrictModel):
+    started_at: datetime
+    ended_at: datetime
+
+    @model_validator(mode="after")
+    def valid_dates(self) -> SleepPause:
+        if self.ended_at <= self.started_at:
+            raise ValueError("pause ended_at must be after started_at")
+        return self
+
+
+class SleepDetails(StrictModel):
+    """Optional context captured by the original Esteban sleep editor."""
+
+    tags: list[str] = Field(default_factory=list, max_length=32)
+    pauses: list[SleepPause] = Field(default_factory=list, max_length=24)
+
+    @field_validator("tags")
+    @classmethod
+    def valid_tags(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in value:
+            tag = item.strip().lower().replace(" ", "_")
+            if not tag or len(tag) > 64 or not re.fullmatch(r"[a-z0-9_\-]+", tag):
+                raise ValueError("sleep detail tags must be short lowercase identifiers")
+            if tag not in normalized:
+                normalized.append(tag)
+        return normalized
+
+    @model_validator(mode="after")
+    def non_overlapping_pauses(self) -> SleepDetails:
+        ordered = sorted(self.pauses, key=lambda item: item.started_at)
+        for previous, following in zip(ordered, ordered[1:], strict=False):
+            if following.started_at < previous.ended_at:
+                raise ValueError("sleep pauses must not overlap")
+        self.pauses = ordered
+        return self
+
+
 class SleepEventCreate(StrictModel):
     started_at: datetime
     ended_at: datetime | None = None
-    kind: Literal["nap", "night", "unknown"] = "unknown"
+    kind: SleepKind = "unknown"
     source: Literal["manual", "vision", "import"] = "manual"
     notes: str | None = Field(default=None, max_length=1000)
+    details: SleepDetails = Field(default_factory=SleepDetails)
     location_id: str = "home"
 
     @field_validator("location_id")
@@ -404,14 +552,22 @@ class SleepEventCreate(StrictModel):
     def valid_dates(self) -> SleepEventCreate:
         if self.ended_at is not None and self.ended_at <= self.started_at:
             raise ValueError("ended_at must be after started_at")
+        if self.kind == "awake" and self.ended_at is None:
+            raise ValueError("awake events require ended_at")
+        for pause in self.details.pauses:
+            if self.ended_at is None:
+                raise ValueError("pauses require a closed sleep event")
+            if pause.started_at < self.started_at or pause.ended_at > self.ended_at:
+                raise ValueError("sleep pauses must stay inside the event")
         return self
 
 
 class SleepEventPatch(StrictModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
-    kind: Literal["nap", "night", "unknown"] | None = None
+    kind: SleepKind | None = None
     notes: str | None = Field(default=None, max_length=1000)
+    details: SleepDetails | None = None
 
 
 class SleepStartRequest(StrictModel):

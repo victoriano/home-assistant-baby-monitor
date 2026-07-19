@@ -32,14 +32,33 @@ credentials are included.
 ## What it does
 
 - Lets each household select its own Home Assistant camera or private RTSP URL.
-- Tracks sleep manually and keeps a local history with predictions.
+- Detects the baby's sleep on either a crib/cot mattress or a visible family
+  bed, including when an adult is beside the baby; adult posture is explicitly
+  excluded from the baby's sleep classification.
+- Uses WebRTC for low-latency live video when a local go2rtc relay is available,
+  with an explicitly labelled MJPEG fallback.
+- Tracks and edits naps, night sleep, awakenings, awake pauses, settling
+  context, wake-up context, mood, comments, and nearby camera frames.
+- Builds a local two-day plan with predicted naps and night sleep for today and
+  tomorrow; no AI key is required for sleep prediction.
 - Restores the original rich rhythm view with calendar navigation, circular
-  sleep segments, and separate day/night summaries.
+  sleep segments aligned to the actual wake/bed boundaries, a light Day theme,
+  a dark Night theme, and separate day/night summaries.
+- Keeps the original five-action caregiver navigation: Home, Trends, Add,
+  Camera & crying, and Settings, with a direct return to Home Assistant.
+- Shows inferred overnight wake-ups alongside editable sleep segments and
+  restores the original sleep, nap, awake-time, night, pacifier, head, clothing,
+  and mouth statistics.
 - Tags frames, sleep sessions, and cries with a configurable home/location so
   one history can distinguish records captured in different houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
   stream, then activates one or more selected Home Assistant lights.
 - Restores every light to its previous state after the alert.
+- Lets each Home Assistant person opt into a separate set of caregiver alerts:
+  crying, sleep start/end, an approaching predicted sleep window, the expected
+  end of an active sleep, and a stale camera. Lead time and language are
+  configurable per household/person, and alerts are deduplicated across
+  restarts.
 - Labels camera frames with Gemini, OpenAI, or a local OpenAI-compatible server
   such as Ollama. AI is optional and disabled by default.
 - Stores settings, events, and frames under `/data`; no public Home Assistant
@@ -109,7 +128,7 @@ GitHub provenance with:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.3.0 \
+  oci://ghcr.io/victoriano/home-assistant-baby-monitor:0.4.0 \
   --repo victoriano/home-assistant-baby-monitor \
   --signer-workflow victoriano/home-assistant-baby-monitor/.github/workflows/release.yaml
 ```
@@ -165,12 +184,16 @@ baby-monitor-migrate-legacy \
   --source /private/path/legacy.sqlite3 \
   --target /private/path/baby-monitor-data \
   --location-id madrid \
+  --timezone Europe/Madrid \
   --apply
 ```
 
 `--location-id` records where the imported events and frames were captured.
-Existing version 1 databases upgrade automatically and keep every image file;
-their previous records receive the backwards-compatible location `home`.
+The migration reconstructs the same sleep intervals that the legacy interface
+derived from camera observations, restores structured pacifier, mouth, head,
+and clothing labels, and keeps existing records from another home. Re-running
+it updates only legacy-derived rows. Existing image files are neither deleted
+nor rewritten; missing files can be repaired from the read-only source.
 
 ## Use one history across multiple homes
 

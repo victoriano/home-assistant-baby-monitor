@@ -18,9 +18,24 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 VISION_PROMPT = (
-    "Label this baby-monitor frame. Decide whether a baby is visible and, only from visible evidence, "
-    "whether the baby appears awake, asleep, or uncertain. Be conservative: never infer sleep when the "
-    "baby is absent or occluded. Return only the requested structured object."
+    "Label this baby-monitor frame. The image may contain a crib or sidecar cot, a nearby adult/family "
+    "bed, the baby, and one or more adults. Decide whether the BABY is visible and, only from evidence "
+    "visible on the baby, whether the baby appears awake, asleep, or uncertain. Never use an adult's "
+    "posture, closed eyes, or stillness to classify the baby's state. Set sleep_surface=crib when the "
+    "baby rests on the crib/cot mattress, family_bed when the baby rests on the adult/shared-bed mattress "
+    "whether alone or beside an adult, other for another visible surface or being held, and unknown when "
+    "the baby's surface is unclear. Both crib and family_bed are valid monitored sleep surfaces. Set "
+    "in_crib=true only for sleep_surface=crib and false for family_bed or other. Also describe only clearly "
+    "visible details: face visibility, head side, body position, clothing, pacifier use, and whether the "
+    "mouth is open. Be conservative: use unknown when the baby is occluded or unclear, never infer sleep "
+    "when the baby is absent, and never infer a pacifier from a closed mouth or shadow. When the monitored "
+    "area is clearly visible without the baby, set baby_present=false, state=uncertain, in_crib=false and "
+    "include the tag baby_absent; include empty_crib too when the crib is clearly empty. When the image "
+    "itself is blocked, corrupted or unusable, use state=uncertain and include the tag image_unusable "
+    "instead; an unusable image is not evidence that either sleep surface is empty. "
+    "Confidence describes the sleep/occupancy classification, not merely confidence that the pixels are "
+    "corrupted. "
+    "Return only the requested structured object."
 )
 
 VISION_SCHEMA: dict[str, Any] = {
@@ -31,8 +46,44 @@ VISION_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "description": {"type": "string", "maxLength": 500},
         "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+        "in_crib": {"type": "boolean"},
+        "sleep_surface": {"type": "string", "enum": ["crib", "family_bed", "other", "unknown"]},
+        "face_visible": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "head_side": {"type": "string", "enum": ["left", "right", "back", "face_down", "unknown"]},
+        "body_position": {"type": "string", "maxLength": 80},
+        "clothing_items": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "diaper_only",
+                    "short_sleeve_onesie",
+                    "long_sleeve_onesie",
+                    "sleep_sack",
+                    "blanket",
+                    "unknown",
+                ],
+            },
+            "maxItems": 5,
+        },
+        "pacifier": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "mouth_open": {"type": "string", "enum": ["yes", "no", "unknown"]},
     },
-    "required": ["baby_present", "state", "confidence", "description", "tags"],
+    "required": [
+        "baby_present",
+        "state",
+        "confidence",
+        "description",
+        "tags",
+        "in_crib",
+        "sleep_surface",
+        "face_visible",
+        "head_side",
+        "body_position",
+        "clothing_items",
+        "pacifier",
+        "mouth_open",
+    ],
     "additionalProperties": False,
 }
 
@@ -181,9 +232,15 @@ class GeminiInteractionsProvider(_HTTPProvider):
         # Interactions responses have evolved while in beta. Only accept known
         # text containers; never stringify the whole response (which could leak
         # metadata or accidentally accept an unstructured answer).
+        status = payload.get("status")
+        if isinstance(status, str) and status != "completed":
+            raise ProviderError("Gemini response did not complete")
         if isinstance(payload.get("output_text"), str):
             return payload["output_text"]
-        for key in ("outputs", "output"):
+        # Current REST responses expose model output under steps. Keep the
+        # earlier output containers for compatibility with beta revisions and
+        # SDK-normalized responses.
+        for key in ("steps", "outputs", "output"):
             raw = payload.get(key)
             items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
             for item in items:

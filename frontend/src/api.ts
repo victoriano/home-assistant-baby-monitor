@@ -14,10 +14,20 @@ import {
   type HistoryTransferStatus,
   type HomeAssistantEntity,
   type ManualSleepInput,
+  type NotificationEvent,
   type PageResult,
+  type PredictionCalculation,
+  type PredictionClockSample,
+  type PredictionDurationSample,
+  type PredictionModelDetails,
+  type PredictionNumericEvidence,
+  type PredictionWakeWindowSample,
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
+  type SleepEventDetails,
+  type SleepPlan,
+  type SleepPredictionTarget,
   type VisionLabel,
 } from './types';
 
@@ -53,6 +63,16 @@ function asBoolean(value: unknown, fallback = false): boolean {
 
 function asNumber(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function asNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asNumberArray(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
+    : [];
 }
 
 function asStringArray(value: unknown): string[] {
@@ -228,6 +248,40 @@ export function normalizeSettings(value: unknown): AppSettings {
   const ai = asRecord(data.ai ?? data.vision);
   const retention = asRecord(data.retention);
   const notifications = asRecord(data.notifications);
+  const notificationEvents: NotificationEvent[] = [
+    'cry_started',
+    'sleep_started',
+    'sleep_predicted_soon',
+    'sleep_ending_soon',
+    'sleep_ended',
+    'camera_offline',
+  ];
+  const preferredNotificationLanguage = navigator.language.toLowerCase().startsWith('es') ? 'es' : 'en';
+  const recipients = unwrapList(notifications.recipients, ['items']).map((value) => {
+    const recipient = asRecord(value);
+    const rawEvents = asStringArray(recipient.events);
+    return {
+      personEntityId: asNullableString(pick(recipient, 'personEntityId', 'person_entity_id')),
+      name: asString(recipient.name, asString(pick(recipient, 'notifyService', 'notify_service'))),
+      notifyService: asString(pick(recipient, 'notifyService', 'notify_service')),
+      targets: asStringArray(recipient.targets),
+      enabled: asBoolean(recipient.enabled, true),
+      language: asString(recipient.language) === 'es' ? 'es' as const : asString(recipient.language) === 'en' ? 'en' as const : preferredNotificationLanguage,
+      events: rawEvents.filter((event): event is NotificationEvent => notificationEvents.includes(event as NotificationEvent)),
+    };
+  }).filter((recipient) => recipient.notifyService.startsWith('notify.'));
+  const legacyService = asNullableString(notifications.service);
+  if (!recipients.length && legacyService) {
+    recipients.push({
+      personEntityId: null,
+      name: legacyService.replace(/^notify\./, '').replaceAll('_', ' '),
+      notifyService: legacyService,
+      targets: asStringArray(pick(notifications, 'targets', 'entityIds', 'entity_ids')),
+      enabled: true,
+      language: preferredNotificationLanguage,
+      events: ['cry_started'],
+    });
+  }
 
   const rawCryMode = asString(pick(cry, 'mode'), defaults.cry.mode);
   const cryMode = rawCryMode === 'rtsp_audio' ? 'audio' : rawCryMode;
@@ -310,8 +364,8 @@ export function normalizeSettings(value: unknown): AppSettings {
       days: retentionMode === 'days' ? asNumber(retention.days, 30) : null,
     },
     notifications: {
-      service: asNullableString(pick(notifications, 'service')),
-      targets: asStringArray(pick(notifications, 'targets', 'entityIds', 'entity_ids')),
+      recipients,
+      leadMinutes: Math.max(5, Math.min(60, asNumber(pick(notifications, 'leadMinutes', 'lead_minutes'), 10))),
     },
   };
 }
@@ -325,16 +379,46 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
       confidence: 0,
       description: value,
       tags: [],
+      inCrib: null,
+      sleepSurface: 'unknown',
+      faceVisible: 'unknown',
+      headSide: 'unknown',
+      bodyPosition: 'unknown',
+      clothingItems: ['unknown'],
+      pacifier: 'unknown',
+      mouthOpen: 'unknown',
     };
   }
   const data = asRecord(value);
   const state = asString(data.state);
+  const tags = asStringArray(data.tags);
+  const inCribValue = pick(data, 'inCrib', 'in_crib');
+  const inCrib = typeof inCribValue === 'boolean' ? asBoolean(inCribValue) : null;
+  const rawSurface = asString(pick(data, 'sleepSurface', 'sleep_surface'));
+  const normalizedTags = tags.map((tag) => tag.trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_'));
+  const sleepSurface = rawSurface === 'crib' || rawSurface === 'family_bed' || rawSurface === 'other'
+    ? rawSurface
+    : normalizedTags.some((tag) => ['adult_bed', 'family_bed', 'shared_bed', 'parents_bed'].includes(tag))
+      ? 'family_bed'
+      : inCrib === true
+        ? 'crib'
+        : inCrib === false
+          ? 'other'
+          : 'unknown';
   return {
     babyPresent: asBoolean(pick(data, 'babyPresent', 'baby_present')),
     state: state === 'awake' || state === 'asleep' ? state : 'uncertain',
     confidence: asNumber(data.confidence),
     description: asString(data.description, descriptionFallback),
-    tags: asStringArray(data.tags),
+    tags,
+    inCrib,
+    sleepSurface,
+    faceVisible: ['yes', 'no'].includes(asString(pick(data, 'faceVisible', 'face_visible'))) ? asString(pick(data, 'faceVisible', 'face_visible')) as 'yes' | 'no' : 'unknown',
+    headSide: ['left', 'right', 'back', 'face_down'].includes(asString(pick(data, 'headSide', 'head_side'))) ? asString(pick(data, 'headSide', 'head_side')) as 'left' | 'right' | 'back' | 'face_down' : 'unknown',
+    bodyPosition: asString(pick(data, 'bodyPosition', 'body_position'), 'unknown'),
+    clothingItems: asStringArray(pick(data, 'clothingItems', 'clothing_items')),
+    pacifier: ['yes', 'no'].includes(asString(data.pacifier)) ? asString(data.pacifier) as 'yes' | 'no' : 'unknown',
+    mouthOpen: ['yes', 'no'].includes(asString(pick(data, 'mouthOpen', 'mouth_open'))) ? asString(pick(data, 'mouthOpen', 'mouth_open')) as 'yes' | 'no' : 'unknown',
   };
 }
 
@@ -361,14 +445,272 @@ export function normalizeSleep(value: unknown): SleepEvent {
   const data = asRecord(value);
   const kind = asString(data.kind);
   const source = asString(data.source);
+  const details = asRecord(data.details);
+  const pauses = unwrapList(details.pauses, ['items']).map((pause) => {
+    const item = asRecord(pause);
+    return {
+      startedAt: asString(pick(item, 'startedAt', 'started_at')),
+      endedAt: asString(pick(item, 'endedAt', 'ended_at')),
+    };
+  }).filter((pause) => pause.startedAt && pause.endedAt);
   return {
     id: asString(data.id),
     startedAt: asString(pick(data, 'startedAt', 'started_at')),
     endedAt: asNullableString(pick(data, 'endedAt', 'ended_at')),
-    kind: kind === 'nap' || kind === 'night' ? kind : 'unknown',
+    kind: kind === 'nap' || kind === 'night' || kind === 'awake' ? kind : 'unknown',
     source: source === 'vision' || source === 'import' || source === 'automatic' ? source : 'manual',
     notes: asNullableString(data.notes),
+    details: { tags: asStringArray(details.tags), pauses },
     locationId: asString(pick(data, 'locationId', 'location_id'), 'home'),
+  };
+}
+
+function normalizePredictionTarget(value: unknown): SleepPredictionTarget | null {
+  const data = asRecord(value);
+  const kind = asString(data.kind);
+  const recommendedStart = asString(pick(data, 'recommendedStart', 'recommended_start'));
+  if ((kind !== 'nap' && kind !== 'night') || !recommendedStart) return null;
+  const calculation = normalizePredictionCalculation(data.calculation);
+  return {
+    kind,
+    label: asString(data.label, kind === 'night' ? 'Night sleep' : 'Nap'),
+    recommendedStart,
+    windowStart: asString(pick(data, 'windowStart', 'window_start'), recommendedStart),
+    windowEnd: asString(pick(data, 'windowEnd', 'window_end'), recommendedStart),
+    durationMinutes: asNumber(pick(data, 'durationMinutes', 'duration_minutes'), kind === 'night' ? 600 : 45),
+    confidence: asNumber(data.confidence),
+    explanation: asString(data.explanation),
+    ...(calculation ? { calculation } : {}),
+  };
+}
+
+function normalizePredictionCalculation(value: unknown): PredictionCalculation | null {
+  const data = asRecord(value);
+  const method = asString(data.method);
+  if (method !== 'wake_window' && method !== 'bedtime_pattern') return null;
+  const rawAnchorType = asString(pick(data, 'anchorType', 'anchor_type'));
+  const anchorTypes: PredictionCalculation['anchorType'][] = [
+    'last_observed_wake',
+    'typical_morning_wake',
+    'previous_predicted_nap_end',
+    'recent_bedtime_median',
+    'age_guidance',
+  ];
+  const anchorType = anchorTypes.includes(rawAnchorType as PredictionCalculation['anchorType'])
+    ? rawAnchorType as PredictionCalculation['anchorType']
+    : method === 'wake_window' ? 'typical_morning_wake' : 'age_guidance';
+  const rawAdjustmentReason = asString(pick(data, 'adjustmentReason', 'adjustment_reason'));
+  const rawDurationSource = asString(pick(data, 'durationSource', 'duration_source'));
+  return {
+    method,
+    anchorAt: asNullableString(pick(data, 'anchorAt', 'anchor_at')),
+    anchorType,
+    baseRecommendedStart: asString(
+      pick(data, 'baseRecommendedStart', 'base_recommended_start'),
+    ),
+    adjustmentMinutes: asNumber(pick(data, 'adjustmentMinutes', 'adjustment_minutes')),
+    adjustmentReason: rawAdjustmentReason === 'past_window' ? 'past_window' : null,
+    wakeWindowMinutes: asNullableNumber(pick(data, 'wakeWindowMinutes', 'wake_window_minutes')),
+    startSampleCount: asNumber(pick(data, 'startSampleCount', 'start_sample_count')),
+    durationSampleCount: asNumber(pick(data, 'durationSampleCount', 'duration_sample_count')),
+    plannedNapNumber: asNullableNumber(pick(data, 'plannedNapNumber', 'planned_nap_number')) ?? undefined,
+    morningWakeSampleCount: asNullableNumber(
+      pick(data, 'morningWakeSampleCount', 'morning_wake_sample_count'),
+    ) ?? undefined,
+    expectedWakeAt: asNullableString(pick(data, 'expectedWakeAt', 'expected_wake_at')),
+    durationSource: rawDurationSource === 'bedtime_to_morning_wake'
+      || rawDurationSource === 'recent_night_duration'
+      ? rawDurationSource
+      : undefined,
+  };
+}
+
+function normalizeWakeWindowSample(value: unknown): PredictionWakeWindowSample | null {
+  const data = asRecord(value);
+  const previousSleepEndedAt = asString(
+    pick(data, 'previousSleepEndedAt', 'previous_sleep_ended_at'),
+  );
+  const nextSleepStartedAt = asString(
+    pick(data, 'nextSleepStartedAt', 'next_sleep_started_at'),
+  );
+  if (!previousSleepEndedAt || !nextSleepStartedAt) return null;
+  const previousKind = asString(pick(data, 'previousSleepKind', 'previous_sleep_kind'));
+  const nextKind = asString(pick(data, 'nextSleepKind', 'next_sleep_kind'));
+  return {
+    previousSleepId: asString(pick(data, 'previousSleepId', 'previous_sleep_id')),
+    previousSleepKind: previousKind === 'night' ? 'night' : 'nap',
+    previousSleepEndedAt,
+    nextSleepId: asString(pick(data, 'nextSleepId', 'next_sleep_id')),
+    nextSleepKind: nextKind === 'night' ? 'night' : 'nap',
+    nextSleepStartedAt,
+    minutes: asNumber(data.minutes),
+  };
+}
+
+function normalizeDurationSample(value: unknown): PredictionDurationSample | null {
+  const data = asRecord(value);
+  const startedAt = asString(pick(data, 'startedAt', 'started_at'));
+  const endedAt = asString(pick(data, 'endedAt', 'ended_at'));
+  if (!startedAt || !endedAt) return null;
+  return {
+    eventId: asString(pick(data, 'eventId', 'event_id')) || undefined,
+    nightDate: asString(pick(data, 'nightDate', 'night_date')) || undefined,
+    startedAt,
+    endedAt,
+    minutes: asNumber(data.minutes),
+    source: asString(data.source) || undefined,
+  };
+}
+
+function normalizeClockSample(value: unknown): PredictionClockSample | null {
+  const data = asRecord(value);
+  const at = asString(data.at);
+  if (!at) return null;
+  return {
+    date: asString(data.date),
+    at,
+    minuteOfDay: asNumber(pick(data, 'minuteOfDay', 'minute_of_day')),
+  };
+}
+
+function normalizeNumericEvidence<TSample>(
+  value: unknown,
+  normalizeSample: (item: unknown) => TSample | null,
+  fallbackFinal: number,
+): PredictionNumericEvidence<TSample> {
+  const data = asRecord(value);
+  return {
+    count: asNumber(data.count),
+    medianMinutes: asNullableNumber(pick(data, 'medianMinutes', 'median_minutes')),
+    minMinutes: asNullableNumber(pick(data, 'minMinutes', 'min_minutes')),
+    maxMinutes: asNullableNumber(pick(data, 'maxMinutes', 'max_minutes')),
+    valuesMinutes: asNumberArray(pick(data, 'valuesMinutes', 'values_minutes')),
+    finalMinutes: asNumber(pick(data, 'finalMinutes', 'final_minutes'), fallbackFinal),
+    samples: unwrapList(data.samples, ['items'])
+      .map(normalizeSample)
+      .filter((sample): sample is TSample => Boolean(sample)),
+  };
+}
+
+function normalizePredictionModelDetails(value: unknown): PredictionModelDetails | null {
+  const data = asRecord(value);
+  if (!Object.keys(data).length) return null;
+  const baseline = asRecord(data.baseline);
+  const wakeData = asRecord(pick(data, 'wakeWindows', 'wake_windows'));
+  const bedtimes = asRecord(data.bedtimes);
+  const morningWakes = asRecord(pick(data, 'morningWakes', 'morning_wakes'));
+  const confidence = asRecord(data.confidence);
+  const rawRule = asString(confidence.rule);
+  const wakeWindows = {
+    ...normalizeNumericEvidence(wakeData, normalizeWakeWindowSample, 180),
+    medianAbsoluteDeviationMinutes: asNullableNumber(
+      pick(wakeData, 'medianAbsoluteDeviationMinutes', 'median_absolute_deviation_minutes'),
+    ),
+    historyWeight: asNumber(pick(wakeData, 'historyWeight', 'history_weight')),
+  };
+  return {
+    generatedAt: asString(pick(data, 'generatedAt', 'generated_at')),
+    lookbackClosedSleepCount: asNumber(
+      pick(data, 'lookbackClosedSleepCount', 'lookback_closed_sleep_count'),
+    ),
+    baseline: {
+      ageBand: asString(pick(baseline, 'ageBand', 'age_band'), 'unknown'),
+      birthDateKnown: asBoolean(pick(baseline, 'birthDateKnown', 'birth_date_known')),
+      wakeWindowMinutes: asNumber(
+        pick(baseline, 'wakeWindowMinutes', 'wake_window_minutes'),
+        180,
+      ),
+      expectedNaps: asNumber(pick(baseline, 'expectedNaps', 'expected_naps')),
+    },
+    wakeWindows,
+    napDurations: normalizeNumericEvidence(
+      pick(data, 'napDurations', 'nap_durations'),
+      normalizeDurationSample,
+      45,
+    ),
+    bedtimes: {
+      count: asNumber(bedtimes.count),
+      medianMinuteOfDay: asNumber(
+        pick(bedtimes, 'medianMinuteOfDay', 'median_minute_of_day'),
+      ),
+      usedFallback: asBoolean(pick(bedtimes, 'usedFallback', 'used_fallback')),
+      samples: unwrapList(bedtimes.samples, ['items'])
+        .map(normalizeClockSample)
+        .filter((sample): sample is PredictionClockSample => Boolean(sample)),
+    },
+    morningWakes: {
+      count: asNumber(morningWakes.count),
+      medianMinuteOfDay: asNumber(
+        pick(morningWakes, 'medianMinuteOfDay', 'median_minute_of_day'),
+      ),
+      usedFallback: asBoolean(pick(morningWakes, 'usedFallback', 'used_fallback')),
+      samples: unwrapList(morningWakes.samples, ['items'])
+        .map(normalizeClockSample)
+        .filter((sample): sample is PredictionClockSample => Boolean(sample)),
+    },
+    nightDurations: normalizeNumericEvidence(
+      pick(data, 'nightDurations', 'night_durations'),
+      normalizeDurationSample,
+      600,
+    ),
+    confidence: {
+      value: asNumber(confidence.value),
+      sampleCount: asNumber(pick(confidence, 'sampleCount', 'sample_count')),
+      rule: rawRule === 'recent_wake_samples' ? 'recent_wake_samples' : 'age_guidance_fallback',
+    },
+  };
+}
+
+export function normalizeSleepPlan(value: unknown): SleepPlan {
+  const data = asRecord(value);
+  const plans = unwrapList(data.plans, ['items']).flatMap((value) => {
+    const item = asRecord(value);
+    const nightPrediction = normalizePredictionTarget(pick(item, 'nightPrediction', 'night_prediction'));
+    const date = asString(item.date);
+    if (!nightPrediction || !date) return [];
+    return [{
+      date,
+      morningWakeAt: asString(pick(item, 'morningWakeAt', 'morning_wake_at')),
+      nightStartAt: asString(pick(item, 'nightStartAt', 'night_start_at')),
+      nightEndAt: asString(pick(item, 'nightEndAt', 'night_end_at')),
+      dayNapPredictions: unwrapList(
+        pick(item, 'dayNapPredictions', 'day_nap_predictions'),
+        ['items'],
+      ).map(normalizePredictionTarget).filter((target): target is SleepPredictionTarget => Boolean(target)),
+      nightPrediction,
+      explanation: asString(item.explanation),
+    }];
+  });
+  const nextKind = asString(pick(data, 'nextKind', 'next_kind'));
+  const modelDetails = normalizePredictionModelDetails(
+    pick(data, 'modelDetails', 'model_details'),
+  );
+  return {
+    generatedAt: asString(pick(data, 'generatedAt', 'generated_at')),
+    ageBand: asString(pick(data, 'ageBand', 'age_band'), 'unknown'),
+    confidence: asNumber(data.confidence),
+    reason: asString(data.reason),
+    recentSampleCount: asNumber(pick(data, 'recentSampleCount', 'recent_sample_count')),
+    wakeWindowMinutes: asNumber(pick(data, 'wakeWindowMinutes', 'wake_window_minutes'), 180),
+    wakeWindowMarginMinutes: asNumber(pick(data, 'wakeWindowMarginMinutes', 'wake_window_margin_minutes'), 35),
+    averageNapMinutes: asNumber(pick(data, 'averageNapMinutes', 'average_nap_minutes'), 45),
+    averageNightMinutes: asNumber(pick(data, 'averageNightMinutes', 'average_night_minutes'), 600),
+    ...(modelDetails ? { modelDetails } : {}),
+    nextSleepAt: asNullableString(pick(data, 'nextSleepAt', 'next_sleep_at')),
+    windowStart: asNullableString(pick(data, 'windowStart', 'window_start')),
+    windowEnd: asNullableString(pick(data, 'windowEnd', 'window_end')),
+    nextKind: nextKind === 'nap' || nextKind === 'night' ? nextKind : null,
+    plans,
+  };
+}
+
+function detailsPayload(details: SleepEventDetails): Record<string, unknown> {
+  return {
+    tags: details.tags,
+    pauses: details.pauses.map((pause) => ({
+      started_at: pause.startedAt,
+      ended_at: pause.endedAt,
+    })),
   };
 }
 
@@ -442,7 +784,7 @@ export const api = {
     return normalizeSettings(result);
   },
 
-  async getEntities(domain: 'camera' | 'binary_sensor' | 'light' | 'notify'): Promise<HomeAssistantEntity[]> {
+  async getEntities(domain: 'camera' | 'binary_sensor' | 'light' | 'notify' | 'person'): Promise<HomeAssistantEntity[]> {
     const result = await request<unknown>(`api/v1/home-assistant/entities?domain=${encodeURIComponent(domain)}`);
     return unwrapList(result, ['items', 'entities']).map((value) => {
       const data = asRecord(value);
@@ -461,14 +803,68 @@ export const api = {
     return normalizeSummary(await request<unknown>('api/v1/summary'));
   },
 
+  async getPredictions(): Promise<SleepPlan> {
+    return normalizeSleepPlan(await request<unknown>('api/v1/predictions'));
+  },
+
   async getFrames(limit = 24, offset = 0): Promise<PageResult<FrameRecord>> {
     const result = await request<unknown>(`api/v1/frames?limit=${limit}&offset=${offset}`);
     return normalizePage(result, ['items', 'frames'], normalizeFrame, limit, offset);
   },
 
+  async getNearestFrames(at: string, limit = 5): Promise<FrameRecord[]> {
+    const result = await request<unknown>(
+      `api/v1/frames/nearest?at=${encodeURIComponent(at)}&limit=${limit}`,
+    );
+    return unwrapList(result, ['items', 'frames']).map(normalizeFrame);
+  },
+
+  async getFramesBetween(start: string, end: string, locationId?: string): Promise<FrameRecord[]> {
+    const pageSize = 200;
+    const frames: FrameRecord[] = [];
+    let offset = 0;
+    while (true) {
+      const query = new URLSearchParams({
+        start,
+        end,
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      if (locationId) query.set('location_id', locationId);
+      const result = await request<unknown>(`api/v1/frames/range?${query.toString()}`);
+      const page = normalizePage(result, ['items', 'frames'], normalizeFrame, pageSize, offset);
+      frames.push(...page.items);
+      offset += page.items.length;
+      if (page.items.length === 0 || offset >= page.total) return frames;
+    }
+  },
+
   async getSleep(limit = 50, offset = 0): Promise<PageResult<SleepEvent>> {
     const result = await request<unknown>(`api/v1/sleep?limit=${limit}&offset=${offset}`);
     return normalizePage(result, ['items', 'events'], normalizeSleep, limit, offset);
+  },
+
+  async getAllSleep(): Promise<SleepEvent[]> {
+    const first = await this.getSleep(500, 0);
+    const items = [...first.items];
+    for (let offset = first.items.length; offset < first.total; offset += 500) {
+      items.push(...(await this.getSleep(500, offset)).items);
+    }
+    return items;
+  },
+
+  async patchSleep(eventId: string, input: ManualSleepInput): Promise<SleepEvent> {
+    return normalizeSleep(await request<unknown>(`api/v1/sleep/${encodeURIComponent(eventId)}`, {
+      method: 'PATCH', body: JSON.stringify({ started_at: input.startedAt, ended_at: input.endedAt, kind: input.kind, notes: input.notes || null, details: detailsPayload(input.details) }),
+    }));
+  },
+
+  async deleteSleep(eventId: string): Promise<void> {
+    await request<void>(`api/v1/sleep/${encodeURIComponent(eventId)}`, { method: 'DELETE' });
+  },
+
+  async getVisionStatistics(start: string, end: string): Promise<import('./types').VisionStatistics> {
+    return request<import('./types').VisionStatistics>(`api/v1/statistics/vision?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
   },
 
   async getCryEvents(limit = 50, offset = 0): Promise<PageResult<CryEvent>> {
@@ -484,6 +880,7 @@ export const api = {
         ended_at: input.endedAt,
         kind: input.kind,
         notes: input.notes || null,
+        details: detailsPayload(input.details),
         source: 'manual',
       }),
     }));
@@ -515,6 +912,20 @@ export const api = {
 
   liveCameraUrl(): string {
     return apiUrl('api/v1/camera/live');
+  },
+
+  async negotiateWebRtc(offer: string): Promise<string> {
+    const response = await fetch(apiUrl('api/v1/camera/webrtc'), {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/sdp', 'Content-Type': 'application/sdp' },
+      body: offer,
+    });
+    const answer = await response.text();
+    if (!response.ok) throw new ApiError(errorMessage(answer, response.statusText || 'WebRTC failed'), response.status, answer);
+    if (!answer.startsWith('v=0')) throw new ApiError('The WebRTC answer was invalid.', 502, answer);
+    return answer;
   },
 
   async testSettings(kind: 'home_assistant' | 'camera' | 'cry' | 'lights' | 'notifications' | 'vision', settings: AppSettings): Promise<ConnectionTestResult> {
@@ -600,5 +1011,6 @@ export const apiTesting = {
   normalizeSettings,
   normalizeSummary,
   normalizeFrame,
+  normalizeSleepPlan,
   normalizeTransferStatus,
 };

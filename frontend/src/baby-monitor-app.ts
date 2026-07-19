@@ -2,13 +2,18 @@ import { LitElement, html, nothing, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
 import { ApiError, api } from './api';
-import { icon } from './icons';
+import { icon, type IconName } from './icons';
+import { connectWebRtcVideo } from './webrtc';
 import {
   buildRhythmModel,
   localDateKey,
   rhythmArcPath,
   rhythmMarkerPosition,
+  rhythmPosition,
+  rhythmSvgPoint,
+  rhythmTrackPath,
   shiftDateKey,
+  type RhythmSegment,
   type RhythmMode,
 } from './sleep-rhythm';
 import {
@@ -22,6 +27,7 @@ import {
   translate,
   type TranslationKey,
 } from './i18n';
+import { formatTrendDate, medianMinutes } from './trend-format';
 import {
   cloneDefaultSettings,
   isValidHttpBaseUrl,
@@ -37,19 +43,109 @@ import {
   type HistoryTransferStatus,
   type HomeAssistantEntity,
   type Language,
+  type NotificationEvent,
+  type NotificationRecipient,
   type RetentionEstimate,
   type SecretName,
   type SleepEvent,
+  type SleepEventDetails,
   type SleepKind,
+  type SleepPause,
+  type SleepPlan,
+  type SleepPredictionTarget,
   type VisionProvider,
+  type VisionStatistics,
 } from './types';
 
-type EntityDomain = 'camera' | 'binary_sensor' | 'light' | 'notify';
+type EntityDomain = 'camera' | 'binary_sensor' | 'light' | 'notify' | 'person';
 type TestKind = 'home_assistant' | 'camera' | 'cry' | 'lights' | 'notifications' | 'vision';
 type HistoryKind = 'sleep' | 'cry' | 'frames';
 type TestState = { busy: boolean; ok?: boolean; message?: string };
 type Toast = { tone: 'success' | 'error' | 'info'; message: string };
 type HistoryPageState = { total: number; nextOffset: number; loading: boolean; error: string };
+type LiveTransport = 'off' | 'connecting' | 'webrtc' | 'mjpeg';
+type TemporalTarget =
+  | 'manual-start'
+  | 'manual-end'
+  | 'edit-start'
+  | 'edit-end'
+  | `manual-pause-start-${number}`
+  | `manual-pause-end-${number}`
+  | `edit-pause-start-${number}`
+  | `edit-pause-end-${number}`;
+type TemporalPickerState = { target: TemporalTarget; value: string; title: string };
+type FrameReviewState = {
+  point: 'start' | 'middle' | 'end' | '';
+  frames: FrameRecord[];
+  index: number;
+  loading: boolean;
+  error: string;
+  requestedAt: string;
+};
+type FrameReviewContext = 'edit' | 'inferred-awake';
+
+const EMPTY_DETAILS = (): SleepEventDetails => ({ tags: [], pauses: [] });
+
+const DETAIL_GROUPS = [
+  {
+    key: 'start',
+    es: 'Inicio',
+    en: 'Falling asleep',
+    options: [
+      ['long_to_fall_asleep', '⏰', 'Mucho tiempo para dormirse', 'Took a long time to fall asleep'],
+      ['upset', '☹️', 'Molesto', 'Upset'],
+    ],
+  },
+  {
+    key: 'method',
+    es: 'Cómo',
+    en: 'How',
+    options: [
+      ['in_bed', '🛏️', 'En la cama', 'In bed'],
+      ['breastfeeding', '🤱', 'Lactancia', 'Breastfeeding'],
+      ['held', '🫶', 'Cargado o sostenido', 'Held'],
+      ['beside_parent', '🤍', 'A mi lado', 'Beside me'],
+      ['bottle', '🍼', 'Toma de biberón', 'Bottle'],
+      ['stroller', '👶', 'Cochecito', 'Stroller'],
+      ['car', '🚗', 'Automóvil', 'Car'],
+      ['swing', '🌙', 'Columpio', 'Swing'],
+    ],
+  },
+  {
+    key: 'end',
+    es: 'Fin',
+    en: 'Wake-up',
+    options: [
+      ['woken_by_parent', '🔔', 'Desperté al bebé', 'Woken by parent'],
+      ['woke_alone', '🌅', 'Se despertó solo', 'Woke independently'],
+    ],
+  },
+  {
+    key: 'mood',
+    es: 'Estado de ánimo al despertar',
+    en: 'Mood on waking',
+    options: [
+      ['woke_grumpy', '🙁', 'Mal humor', 'Grumpy'],
+      ['woke_neutral', '😐', 'Neutral', 'Neutral'],
+      ['woke_happy', '🙂', 'Buen humor', 'Happy'],
+    ],
+  },
+] as const;
+
+const NOTIFICATION_EVENTS: Array<{
+  event: NotificationEvent;
+  icon: Parameters<typeof icon>[0];
+  title: TranslationKey;
+  hint: TranslationKey;
+  tone: 'urgent' | 'sleep' | 'prepare' | 'calm' | 'system';
+}> = [
+  { event: 'cry_started', icon: 'waves', title: 'notifyCryTitle', hint: 'notifyCryHint', tone: 'urgent' },
+  { event: 'sleep_started', icon: 'moon', title: 'notifySleepStartTitle', hint: 'notifySleepStartHint', tone: 'sleep' },
+  { event: 'sleep_predicted_soon', icon: 'clock', title: 'notifyPredictedTitle', hint: 'notifyPredictedHint', tone: 'prepare' },
+  { event: 'sleep_ending_soon', icon: 'sun', title: 'notifyEndingTitle', hint: 'notifyEndingHint', tone: 'prepare' },
+  { event: 'sleep_ended', icon: 'sun', title: 'notifyWakeTitle', hint: 'notifyWakeHint', tone: 'calm' },
+  { event: 'camera_offline', icon: 'camera', title: 'notifyCameraTitle', hint: 'notifyCameraHint', tone: 'system' },
+];
 
 const HISTORY_PAGE_LIMITS: Record<HistoryKind, number> = { sleep: 30, cry: 30, frames: 24 };
 
@@ -88,8 +184,22 @@ function localDateTime(date: Date): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+export function rhythmModeForTime(now: Date): RhythmMode {
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return minutes >= 21 * 60 || minutes < 9 * 60 ? 'night' : 'day';
+}
+
 function asIso(value: string): string {
   return new Date(value).toISOString();
+}
+
+function formatElapsedClock(startedAt: string, now: number): string {
+  const elapsed = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 @customElement('baby-monitor-app')
@@ -99,7 +209,7 @@ export class BabyMonitorApp extends LitElement {
   }
 
   @state() private language: Language = preferredLanguage();
-  @state() private page: AppPage = 'dashboard';
+  @state() private page: AppPage = 'sleep';
   @state() private loading = true;
   @state() private fatalError: { title: string; body: string } | null = null;
   @state() private inlineError = '';
@@ -113,9 +223,10 @@ export class BabyMonitorApp extends LitElement {
   @state() private pendingSecretClears: SecretName[] = [];
   @state() private cameraSource: 'entity' | 'stream' = 'entity';
   @state() private entities: Record<EntityDomain, HomeAssistantEntity[]> = {
-    camera: [], binary_sensor: [], light: [], notify: [],
+    camera: [], binary_sensor: [], light: [], notify: [], person: [],
   };
   @state() private summary: DashboardSummary = EMPTY_SUMMARY;
+  @state() private sleepPlan: SleepPlan | null = null;
   @state() private health: HealthStatus | null = null;
   @state() private sleepEvents: SleepEvent[] = [];
   @state() private cryEvents: CryEvent[] = [];
@@ -123,16 +234,43 @@ export class BabyMonitorApp extends LitElement {
   @state() private historyPages = emptyHistoryPages();
   @state() private refreshingData = false;
   @state() private liveView = false;
+  @state() private liveTransport: LiveTransport = 'off';
   @state() private cameraBusy: 'snapshot' | 'label' | '' = '';
   @state() private sleepBusy: 'start' | 'stop' | 'add' | '' = '';
   @state() private manualOpen = false;
+  @state() private editingSleep: SleepEvent | null = null;
+  @state() private activeSleepOverlay: SleepEvent | null = null;
+  @state() private activeSleepNow = Date.now();
+  @state() private editSleepBusy = false;
+  @state() private editSleepForm = {
+    startedAt: '', endedAt: '', kind: 'nap' as SleepKind, notes: '', details: EMPTY_DETAILS(),
+  };
+  @state() private temporalPicker: TemporalPickerState | null = null;
+  @state() private selectedPrediction: SleepPredictionTarget | null = null;
+  @state() private frameReview: FrameReviewState = {
+    point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '',
+  };
+  private frameReviewContext: FrameReviewContext = 'edit';
+  private editSleepFrameBounds: { startedAt: string; endedAt: string } | null = null;
+  private manualFrameReviewBounds: {
+    startedAt: string;
+    endedAt: string;
+    locationId: string | null;
+  } | null = null;
+  private editSleepStartChanged = false;
+  private editSleepEndChanged = false;
+  @state() private manualEndTouched = false;
   @state() private rhythmDate = localDateKey(new Date());
-  @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
+  @state() private rhythmMode: RhythmMode = rhythmModeForTime(new Date());
+  @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
+  @state() private visionStatistics: VisionStatistics | null = null;
+  @state() private visionStatisticsLoading = false;
   @state() private manualForm = {
     startedAt: localDateTime(new Date(Date.now() - 60 * 60_000)),
     endedAt: localDateTime(new Date()),
     kind: 'nap' as SleepKind,
     notes: '',
+    details: EMPTY_DETAILS(),
   };
   @state() private tests: Partial<Record<TestKind, TestState>> = {};
   @state() private retentionEstimate: RetentionEstimate | null = null;
@@ -147,16 +285,45 @@ export class BabyMonitorApp extends LitElement {
 
   private pollTimer?: number;
   private toastTimer?: number;
+  private activeSleepTimer?: number;
+  private liveConnectTimer?: number;
+  private liveDisconnectTimer?: number;
+  private livePeer?: RTCPeerConnection;
+  private liveGeneration = 0;
   private operationalRequest = 0;
+  private frameReviewRequest = 0;
+  private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      if (this.temporalPicker) { this.temporalPicker = null; return; }
+      if (this.selectedPrediction) { this.selectedPrediction = null; return; }
+      if (this.manualOpen) this.closeManualForm();
+      if (this.editingSleep) this.editingSleep = null;
+    }
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener('keydown', this.handleKeyDown);
     void this.load();
+  }
+
+  protected firstUpdated(): void {
+    if (window.parent === window) return;
+    window.parent.postMessage(
+      {
+        type: 'baby-monitor:ready',
+        loadId: new URLSearchParams(window.location.search).get('ui'),
+      },
+      window.location.origin,
+    );
   }
 
   disconnectedCallback(): void {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
+    this.stopLiveView();
+    window.removeEventListener('keydown', this.handleKeyDown);
     super.disconnectedCallback();
   }
 
@@ -196,7 +363,7 @@ export class BabyMonitorApp extends LitElement {
     this.pollTimer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void this.loadHealth();
-        if (!this.onboarding && this.page === 'dashboard') void this.loadOperationalData(false);
+        if (!this.onboarding && (this.page === 'sleep' || this.page === 'camera')) void this.loadOperationalData(false);
       }
     }, 30_000);
   }
@@ -211,13 +378,28 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private async loadEntities(): Promise<void> {
-    const domains: EntityDomain[] = ['camera', 'binary_sensor', 'light', 'notify'];
+    const domains: EntityDomain[] = ['camera', 'binary_sensor', 'light', 'notify', 'person'];
     const results = await Promise.allSettled(domains.map((domain) => api.getEntities(domain)));
     const next = { ...this.entities };
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') next[domains[index]] = result.value;
     });
     this.entities = next;
+    this.linkLegacyNotificationRecipient();
+  }
+
+  private linkLegacyNotificationRecipient(): void {
+    const legacy = this.draft.notifications.recipients.find((recipient) => recipient.personEntityId == null);
+    if (!legacy) return;
+    const match = this.entities.person.find((person) => this.suggestedNotifyService(person) === legacy.notifyService);
+    if (!match) return;
+    const draft = structuredClone(this.draft);
+    const recipient = draft.notifications.recipients.find((item) => item.personEntityId == null && item.notifyService === legacy.notifyService);
+    if (!recipient) return;
+    recipient.personEntityId = match.entityId;
+    recipient.name = match.name;
+    recipient.language = this.language;
+    this.draft = draft;
   }
 
   private async loadOperationalData(showSpinner = true): Promise<void> {
@@ -231,9 +413,10 @@ export class BabyMonitorApp extends LitElement {
     ) as Record<HistoryKind, HistoryPageState>;
     const results = await Promise.allSettled([
       api.getSummary(),
-      api.getSleep(HISTORY_PAGE_LIMITS.sleep, 0),
+      api.getSleep(500, 0),
       api.getCryEvents(HISTORY_PAGE_LIMITS.cry, 0),
       api.getFrames(HISTORY_PAGE_LIMITS.frames, 0),
+      api.getPredictions(),
     ]);
     if (requestId !== this.operationalRequest) return;
     if (results[0].status === 'fulfilled') this.summary = results[0].value;
@@ -274,8 +457,26 @@ export class BabyMonitorApp extends LitElement {
     } else {
       nextPages.frames = { ...nextPages.frames, nextOffset: 0, loading: false, error: this.historyError(results[3].reason) };
     }
+    if (results[4].status === 'fulfilled') this.sleepPlan = results[4].value;
     this.historyPages = nextPages;
+    this.syncActiveSleepOverlay();
     this.refreshingData = false;
+  }
+
+  private syncActiveSleepOverlay(): void {
+    const summarySleep = this.summary.currentSleep;
+    const current = summarySleep?.source === 'manual' && !summarySleep.endedAt
+      ? summarySleep
+      : this.sleepEvents.find((event) => event.source === 'manual' && !event.endedAt) ?? null;
+    if (!current) {
+      if (this.activeSleepOverlay) this.closeActiveSleepOverlay();
+      return;
+    }
+    if (this.activeSleepOverlay?.id === current.id) {
+      this.activeSleepOverlay = current;
+      return;
+    }
+    this.openActiveSleepOverlay(current);
   }
 
   private historyError(error: unknown): string {
@@ -330,17 +531,602 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private setPage(page: AppPage): void {
+    this.stopLiveView();
     this.page = page;
     this.inlineError = '';
-    this.liveView = false;
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    if (page === 'history') void this.loadOperationalData(true);
+    if (page === 'camera' || page === 'data') void this.loadOperationalData(true);
+    if (page === 'data') void this.loadVisionStatistics();
     if (page === 'settings') {
       this.draft = structuredClone(this.settings);
       this.cameraSource = this.draft.camera.entityId ? 'entity' : this.draft.camera.streamUrlConfigured ? 'stream' : 'entity';
       void this.loadEntities();
       void this.loadHistoryTransfer();
     }
+  }
+
+  private clearLiveTimers(): void {
+    if (this.liveConnectTimer) window.clearTimeout(this.liveConnectTimer);
+    if (this.liveDisconnectTimer) window.clearTimeout(this.liveDisconnectTimer);
+    this.liveConnectTimer = undefined;
+    this.liveDisconnectTimer = undefined;
+  }
+
+  private closeLivePeer(): void {
+    const video = this.querySelector<HTMLVideoElement>('.camera-live-video');
+    if (video?.srcObject && globalThis.MediaStream && video.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+    this.livePeer?.close();
+    this.livePeer = undefined;
+  }
+
+  private stopLiveView(): void {
+    this.liveGeneration += 1;
+    this.clearLiveTimers();
+    this.closeLivePeer();
+    this.liveView = false;
+    this.liveTransport = 'off';
+  }
+
+  private useMjpegFallback(generation: number): void {
+    if (!this.liveView || generation !== this.liveGeneration || this.liveTransport === 'mjpeg') return;
+    this.clearLiveTimers();
+    this.closeLivePeer();
+    this.liveTransport = 'mjpeg';
+  }
+
+  private handleWebRtcPlaying(): void {
+    if (!this.liveView || this.liveTransport === 'mjpeg') return;
+    if (this.liveConnectTimer) window.clearTimeout(this.liveConnectTimer);
+    this.liveConnectTimer = undefined;
+    this.liveTransport = 'webrtc';
+  }
+
+  private handleWebRtcState(generation: number): void {
+    const state = this.livePeer?.connectionState;
+    if (!this.liveView || generation !== this.liveGeneration) return;
+    if (state === 'failed' || state === 'closed') {
+      this.useMjpegFallback(generation);
+      return;
+    }
+    if (state === 'disconnected' && !this.liveDisconnectTimer) {
+      this.liveDisconnectTimer = window.setTimeout(() => {
+        this.liveDisconnectTimer = undefined;
+        if (this.livePeer?.connectionState === 'disconnected') this.useMjpegFallback(generation);
+      }, 2_000);
+    } else if (state === 'connected' && this.liveDisconnectTimer) {
+      window.clearTimeout(this.liveDisconnectTimer);
+      this.liveDisconnectTimer = undefined;
+    }
+  }
+
+  private async toggleLiveView(): Promise<void> {
+    if (this.liveView) {
+      this.stopLiveView();
+      return;
+    }
+    const generation = ++this.liveGeneration;
+    this.liveView = true;
+    this.liveTransport = 'connecting';
+    await this.updateComplete;
+    const video = this.querySelector<HTMLVideoElement>('.camera-live-video');
+    if (!video) {
+      this.useMjpegFallback(generation);
+      return;
+    }
+    this.liveConnectTimer = window.setTimeout(() => this.useMjpegFallback(generation), 8_000);
+    try {
+      const peer = await connectWebRtcVideo(video, (offer) => api.negotiateWebRtc(offer));
+      if (!this.liveView || generation !== this.liveGeneration) {
+        peer.close();
+        return;
+      }
+      this.livePeer = peer;
+      peer.onconnectionstatechange = () => this.handleWebRtcState(generation);
+      this.handleWebRtcState(generation);
+    } catch {
+      this.useMjpegFallback(generation);
+    }
+  }
+
+  private async loadVisionStatistics(): Promise<void> {
+    if (this.visionStatisticsLoading) return;
+    this.visionStatisticsLoading = true;
+    try {
+      const start = this.sleepEvents.length
+        ? new Date(Math.min(...this.sleepEvents.map((event) => new Date(event.startedAt).getTime())))
+        : new Date(Date.now() - 90 * 86_400_000);
+      this.visionStatistics = await api.getVisionStatistics(start.toISOString(), new Date().toISOString());
+    } catch (error) {
+      this.inlineError = error instanceof Error ? error.message : 'No se pudieron cargar las estadísticas visuales.';
+    } finally {
+      this.visionStatisticsLoading = false;
+    }
+  }
+
+  private manualKindForNow(now: Date): SleepKind {
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    if (minutes < 9 * 60) return this.summary.state === 'awake' ? 'awake' : 'night';
+    if (minutes >= 21 * 60) return 'night';
+    return 'nap';
+  }
+
+  private suggestedEnd(startValue: string, kind: SleepKind): string {
+    const start = new Date(startValue);
+    if (!Number.isFinite(start.getTime())) return '';
+    let minutes = kind === 'awake' ? 15 : kind === 'night' ? 10 * 60 : this.sleepPlan?.averageNapMinutes ?? 45;
+    if (kind === 'night') {
+      const dateKey = localDateKey(start);
+      const plan = this.sleepPlan?.plans.find((item) => item.date === dateKey);
+      const plannedEnd = plan?.nightEndAt ? new Date(plan.nightEndAt) : null;
+      if (plannedEnd && plannedEnd > start) minutes = Math.round((plannedEnd.getTime() - start.getTime()) / 60_000);
+      else {
+        const morning = new Date(start);
+        morning.setDate(morning.getDate() + (start.getHours() >= 8 ? 1 : 0));
+        morning.setHours(7, 30, 0, 0);
+        if (morning > start) minutes = Math.round((morning.getTime() - start.getTime()) / 60_000);
+      }
+      minutes = Math.max(6 * 60, Math.min(12 * 60, minutes));
+    }
+    if (kind === 'nap' && start.getHours() >= 17) minutes = Math.min(75, minutes);
+    return localDateTime(new Date(start.getTime() + Math.max(15, minutes) * 60_000));
+  }
+
+  private detailsFromEvent(event: SleepEvent): { notes: string; details: SleepEventDetails } {
+    const details = structuredClone(event.details ?? EMPTY_DETAILS());
+    const note = event.notes ?? '';
+    if (details.tags.length || !note.includes('Etiquetas:')) return { notes: note, details };
+    const aliases = new Map<string, string>();
+    DETAIL_GROUPS.forEach((group) => group.options.forEach(([tag, , es, en]) => {
+      aliases.set(es.toLocaleLowerCase('es'), tag);
+      aliases.set(en.toLocaleLowerCase('en'), tag);
+    }));
+    const [clean, rawTags = ''] = note.split(/\n?Etiquetas:\s*/i, 2);
+    details.tags = rawTags.split(',').map((item) => aliases.get(item.trim().toLocaleLowerCase()) ?? '')
+      .filter(Boolean);
+    return { notes: clean.trim(), details };
+  }
+
+  private openManualForm(): void {
+    this.inlineError = '';
+    this.frameReviewRequest += 1;
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
+    const now = new Date();
+    now.setSeconds(0, 0);
+    this.manualForm = {
+      startedAt: localDateTime(now),
+      endedAt: '',
+      kind: this.manualKindForNow(now),
+      notes: '',
+      details: EMPTY_DETAILS(),
+    };
+    this.manualEndTouched = false;
+    this.manualOpen = true;
+  }
+
+  private closeManualForm(): void {
+    this.inlineError = '';
+    this.temporalPicker = null;
+    this.frameReviewRequest += 1;
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
+    this.manualOpen = false;
+  }
+
+  private openSleepEditor(event: SleepEvent): void {
+    const restored = this.detailsFromEvent(event);
+    this.frameReviewContext = 'edit';
+    this.manualFrameReviewBounds = null;
+    this.editingSleep = event;
+    this.editSleepForm = {
+      startedAt: localDateTime(new Date(event.startedAt)),
+      endedAt: event.endedAt ? localDateTime(new Date(event.endedAt)) : '',
+      kind: event.kind,
+      notes: restored.notes,
+      details: restored.details,
+    };
+    // The minute-precision picker is a presentation affordance. Preserve the
+    // detector's exact seconds for evidence queries (and unrelated edits), or
+    // the capture that closed a segment can fall just outside the rounded end.
+    this.editSleepFrameBounds = {
+      startedAt: event.startedAt,
+      endedAt: event.endedAt ?? new Date().toISOString(),
+    };
+    this.editSleepStartChanged = false;
+    this.editSleepEndChanged = false;
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
+    void this.loadFrameReview('start');
+  }
+
+  private openActiveSleepOverlay(event: SleepEvent): void {
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
+    this.activeSleepOverlay = event;
+    this.activeSleepNow = Date.now();
+    this.activeSleepTimer = window.setInterval(() => {
+      this.activeSleepNow = Date.now();
+    }, 1000);
+  }
+
+  private closeActiveSleepOverlay(): void {
+    if (this.activeSleepTimer) window.clearInterval(this.activeSleepTimer);
+    this.activeSleepTimer = undefined;
+    this.activeSleepOverlay = null;
+  }
+
+  private editActiveSleep(): void {
+    const event = this.activeSleepOverlay;
+    if (!event) return;
+    this.openSleepEditor(event);
+  }
+
+  private async finishActiveSleep(): Promise<void> {
+    if (!this.activeSleepOverlay || this.sleepBusy) return;
+    this.sleepBusy = 'stop';
+    try {
+      await api.stopSleep();
+      this.closeActiveSleepOverlay();
+      await this.loadOperationalData(false);
+      this.showToast(this.t('sleepStopped'));
+    } catch (error) {
+      this.showToast(error instanceof Error ? error.message : this.t('saveError'), 'error');
+    } finally {
+      this.sleepBusy = '';
+    }
+  }
+
+  private async saveSleepEditor(): Promise<void> {
+    if (!this.editingSleep) return;
+    const start = new Date(this.editSleepForm.startedAt);
+    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
+    if (!Number.isFinite(start.getTime()) || (end && (!Number.isFinite(end.getTime()) || end <= start))) {
+      this.inlineError = this.t('invalidSleepRange');
+      return;
+    }
+    if (this.editSleepForm.kind === 'awake' && !end) {
+      this.inlineError = this.language === 'es'
+        ? 'Los despertares necesitan una hora de fin.'
+        : 'Awake periods need an end time.';
+      return;
+    }
+    this.editSleepBusy = true;
+    try {
+      await api.patchSleep(this.editingSleep.id, {
+        startedAt: this.editSleepStartChanged ? asIso(this.editSleepForm.startedAt) : this.editingSleep.startedAt,
+        endedAt: this.editSleepForm.endedAt
+          ? this.editSleepEndChanged ? asIso(this.editSleepForm.endedAt) : this.editingSleep.endedAt
+          : null,
+        kind: this.editSleepForm.kind, notes: this.editSleepForm.notes, details: this.editSleepForm.details,
+      });
+      this.editingSleep = null;
+      await this.loadOperationalData(false);
+      this.showToast(this.language === 'es' ? 'Sueño actualizado' : 'Sleep updated');
+    } catch (error) {
+      this.inlineError = error instanceof Error
+        ? error.message
+        : this.language === 'es' ? 'No se pudo guardar.' : 'Could not save.';
+    }
+    finally { this.editSleepBusy = false; }
+  }
+
+  private async deleteSleepEditor(): Promise<void> {
+    if (!this.editingSleep) return;
+    const automatic = this.editingSleep.source !== 'manual';
+    const confirmation = this.language === 'es'
+      ? automatic
+        ? '¿Eliminar este segmento detectado automáticamente? Las capturas y sus análisis se conservarán.'
+        : '¿Eliminar este registro de sueño? Las capturas se conservarán.'
+      : automatic
+        ? 'Delete this automatically detected segment? Captures and model analyses will be preserved.'
+        : 'Delete this sleep record? Captures will be preserved.';
+    if (!window.confirm(confirmation)) return;
+    this.editSleepBusy = true;
+    try {
+      await api.deleteSleep(this.editingSleep.id);
+      this.editingSleep = null;
+      await this.loadOperationalData(false);
+      this.showToast(this.language === 'es'
+        ? 'Segmento eliminado; las capturas se conservan'
+        : 'Segment deleted; captures preserved');
+    } catch (error) {
+      this.inlineError = error instanceof Error
+        ? error.message
+        : this.language === 'es' ? 'No se pudo eliminar.' : 'Could not delete.';
+    }
+    finally { this.editSleepBusy = false; }
+  }
+
+  private async openTemporalPicker(target: TemporalTarget, value: string, title: string): Promise<void> {
+    const fallback = localDateTime(new Date());
+    const parsed = value ? new Date(value) : new Date(fallback);
+    this.temporalPicker = {
+      target,
+      value: Number.isFinite(parsed.getTime()) ? localDateTime(parsed) : fallback,
+      title,
+    };
+    await this.updateComplete;
+    this.querySelectorAll('.temporal-option.active').forEach((element) => {
+      element.scrollIntoView({ block: 'center' });
+    });
+  }
+
+  private updateTemporalDate(days: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    date.setDate(date.getDate() + days);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private updateTemporalClock(part: 'hour' | 'minute', value: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    if (part === 'hour') date.setHours(value);
+    else date.setMinutes(value);
+    date.setSeconds(0, 0);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private adjustTemporal(minutes: number): void {
+    if (!this.temporalPicker) return;
+    const date = new Date(this.temporalPicker.value);
+    date.setMinutes(date.getMinutes() + minutes);
+    this.temporalPicker = { ...this.temporalPicker, value: localDateTime(date) };
+  }
+
+  private applyTemporalPicker(): void {
+    if (!this.temporalPicker) return;
+    const { target, value } = this.temporalPicker;
+    let reloadFrameReview = false;
+    if (target === 'manual-start') this.manualForm = { ...this.manualForm, startedAt: value };
+    else if (target === 'manual-end') {
+      this.manualForm = { ...this.manualForm, endedAt: value };
+      this.manualEndTouched = true;
+    } else if (target === 'edit-start') {
+      this.editSleepForm = { ...this.editSleepForm, startedAt: value };
+      this.editSleepFrameBounds = {
+        startedAt: asIso(value),
+        endedAt: this.editSleepFrameBounds?.endedAt ?? this.editingSleep?.endedAt ?? new Date().toISOString(),
+      };
+      this.editSleepStartChanged = true;
+      reloadFrameReview = true;
+    } else if (target === 'edit-end') {
+      this.editSleepForm = { ...this.editSleepForm, endedAt: value };
+      this.editSleepFrameBounds = {
+        startedAt: this.editSleepFrameBounds?.startedAt ?? this.editingSleep?.startedAt ?? asIso(this.editSleepForm.startedAt),
+        endedAt: asIso(value),
+      };
+      this.editSleepEndChanged = true;
+      reloadFrameReview = true;
+    }
+    else {
+      const match = target.match(/^(manual|edit)-pause-(start|end)-(\d+)$/);
+      if (match) {
+        const [, scope, edge, rawIndex] = match;
+        const index = Number(rawIndex);
+        const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+        const pauses = form.details.pauses.map((pause, pauseIndex) => pauseIndex === index
+          ? { ...pause, [edge === 'start' ? 'startedAt' : 'endedAt']: asIso(value) }
+          : pause);
+        if (scope === 'manual') {
+          this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, pauses } };
+        } else {
+          this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, pauses } };
+        }
+      }
+    }
+    this.temporalPicker = null;
+    if (reloadFrameReview) void this.loadFrameReview('start');
+  }
+
+  private setManualKind(kind: SleepKind): void {
+    const suggestion = this.suggestedEnd(this.manualForm.startedAt, kind);
+    this.manualForm = {
+      ...this.manualForm,
+      kind,
+      endedAt: this.manualEndTouched ? this.manualForm.endedAt : '',
+      details: kind === 'awake' ? EMPTY_DETAILS() : this.manualForm.details,
+    };
+    if (kind === 'awake' && !this.manualForm.endedAt) {
+      this.manualForm = { ...this.manualForm, endedAt: suggestion };
+    }
+  }
+
+  private toggleDetailTag(scope: 'manual' | 'edit', tag: string): void {
+    const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+    const tags = form.details.tags.includes(tag)
+      ? form.details.tags.filter((item) => item !== tag)
+      : [...form.details.tags, tag];
+    if (scope === 'manual') {
+      this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, tags } };
+    } else {
+      this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, tags } };
+    }
+  }
+
+  private addPause(scope: 'manual' | 'edit'): void {
+    const form = scope === 'manual' ? this.manualForm : this.editSleepForm;
+    const start = new Date(form.startedAt);
+    const endValue = form.endedAt || (scope === 'manual' ? this.suggestedEnd(form.startedAt, form.kind) : '');
+    const end = new Date(endValue);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+      this.inlineError = 'Elige primero un inicio y un fin para añadir la pausa.';
+      return;
+    }
+    if (end.getTime() - start.getTime() < 20 * 60_000) {
+      this.inlineError = 'El tramo es demasiado corto para añadir una pausa.';
+      return;
+    }
+    const middle = new Date((start.getTime() + end.getTime()) / 2);
+    const pause: SleepPause = {
+      startedAt: new Date(middle.getTime() - 5 * 60_000).toISOString(),
+      endedAt: new Date(middle.getTime() + 5 * 60_000).toISOString(),
+    };
+    const pauses = [...form.details.pauses, pause];
+    if (scope === 'manual') {
+      this.manualForm = { ...this.manualForm, details: { ...this.manualForm.details, pauses } };
+    } else {
+      this.editSleepForm = { ...this.editSleepForm, details: { ...this.editSleepForm.details, pauses } };
+    }
+    this.inlineError = '';
+  }
+
+  private removePause(scope: 'manual' | 'edit', index: number): void {
+    if (scope === 'manual') {
+      this.manualForm = {
+        ...this.manualForm,
+        details: { ...this.manualForm.details, pauses: this.manualForm.details.pauses.filter((_, item) => item !== index) },
+      };
+    } else {
+      this.editSleepForm = {
+        ...this.editSleepForm,
+        details: { ...this.editSleepForm.details, pauses: this.editSleepForm.details.pauses.filter((_, item) => item !== index) },
+      };
+    }
+  }
+
+  private reviewPointDate(point: 'start' | 'middle' | 'end'): Date | null {
+    const range = this.frameReviewRange();
+    if (!range) return null;
+    const { start, end } = range;
+    if (point === 'start') return start;
+    if (point === 'end') return end;
+    return new Date((start.getTime() + end.getTime()) / 2);
+  }
+
+  private frameReviewRange(): { start: Date; end: Date } | null {
+    const manualBounds = this.frameReviewContext === 'inferred-awake'
+      ? this.manualFrameReviewBounds
+      : null;
+    const start = new Date(manualBounds?.startedAt ?? this.editSleepFrameBounds?.startedAt ?? this.editSleepForm.startedAt);
+    const configuredEnd = manualBounds?.endedAt
+      ? new Date(manualBounds.endedAt)
+      : this.editSleepFrameBounds?.endedAt
+        ? new Date(this.editSleepFrameBounds.endedAt)
+        : this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : new Date();
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(configuredEnd.getTime()) || configuredEnd <= start) {
+      return null;
+    }
+    return { start, end: configuredEnd };
+  }
+
+  private frameIndexForPoint(frames: FrameRecord[], point: 'start' | 'middle' | 'end'): number {
+    if (!frames.length) return 0;
+    if (point === 'start') return 0;
+    if (point === 'end') return frames.length - 1;
+    const requested = this.reviewPointDate(point);
+    if (!requested) return 0;
+    return frames.reduce((closest, frame, index) => {
+      const currentDistance = Math.abs(new Date(frame.capturedAt).getTime() - requested.getTime());
+      const closestDistance = Math.abs(new Date(frames[closest].capturedAt).getTime() - requested.getTime());
+      return currentDistance < closestDistance ? index : closest;
+    }, 0);
+  }
+
+  private selectFrameReviewPoint(point: 'start' | 'middle' | 'end'): void {
+    if (!this.frameReview.frames.length) {
+      void this.loadFrameReview(point);
+      return;
+    }
+    const requested = this.reviewPointDate(point);
+    this.frameReview = {
+      ...this.frameReview,
+      point,
+      index: this.frameIndexForPoint(this.frameReview.frames, point),
+      requestedAt: requested?.toISOString() ?? '',
+    };
+  }
+
+  private async loadFrameReview(point: 'start' | 'middle' | 'end'): Promise<void> {
+    const requestId = ++this.frameReviewRequest;
+    const context = this.frameReviewContext;
+    const range = this.frameReviewRange();
+    const requested = this.reviewPointDate(point);
+    if (!range || !requested) {
+      this.frameReview = {
+        point,
+        frames: [],
+        index: 0,
+        loading: false,
+        error: this.language === 'es'
+          ? 'Elige un inicio y un fin válidos para revisar las capturas.'
+          : 'Choose a valid start and end to review captures.',
+        requestedAt: '',
+      };
+      return;
+    }
+    const editingId = context === 'edit' ? this.editingSleep?.id : undefined;
+    // Keep the original ISO strings here. Converting through JavaScript Date
+    // truncates SQLite's microseconds to milliseconds and can drop a capture
+    // whose timestamp is exactly equal to the segment boundary.
+    const rangeStart = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.startedAt ?? range.start.toISOString()
+      : this.editSleepFrameBounds?.startedAt ?? range.start.toISOString();
+    const rangeEnd = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.endedAt ?? range.end.toISOString()
+      : this.editSleepFrameBounds?.endedAt ?? range.end.toISOString();
+    const locationId = context === 'inferred-awake'
+      ? this.manualFrameReviewBounds?.locationId ?? undefined
+      : this.editingSleep?.locationId;
+    this.frameReview = { point, frames: [], index: 0, loading: true, error: '', requestedAt: requested.toISOString() };
+    try {
+      const frames = await api.getFramesBetween(
+        rangeStart,
+        rangeEnd,
+        locationId,
+      );
+      if (
+        this.frameReviewContext !== context
+        || (context === 'edit' && this.editingSleep?.id !== editingId)
+        || requestId !== this.frameReviewRequest
+      ) return;
+      this.frameReview = {
+        point,
+        frames,
+        index: this.frameIndexForPoint(frames, point),
+        loading: false,
+        error: '',
+        requestedAt: requested.toISOString(),
+      };
+    } catch (error) {
+      this.frameReview = {
+        point, frames: [], index: 0, loading: false,
+        error: error instanceof Error ? error.message : 'No se pudo cargar el frame.',
+        requestedAt: requested.toISOString(),
+      };
+    }
+  }
+
+  private stepFrameReview(direction: number): void {
+    const index = Math.max(0, Math.min(this.frameReview.frames.length - 1, this.frameReview.index + direction));
+    this.frameReview = { ...this.frameReview, index };
+  }
+
+  private selectFrameReviewIndex(index: number): void {
+    const bounded = Math.max(0, Math.min(this.frameReview.frames.length - 1, index));
+    this.frameReview = { ...this.frameReview, index: bounded };
+  }
+
+  private isHomeAssistantContext(): boolean {
+    const path = window.location.pathname;
+    return window.self !== window.top || path.startsWith('/baby-monitor-proxy/') || path.includes('/api/hassio_ingress/');
+  }
+
+  private returnToHomeAssistant(): void {
+    const home = new URL('/', window.location.origin).href;
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.assign(home);
+        return;
+      }
+    } catch {
+      // A Home Assistant iframe can be cross-origin. The click still has a
+      // safe same-origin fallback below.
+    }
+    window.location.assign(home);
   }
 
   private async loadHistoryTransfer(): Promise<void> {
@@ -440,6 +1226,9 @@ export class BabyMonitorApp extends LitElement {
         && (!settings.cry.audioStreamUrlConfigured || this.pendingSecretClears.includes('cry_audio_stream_url'))) {
         return this.t('requiredCryStream');
       }
+      if (settings.notifications.recipients.some((recipient) => !recipient.notifyService.startsWith('notify.'))) {
+        return this.t('requiredNotificationDevice');
+      }
     }
     if (stage === 2 || stage === 'all') {
       if (settings.ai.provider !== 'disabled' && !settings.ai.model?.trim()) return this.t('requiredModel');
@@ -500,7 +1289,7 @@ export class BabyMonitorApp extends LitElement {
       this.showToast(this.t('saved'));
       if (finishOnboarding) {
         this.onboarding = false;
-        this.page = 'dashboard';
+        this.page = 'sleep';
         await this.loadOperationalData(true);
       }
     } catch (caught) {
@@ -536,6 +1325,10 @@ export class BabyMonitorApp extends LitElement {
       const frame = await api.refreshSnapshot();
       this.summary = { ...this.summary, latestFrame: frame, updatedAt: new Date().toISOString() };
       this.frames = [frame, ...this.frames.filter((item) => item.id !== frame.id)];
+      // Labeling the new frame can open or close a sleep event. Refresh the
+      // complete operational state immediately instead of leaving the card and
+      // rhythm stale until the next 30-second poll.
+      await this.loadOperationalData(false);
       return frame;
     } catch (error) {
       this.showToast(error instanceof Error ? error.message : this.t('liveUnavailable'), 'error');
@@ -556,6 +1349,7 @@ export class BabyMonitorApp extends LitElement {
       const labeled = await api.labelFrame(source.id);
       this.summary = { ...this.summary, latestFrame: labeled, updatedAt: new Date().toISOString() };
       this.frames = [labeled, ...this.frames.filter((item) => item.id !== labeled.id)];
+      await this.loadOperationalData(false);
       this.showToast(this.t('imageLabeled'));
     } catch (error) {
       this.showToast(error instanceof Error ? error.message : this.t('testFailed'), 'error');
@@ -585,21 +1379,29 @@ export class BabyMonitorApp extends LitElement {
 
   private async addManualSleep(): Promise<void> {
     const start = new Date(this.manualForm.startedAt);
-    const end = new Date(this.manualForm.endedAt);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    const end = this.manualForm.endedAt ? new Date(this.manualForm.endedAt) : null;
+    if (Number.isNaN(start.getTime()) || (end && (Number.isNaN(end.getTime()) || end <= start))) {
       this.inlineError = this.t('invalidSleepRange');
+      return;
+    }
+    if (this.manualForm.kind === 'awake' && !end) {
+      this.inlineError = this.language === 'es'
+        ? 'Los despertares necesitan una hora de fin.'
+        : 'Awake periods need an end time.';
       return;
     }
     this.sleepBusy = 'add';
     try {
-      await api.addManualSleep({
+      const created = await api.addManualSleep({
         startedAt: asIso(this.manualForm.startedAt),
-        endedAt: asIso(this.manualForm.endedAt),
+        endedAt: this.manualForm.endedAt ? asIso(this.manualForm.endedAt) : null,
         kind: this.manualForm.kind,
         notes: this.manualForm.notes,
+        details: this.manualForm.details,
       });
-      this.manualOpen = false;
-      this.showToast(this.t('sleepAdded'));
+      this.closeManualForm();
+      if (!created.endedAt && created.source === 'manual') this.openActiveSleepOverlay(created);
+      this.showToast(created.endedAt ? this.t('sleepAdded') : this.t('sleepStarted'));
       await this.loadOperationalData(false);
     } catch (error) {
       this.inlineError = error instanceof Error ? error.message : this.t('saveError');
@@ -724,13 +1526,6 @@ export class BabyMonitorApp extends LitElement {
     URL.revokeObjectURL(url);
   }
 
-  private period(): TranslationKey {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'periodMorning';
-    if (hour < 19) return 'periodAfternoon';
-    return 'periodEvening';
-  }
-
   private currentSleep(): SleepEvent | null {
     return this.summary.currentSleep ?? this.sleepEvents.find((event) => !event.endedAt) ?? null;
   }
@@ -745,19 +1540,38 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderHeader(): TemplateResult {
-    const nav: Array<[AppPage, TranslationKey, 'moon' | 'history' | 'settings']> = [
-      ['dashboard', 'navDashboard', 'moon'], ['history', 'navHistory', 'history'], ['settings', 'navSettings', 'settings'],
+    const nav: Array<{ page?: AppPage; label: TranslationKey; itemIcon: IconName; add?: boolean }> = [
+      { page: 'sleep', label: 'navDashboard', itemIcon: 'home' },
+      { page: 'data', label: 'navStatistics', itemIcon: 'history' },
+      { label: 'navAdd', itemIcon: 'plus', add: true },
+      { page: 'camera', label: 'navCamera', itemIcon: 'camera' },
+      { page: 'settings', label: 'navSettings', itemIcon: 'settings' },
     ];
+    const inHomeAssistant = this.isHomeAssistantContext();
     return html`
       <header class="app-header">
-        <a class="brand" href="#main" @click=${(event: Event) => event.preventDefault()}>
-          <span class="brand-mark">${icon('baby', 22)}</span>
-          <span><strong>${this.t('brand')}</strong><small>${this.t('brandSuffix')}</small></span>
-        </a>
+        <div class="brand-cluster">
+          ${inHomeAssistant ? html`
+            <button class="ha-exit" type="button" aria-label=${this.t('returnHomeAssistant')} title=${this.t('returnHomeAssistant')} @click=${() => this.returnToHomeAssistant()}>
+              ${icon('chevron', 19)}<span>Home Assistant</span>
+            </button>
+          ` : nothing}
+          <a class="brand" href="#main" @click=${(event: Event) => event.preventDefault()}>
+            <span class="brand-mark">${icon('baby', 22)}</span>
+            <span><strong>${this.t('brand')}</strong><small>${this.t('brandSuffix')}</small></span>
+          </a>
+        </div>
         <nav class="primary-nav" aria-label="Primary">
-          ${nav.map(([page, label, itemIcon]) => html`
-            <button class=${this.page === page ? 'active' : ''} @click=${() => this.setPage(page)} aria-current=${this.page === page ? 'page' : nothing}>
-              ${icon(itemIcon, 18)}<span>${this.t(label)}</span>
+          ${nav.map(({ page, label, itemIcon, add }) => html`
+            <button
+              class=${`${page && this.page === page ? 'active' : ''}${add ? ' nav-add' : ''}`}
+              @click=${() => add ? this.openManualForm() : page && this.setPage(page)}
+              aria-current=${page && this.page === page ? 'page' : nothing}
+              aria-label=${this.t(label)}
+              aria-haspopup=${add ? 'dialog' : nothing}
+              aria-expanded=${add ? String(this.manualOpen) : nothing}
+            >
+              ${icon(itemIcon, add ? 22 : 18)}<span>${this.t(label)}</span>
             </button>
           `)}
         </nav>
@@ -877,18 +1691,9 @@ export class BabyMonitorApp extends LitElement {
     const current = this.currentSleep();
     const sleeping = Boolean(current) || this.summary.state === 'sleeping';
     const stateKey: TranslationKey = sleeping ? 'sleeping' : this.summary.state === 'awake' ? 'awake' : 'unknown';
-    const name = this.settings.baby.name || this.t('dashboardFallbackName');
     return html`
       <main class="page dashboard-page" id="main">
-        <section class="dashboard-heading">
-          <div>
-            <span class="eyebrow">${this.t('nurseryNow')}</span>
-            <h1>${this.t('dashboardHello', { period: this.t(this.period()), name })}</h1>
-          </div>
-          <button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
-            <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span>
-          </button>
-        </section>
+        ${this.renderDailyRhythm()}
 
         <section class="now-grid">
           <article class=${`sleep-scene ${sleeping ? 'sleeping' : 'awake'}`}>
@@ -937,11 +1742,9 @@ export class BabyMonitorApp extends LitElement {
         <section class="recent-section">
           <div class="section-heading">
             <div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('sleepTimeline')}</h2></div>
-            <button class="text-button" @click=${() => this.setPage('history')}>${this.t('viewRhythm')} ${icon('chevron', 15)}</button>
+            <button class="text-button" @click=${() => this.setPage('data')}>${this.t('viewRhythm')} ${icon('chevron', 15)}</button>
           </div>
           ${this.renderSleepList(this.sleepEvents.slice(0, 4))}
-          <button class="button secondary full-mobile" @click=${() => { this.manualOpen = !this.manualOpen; }}>${icon('plus', 17)} ${this.t('manualTitle')}</button>
-          ${this.manualOpen ? this.renderManualForm() : nothing}
         </section>
       </main>
     `;
@@ -959,20 +1762,31 @@ export class BabyMonitorApp extends LitElement {
       `;
     }
     const frame = this.summary.latestFrame;
-    const imageUrl = this.liveView ? api.liveCameraUrl() : frame?.imageUrl;
+    const liveStatus = this.liveTransport === 'webrtc'
+      ? 'liveLowLatency'
+      : this.liveTransport === 'mjpeg'
+        ? 'liveFallback'
+        : 'liveConnecting';
     return html`
       <article class="camera-card">
         <div class="camera-visual">
-          ${imageUrl
-            ? html`<img src=${imageUrl} alt=${this.t('imageAlt')} @error=${() => { if (this.liveView) { this.liveView = false; this.showToast(this.t('liveUnavailable'), 'error'); } }}>`
+          ${frame?.imageUrl
+            ? html`<img class="camera-live-poster" src=${frame.imageUrl} alt=${this.t('imageAlt')}>`
             : html`<div class="camera-placeholder">${icon('camera', 34)}<span>${this.t('cameraRefreshing')}</span></div>`}
+          ${this.liveView
+            ? this.liveTransport === 'mjpeg'
+              ? html`<img class="camera-live-stream" src=${api.liveCameraUrl()} alt=${this.t('imageAlt')} @error=${() => { this.stopLiveView(); this.showToast(this.t('liveUnavailable'), 'error'); }}>`
+              : html`<video class=${`camera-live-video ${this.liveTransport === 'webrtc' ? 'ready' : ''}`} autoplay muted playsinline aria-label=${this.t('imageAlt')} @playing=${() => this.handleWebRtcPlaying()}></video>`
+            : nothing}
           <div class="camera-overlay">
             <span class=${this.liveView ? 'live-badge active' : 'live-badge'}>${this.liveView ? html`<i></i> LIVE` : this.t('snapshot')}</span>
-            ${frame ? html`<small>${formatRelative(frame.capturedAt, this.language)}</small>` : nothing}
+            ${this.liveView
+              ? html`<small>${this.t(liveStatus)}</small>`
+              : frame ? html`<small>${formatRelative(frame.capturedAt, this.language)}</small>` : nothing}
           </div>
         </div>
         <div class="camera-body">
-          <div class="camera-heading"><div><span>${this.t('cameraTitle')}</span><strong>${frame ? this.t('latestCapture', { time: formatClock(frame.capturedAt, this.language) }) : this.t('noVisionLabel')}</strong></div></div>
+          <div class="camera-heading"><div><span>${this.t('cameraTitle')}</span><strong>${this.liveView ? this.t(liveStatus) : frame ? this.t('latestCapture', { time: formatClock(frame.capturedAt, this.language) }) : this.t('noVisionLabel')}</strong></div></div>
           ${frame?.label ? html`
             <div class="vision-observation">
               <span>${icon('sparkle', 17)}</span>
@@ -984,7 +1798,7 @@ export class BabyMonitorApp extends LitElement {
             <button class="button compact secondary" ?disabled=${Boolean(this.cameraBusy)} @click=${() => this.refreshSnapshot()}>
               ${this.cameraBusy === 'snapshot' ? html`<span class="spinner"></span>` : icon('camera', 16)} ${this.t('snapshot')}
             </button>
-            <button class=${`button compact ${this.liveView ? 'active' : 'secondary'}`} @click=${() => { this.liveView = !this.liveView; }}>
+            <button class=${`button compact ${this.liveView ? 'active' : 'secondary'}`} @click=${() => { void this.toggleLiveView(); }}>
               ${icon('eye', 16)} ${this.t(this.liveView ? 'stopLive' : 'live')}
             </button>
             <button class="button compact secondary" ?disabled=${Boolean(this.cameraBusy)} @click=${() => this.labelSnapshot()}>
@@ -996,12 +1810,46 @@ export class BabyMonitorApp extends LitElement {
     `;
   }
 
+  private renderCamera(): TemplateResult {
+    return html`
+      <main class="page camera-page" id="main">
+        <section class="page-heading">
+          <div><span class="eyebrow">${this.t('navCamera')}</span><h1>${this.t('cameraPageTitle')}</h1><p>${this.t('cameraPageIntro')}</p></div>
+          <button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
+            <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span>
+          </button>
+        </section>
+        <section class="camera-focus-grid">
+          ${this.renderCameraCard()}
+          <div class="camera-signals">
+            <article class=${`signal-card ${this.summary.cryActive ? 'alert' : ''}`}>
+              <span class="signal-icon">${icon('waves', 20)}</span>
+              <div><span>${this.t('cryStatus')}</span><strong>${this.health?.background.errors.cry ? this.t('monitorAttention') : this.settings.cry.mode === 'disabled' ? this.t('cryDisabled') : this.summary.cryActive ? this.t('cryActive') : this.t('allQuiet')}</strong></div>
+              <small>${this.summary.lastCryAt ? this.t('lastCry', { time: formatRelative(this.summary.lastCryAt, this.language) }) : '—'}</small>
+            </article>
+            <article class="signal-card">
+              <span class="signal-icon">${icon('sparkle', 20)}</span>
+              <div><span>${this.t('visionLabel')}</span><strong>${this.summary.latestFrame?.label?.description || this.t('noVisionLabel')}</strong></div>
+              <small>${this.summary.latestFrame ? formatRelative(this.summary.latestFrame.capturedAt, this.language) : '—'}</small>
+            </article>
+          </div>
+        </section>
+        <section class="frame-section camera-moments">
+          <div class="section-heading"><div><span class="eyebrow">${this.t('recentRhythm')}</span><h2>${this.t('imageTimeline')}</h2></div><button class="text-button" @click=${() => this.setPage('data')}>${this.t('navStatistics')} ${icon('chevron', 15)}</button></div>
+          ${this.frames.length ? html`<div class="frame-grid">${this.frames.slice(0, 12).map((frame) => this.renderFrame(frame))}</div>` : html`<div class="empty-state">${icon('camera', 26)}<p>${this.t('noFrames')}</p></div>`}
+        </section>
+      </main>
+    `;
+  }
+
   private renderNightRibbon(): TemplateResult {
     const now = Date.now();
     const duration = 12 * 60 * 60_000;
     const start = now - duration;
     const percent = (value: number): number => Math.max(0, Math.min(100, ((value - start) / duration) * 100));
-    const sleeps = this.sleepEvents.filter((event) => new Date(event.endedAt ?? now).getTime() >= start && new Date(event.startedAt).getTime() <= now);
+    const sleeps = this.sleepEvents.filter((event) => event.kind !== 'awake'
+      && new Date(event.endedAt ?? now).getTime() >= start
+      && new Date(event.startedAt).getTime() <= now);
     const cries = this.cryEvents.filter((event) => new Date(event.detectedAt).getTime() >= start);
     const frames = this.frames.filter((frame) => new Date(frame.capturedAt).getTime() >= start).slice(0, 18);
     return html`
@@ -1010,7 +1858,7 @@ export class BabyMonitorApp extends LitElement {
           <div><span>${icon('moon', 18)} ${this.t('nightRibbon')}</span><small>${this.t('nightRibbonHint')}</small></div>
           <div class="ribbon-legend"><span class="sleep-dot">${this.t('ribbonSleep')}</span><span class="cry-dot">${this.t('ribbonCry')}</span><span class="frame-dot">${this.t('ribbonFrame')}</span></div>
         </div>
-        <button class="ribbon-track" @click=${() => this.setPage('history')} aria-label=${this.t('viewRhythm')}>
+        <button class="ribbon-track" @click=${() => this.setPage('data')} aria-label=${this.t('viewRhythm')}>
           <span class="ribbon-midline"></span>
           ${sleeps.map((event) => {
             const left = percent(new Date(event.startedAt).getTime());
@@ -1033,49 +1881,127 @@ export class BabyMonitorApp extends LitElement {
 
   private rhythmDayKeys(): string[] {
     const today = localDateKey(new Date());
-    const firstOffset = this.rhythmDate === today ? -6 : -3;
-    return Array.from({ length: 7 }, (_, index) => shiftDateKey(this.rhythmDate, firstOffset + index));
+    const tomorrow = shiftDateKey(today, 1);
+    if (this.rhythmDate >= today) {
+      return Array.from({ length: 7 }, (_, index) => shiftDateKey(tomorrow, index - 6));
+    }
+    return Array.from({ length: 7 }, (_, index) => shiftDateKey(this.rhythmDate, index - 3));
   }
 
   private moveRhythmDate(days: number): void {
     const today = localDateKey(new Date());
+    const tomorrow = shiftDateKey(today, 1);
     const next = shiftDateKey(this.rhythmDate, days);
-    this.rhythmDate = next > today ? today : next;
+    this.rhythmDate = next > tomorrow ? tomorrow : next;
+  }
+
+  private rhythmMarkerSegments(segments: RhythmSegment[]): RhythmSegment[] {
+    const eventIds = new Set<string>();
+    const candidates = segments.filter((item) => {
+      const midpoint = (item.startRatio + item.endRatio) / 2;
+      if (midpoint < 0.055 || midpoint > 0.945) return false;
+      if (item.predicted || item.type === 'awake' || !item.event) return true;
+      if (eventIds.has(item.event.id)) return false;
+      eventIds.add(item.event.id);
+      return true;
+    }).sort((a, b) => ((a.startRatio + a.endRatio) - (b.startRatio + b.endRatio)));
+    const visible: RhythmSegment[] = [];
+    for (const item of candidates) {
+      const midpoint = (item.startRatio + item.endRatio) / 2;
+      const previous = visible.at(-1);
+      const previousMidpoint = previous ? (previous.startRatio + previous.endRatio) / 2 : -1;
+      if (previous && midpoint - previousMidpoint < 0.052) {
+        if (item.type === 'awake' && previous.type !== 'awake') visible[visible.length - 1] = item;
+        continue;
+      }
+      visible.push(item);
+    }
+    return visible;
+  }
+
+  private openRhythmSegment(segment: RhythmSegment): void {
+    if (segment.prediction) {
+      this.selectedPrediction = segment.prediction;
+      return;
+    }
+    if (segment.event) {
+      if (!segment.event.endedAt && segment.event.source === 'manual') {
+        this.openActiveSleepOverlay(segment.event);
+        return;
+      }
+      this.openSleepEditor(segment.event);
+      return;
+    }
+    if (segment.type !== 'awake') return;
+    this.inlineError = '';
+    this.manualForm = {
+      startedAt: localDateTime(segment.start),
+      endedAt: localDateTime(segment.end),
+      kind: 'awake',
+      notes: '',
+      details: EMPTY_DETAILS(),
+    };
+    this.frameReviewContext = 'inferred-awake';
+    this.manualFrameReviewBounds = {
+      startedAt: segment.evidenceStartedAt,
+      endedAt: segment.evidenceEndedAt,
+      locationId: segment.locationId,
+    };
+    this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
+    this.manualEndTouched = true;
+    this.manualOpen = true;
+    void this.loadFrameReview('start');
   }
 
   private renderDailyRhythm(): TemplateResult {
     const today = localDateKey(new Date());
-    const model = buildRhythmModel(this.sleepEvents, this.rhythmDate, this.rhythmMode);
+    const tomorrow = shiftDateKey(today, 1);
+    const model = buildRhythmModel(this.sleepEvents, this.rhythmDate, this.rhythmMode, new Date(), this.sleepPlan);
     const selectedDate = this.rhythmDateValue(this.rhythmDate);
     const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
     const titleDate = new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selectedDate);
     const coreDate = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric' }).format(selectedDate);
     const dayKeys = this.rhythmDayKeys();
-    const napCount = model.segments.filter((segment) => segment.event.kind !== 'night').length;
-    const nightCount = model.segments.filter((segment) => segment.event.kind === 'night').length;
+    const napCount = new Set(model.sleepSegments.filter((segment) => segment.type === 'nap').map((segment) => segment.event?.id ?? segment.id)).size;
+    const nightCount = new Set(model.sleepSegments.filter((segment) => segment.type === 'night').map((segment) => segment.event?.id ?? segment.id)).size;
     const averageNap = napCount ? Math.round(model.napMinutes / napCount) : 0;
     const lastDay = dayKeys.at(-1) ?? this.rhythmDate;
+    const markerSegments = this.rhythmMarkerSegments(model.segments);
+    const startPosition = rhythmPosition(0);
+    const endPosition = rhythmPosition(1);
+    const midnightInner = model.midnightRatio == null ? null : rhythmSvgPoint(model.midnightRatio, 88);
+    const midnightOuter = model.midnightRatio == null ? null : rhythmSvgPoint(model.midnightRatio, 145);
+    const forecasts = [...new Map(model.predictedSegments
+      .filter((segment) => segment.prediction)
+      .map((segment) => [segment.prediction!.recommendedStart, segment.prediction!])).values()];
+    const recordedCount = new Set(model.sleepSegments.map((segment) => segment.event?.id ?? segment.id)).size;
+    const babyName = this.settings.baby.name.trim();
+    const rhythmContext = `${babyName ? `${babyName} · ` : ''}${this.t(this.rhythmMode === 'night' ? 'rhythmNight' : 'rhythmDay')}`;
 
     return html`
       <section class=${`rhythm-visual-card ${this.rhythmMode}`} aria-label=${this.t('rhythmVisualTitle')}>
         <header class="rhythm-visual-head">
           <div>
-            <span class="eyebrow">${this.t(this.rhythmMode === 'night' ? 'rhythmNight' : 'rhythmDay')}</span>
+            <span class="eyebrow rhythm-context">${rhythmContext}</span>
             <h2>${titleDate}</h2>
           </div>
           <div class="rhythm-date-nav">
             <button class="icon-button small rhythm-prev" aria-label=${this.t('rhythmPreviousDays')} @click=${() => this.moveRhythmDate(-7)}>${icon('chevron', 17)}</button>
             <button class="text-button rhythm-today" ?disabled=${this.rhythmDate === today} @click=${() => { this.rhythmDate = today; }}>${this.t('rhythmToday')}</button>
-            <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= today} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
+            <button class="icon-button small" aria-label=${this.t('rhythmNextDays')} ?disabled=${lastDay >= tomorrow} @click=${() => this.moveRhythmDate(7)}>${icon('chevron', 17)}</button>
+            <button class="icon-button small rhythm-refresh" title=${this.t('refreshData')} aria-label=${this.t('refreshData')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}>
+              <span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 16)}</span>
+            </button>
           </div>
         </header>
 
         <div class="rhythm-week" aria-label=${this.t('rhythmChooseDay')}>
           ${dayKeys.map((dateKey) => {
             const date = this.rhythmDateValue(dateKey);
-            const future = dateKey > today;
+            const future = dateKey > tomorrow;
             const selected = dateKey === this.rhythmDate;
             const isToday = dateKey === today;
+            const isTomorrow = dateKey === tomorrow;
             return html`
               <button
                 class=${`rhythm-day ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
@@ -1085,7 +2011,7 @@ export class BabyMonitorApp extends LitElement {
               >
                 <span>${new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(date)}</span>
                 <strong>${date.getDate()}</strong>
-                <small>${isToday ? this.t('rhythmToday') : new Intl.DateTimeFormat(locale, { month: 'short' }).format(date)}</small>
+                <small>${isToday ? this.t('rhythmToday') : isTomorrow ? (this.language === 'es' ? 'mañana' : 'tomorrow') : new Intl.DateTimeFormat(locale, { month: 'short' }).format(date)}</small>
               </button>
             `;
           })}
@@ -1094,24 +2020,36 @@ export class BabyMonitorApp extends LitElement {
         <div class="rhythm-orbit-wrap">
           <div class="rhythm-orbit" aria-label=${this.t('rhythmRecordedSleep', { duration: formatDuration(model.totalMinutes) })}>
             <svg class="rhythm-ring" viewBox="0 0 320 320" aria-hidden="true">
-              <circle class="rhythm-ring-track" cx="160" cy="160" r="122"></circle>
-              <circle class="rhythm-ring-inner" cx="160" cy="160" r="82"></circle>
-              <line class="rhythm-midnight-line" x1="160" y1="30" x2="160" y2="56"></line>
+              <path class="rhythm-ring-track" d=${rhythmTrackPath(122)}></path>
+              <path class="rhythm-ring-inner" d=${rhythmTrackPath(82)}></path>
+              ${midnightInner && midnightOuter ? svg`<line class="rhythm-midnight-line" x1=${midnightInner.x} y1=${midnightInner.y} x2=${midnightOuter.x} y2=${midnightOuter.y}></line>` : nothing}
               ${model.segments.map((segment) => svg`
                 <path
-                  class=${`rhythm-arc ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} ${segment.event.endedAt ? '' : 'ongoing'}`}
+                  class=${`rhythm-arc ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''} ${segment.event && !segment.event.endedAt ? 'ongoing' : ''}`}
                   d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
                 ></path>
+                ${segment.event || segment.prediction || segment.type === 'awake' ? svg`
+                  <path
+                    class="rhythm-hit"
+                    d=${rhythmArcPath(segment.startRatio, segment.endRatio)}
+                    @click=${() => this.openRhythmSegment(segment)}
+                  ></path>
+                ` : nothing}
               `)}
             </svg>
-            ${model.segments.map((segment) => {
+            ${markerSegments.map((segment) => {
               const position = rhythmMarkerPosition(segment);
-              const label = this.t(segment.event.kind === 'night' ? 'nightSleep' : 'nap');
-              const detail = `${label} · ${formatClock(segment.start.toISOString(), this.language)}–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`;
+              const showRecordedSleepDetails = !segment.predicted && segment.type !== 'awake';
+              const label = segment.predicted
+                ? this.language === 'es' ? segment.type === 'night' ? 'Sueño previsto' : 'Siesta prevista' : 'Predicted sleep'
+                : segment.type === 'awake' ? (this.language === 'es' ? 'Despertar por la noche' : 'Night waking') : this.t(segment.type === 'night' ? 'nightSleep' : 'nap');
+              const detail = `${label} · ${formatClock(segment.prediction?.recommendedStart ?? segment.start.toISOString(), this.language)}${segment.predicted ? ` · ${this.language === 'es' ? 'previsto' : 'predicted'}` : `–${formatClock(segment.end.toISOString(), this.language)} · ${formatDuration(segment.minutes)}`}`;
               return html`
-                <span class=${`rhythm-marker ${segment.event.kind === 'night' ? 'night-sleep' : 'nap'}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail}>
-                  ${icon('moon', 15)}
-                </span>
+                <button class=${`rhythm-marker ${segment.type === 'awake' ? 'awake' : segment.type === 'night' ? 'night-sleep' : 'nap'} ${segment.predicted ? 'predicted' : ''}`} style=${`--x:${position.x}%;--y:${position.y}%`} title=${detail} aria-label=${detail} @click=${() => this.openRhythmSegment(segment)}>
+                  ${showRecordedSleepDetails ? html`<span class="rhythm-marker-duration" aria-hidden="true">${formatDuration(segment.minutes)}</span>` : nothing}
+                  ${icon(segment.predicted ? 'sparkle' : segment.type === 'awake' ? 'waves' : 'moon', 15)}
+                  ${showRecordedSleepDetails ? html`<small class="rhythm-marker-start" aria-hidden="true">${formatClock(segment.start.toISOString(), this.language)}</small>` : nothing}
+                </button>
               `;
             })}
             <div class="rhythm-core">
@@ -1122,15 +2060,15 @@ export class BabyMonitorApp extends LitElement {
                 <button class=${this.rhythmMode === 'day' ? 'active' : ''} aria-pressed=${this.rhythmMode === 'day'} @click=${() => { this.rhythmMode = 'day'; }}>${icon('sun', 18)}<span>${this.t('rhythmDay')}</span></button>
               </div>
             </div>
-            <div class="rhythm-endpoint left"><span>${icon(this.rhythmMode === 'night' ? 'moon' : 'sun', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmBed' : 'rhythmWake')}</small><strong>${model.bedAt && this.rhythmMode === 'night' ? formatClock(model.bedAt.toISOString(), this.language) : model.wakeAt && this.rhythmMode === 'day' ? formatClock(model.wakeAt.toISOString(), this.language) : '—'}</strong></div>
-            <div class="rhythm-endpoint right"><span>${icon(this.rhythmMode === 'night' ? 'sun' : 'moon', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmWake' : 'rhythmBed')}</small><strong>${model.wakeAt && this.rhythmMode === 'night' ? formatClock(model.wakeAt.toISOString(), this.language) : model.bedAt && this.rhythmMode === 'day' ? formatClock(model.bedAt.toISOString(), this.language) : '—'}</strong></div>
+            <div class="rhythm-endpoint start" style=${`--x:${startPosition.x}%;--y:${startPosition.y}%`}><span>${icon(this.rhythmMode === 'night' ? 'moon' : 'sun', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmBed' : 'rhythmWake')}</small><strong>${model.bedAt && this.rhythmMode === 'night' ? formatClock(model.bedAt.toISOString(), this.language) : model.wakeAt && this.rhythmMode === 'day' ? formatClock(model.wakeAt.toISOString(), this.language) : '—'}${this.rhythmMode === 'night' ? model.bedPredicted ? ' · ~' : '' : model.wakePredicted ? ' · ~' : ''}</strong></div>
+            <div class="rhythm-endpoint end" style=${`--x:${endPosition.x}%;--y:${endPosition.y}%`}><span>${icon(this.rhythmMode === 'night' ? 'sun' : 'moon', 16)}</span><small>${this.t(this.rhythmMode === 'night' ? 'rhythmWake' : 'rhythmBed')}</small><strong>${model.wakeAt && this.rhythmMode === 'night' ? formatClock(model.wakeAt.toISOString(), this.language) : model.bedAt && this.rhythmMode === 'day' ? formatClock(model.bedAt.toISOString(), this.language) : '—'}${this.rhythmMode === 'night' ? model.wakePredicted ? ' · ~' : '' : model.bedPredicted ? ' · ~' : ''}</strong></div>
           </div>
         </div>
 
         <div class="rhythm-summary">
-          <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${model.segments.length}</b></div>
+          <div class="rhythm-total"><span>${icon('moon', 20)}</span><div><small>${this.t('rhythmTotal')}</small><strong>${model.totalMinutes ? formatDuration(model.totalMinutes) : this.t('rhythmNoSleep')}</strong></div><b>${recordedCount}</b></div>
           <div class="rhythm-duration-track" aria-hidden="true">
-            ${model.segments.map((segment) => html`<i class=${segment.event.kind === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
+            ${model.sleepSegments.map((segment) => html`<i class=${segment.type === 'night' ? 'night-sleep' : 'nap'} style=${`--width:${model.totalMinutes ? Math.max(4, segment.minutes / model.totalMinutes * 100) : 0}%`}></i>`)}
           </div>
           <div class="rhythm-stats">
             <div><span>${this.t('rhythmNaps')}</span><strong>${napCount} · ${formatDuration(model.napMinutes)}</strong></div>
@@ -1138,6 +2076,12 @@ export class BabyMonitorApp extends LitElement {
             <div><span>${this.t('rhythmAverageNap')}</span><strong>${formatDuration(averageNap)}</strong></div>
           </div>
         </div>
+        ${forecasts.length ? html`
+          <div class="rhythm-forecast" aria-label=${this.language === 'es' ? 'Sueño previsto' : 'Predicted sleep'}>
+            <div class="rhythm-forecast-heading"><span>${icon('sparkle', 17)}</span><div><strong>${this.language === 'es' ? 'Previsto por el modelo' : 'Model forecast'}</strong><small>${this.rhythmDate === tomorrow ? (this.language === 'es' ? 'Plan de mañana' : 'Tomorrow plan') : (this.language === 'es' ? 'Plan de hoy' : 'Today plan')}</small></div></div>
+            <div class="rhythm-forecast-list">${forecasts.map((target) => html`<button type="button" @click=${() => { this.selectedPrediction = target; }}><span>${icon(target.kind === 'night' ? 'moon' : 'sun', 17)}</span><div><strong>${this.language === 'es' ? target.kind === 'night' ? 'Sueño largo' : 'Siesta' : target.label}</strong><small>${formatClock(target.windowStart, this.language)}–${formatClock(target.windowEnd, this.language)}</small></div><b>${formatClock(target.recommendedStart, this.language)}</b>${icon('chevron', 14)}</button>`)}</div>
+          </div>
+        ` : nothing}
         ${!model.segments.length ? html`<p class="rhythm-empty">${this.t('rhythmEmptyHint')}</p>` : nothing}
       </section>
     `;
@@ -1147,52 +2091,616 @@ export class BabyMonitorApp extends LitElement {
     if (!events.length) return html`<div class="empty-state compact-empty">${icon('moon', 24)}<p>${this.t('noSleepEvents')}</p></div>`;
     return html`<div class="moment-list">${events.map((event) => html`
       <article class="moment-row">
-        <span class=${`moment-symbol ${event.endedAt ? '' : 'active'}`}>${icon(event.endedAt ? 'moon' : 'waves', 17)}</span>
-        <div class="moment-main"><strong>${this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)} · ${this.t('location')}: ${event.locationId}${event.notes ? ` · ${event.notes}` : ''}</small></div>
+        <span class=${`moment-symbol ${event.kind === 'awake' ? 'coral' : ''} ${event.endedAt ? '' : 'active'}`}>${icon(event.kind === 'awake' || !event.endedAt ? 'waves' : 'moon', 17)}</span>
+        <div class="moment-main"><strong>${event.kind === 'awake' ? (this.language === 'es' ? 'Despertar' : 'Awake') : this.t(event.kind === 'night' ? 'nightSleep' : event.kind === 'nap' ? 'nap' : 'unknownType')}</strong><small>${formatDateTime(event.startedAt, this.language)} · ${this.t('location')}: ${event.locationId}${event.notes ? ` · ${event.notes}` : ''}</small></div>
         <div class="moment-meta"><strong>${sleepDuration(event.startedAt, event.endedAt)}</strong><small>${event.endedAt ? this.t(event.source === 'vision' ? 'vision' : event.source === 'import' ? 'imported' : event.source === 'automatic' ? 'automatic' : 'manual') : this.t('ongoing')}</small></div>
       </article>
     `)}</div>`;
   }
 
-  private renderManualForm(): TemplateResult {
+  private renderTemporalButton(
+    label: string,
+    value: string,
+    target: TemporalTarget,
+    fallbackValue: string,
+    hint = '',
+  ): TemplateResult {
+    const date = value ? new Date(value) : null;
+    const valid = Boolean(date && Number.isFinite(date.getTime()));
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const dateLabel = valid && date
+      ? new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short' }).format(date)
+      : this.language === 'es' ? 'Sin finalizar' : 'Ongoing';
+    const timeLabel = valid && date
+      ? new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(date)
+      : '—';
     return html`
-      <form class="manual-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
-        <div class="form-heading"><div><h3>${this.t('manualTitle')}</h3><p>${this.t('manualHint')}</p></div><button type="button" class="icon-button small" aria-label=${this.t('dismiss')} @click=${() => { this.manualOpen = false; }}>&times;</button></div>
-        <div class="field-grid two">
-          <label class="field"><span>${this.t('startedAt')}</span><input type="datetime-local" .value=${this.manualForm.startedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, startedAt: inputValue(event) }; }} required></label>
-          <label class="field"><span>${this.t('endedAt')}</span><input type="datetime-local" .value=${this.manualForm.endedAt} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, endedAt: inputValue(event) }; }} required></label>
+      <button
+        class=${`sleep-time-card ${valid ? '' : 'open-ended'}`}
+        type="button"
+        @click=${() => this.openTemporalPicker(target, value || fallbackValue, label)}
+      >
+        <span>${label}</span>
+        <strong>${timeLabel}</strong>
+        <small>${dateLabel}${hint ? ` · ${hint}` : ''}</small>
+      </button>
+    `;
+  }
+
+  private renderDetailGroups(scope: 'manual' | 'edit', details: SleepEventDetails): TemplateResult {
+    return html`${DETAIL_GROUPS.map((group) => html`
+      <section class="sleep-detail-group">
+        <h4>${this.language === 'es' ? group.es : group.en}</h4>
+        <div class=${`sleep-detail-choices ${group.key === 'method' || group.key === 'mood' ? 'wide' : ''}`}>
+          ${group.options.map(([tag, emoji, es, en]) => html`
+            <button
+              type="button"
+              class=${details.tags.includes(tag) ? 'selected' : ''}
+              aria-pressed=${details.tags.includes(tag)}
+              @click=${() => this.toggleDetailTag(scope, tag)}
+            ><span>${emoji}</span><strong>${this.language === 'es' ? es : en}</strong></button>
+          `)}
         </div>
-        <div class="field-grid two">
-          <div class="field"><span>${this.t('sleepType')}</span>${this.renderChoiceRow([
-            ['nap', 'nap'], ['night', 'nightSleep'],
-          ], this.manualForm.kind, (value) => { this.manualForm = { ...this.manualForm, kind: value as SleepKind }; })}</div>
-          <label class="field"><span>${this.t('notes')}</span><input .value=${this.manualForm.notes} placeholder=${this.t('notesPlaceholder')} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></label>
+      </section>
+    `)}`;
+  }
+
+  private renderPauses(
+    scope: 'manual' | 'edit',
+    pauses: SleepPause[],
+  ): TemplateResult {
+    const label = this.language === 'es' ? 'Pausas despierto' : 'Awake pauses';
+    return html`
+      <section class="sleep-detail-group sleep-pause-group">
+        <div class="sleep-detail-heading"><h4>${label}</h4><button type="button" @click=${() => this.addPause(scope)}>${icon('plus', 15)} ${this.language === 'es' ? 'Añadir pausa' : 'Add pause'}</button></div>
+        ${pauses.length ? html`<div class="sleep-pause-list">${pauses.map((pause, index) => html`
+          <article class="sleep-pause-row">
+            <span>${icon('waves', 17)}</span>
+            <button type="button" @click=${() => this.openTemporalPicker(
+              `${scope}-pause-start-${index}` as TemporalTarget,
+              localDateTime(new Date(pause.startedAt)),
+              this.language === 'es' ? 'Inicio de la pausa' : 'Pause start',
+            )}><small>${this.language === 'es' ? 'Inicio' : 'Start'}</small><strong>${formatClock(pause.startedAt, this.language)}</strong></button>
+            <i>–</i>
+            <button type="button" @click=${() => this.openTemporalPicker(
+              `${scope}-pause-end-${index}` as TemporalTarget,
+              localDateTime(new Date(pause.endedAt)),
+              this.language === 'es' ? 'Fin de la pausa' : 'Pause end',
+            )}><small>${this.language === 'es' ? 'Fin' : 'End'}</small><strong>${formatClock(pause.endedAt, this.language)}</strong></button>
+            <button type="button" class="pause-remove" aria-label=${this.t('remove')} @click=${() => this.removePause(scope, index)}>&times;</button>
+          </article>
+        `)}</div>` : html`<p class="sleep-detail-empty">${this.language === 'es' ? 'Sin pausas dentro de este tramo.' : 'No awake pauses inside this segment.'}</p>`}
+      </section>
+    `;
+  }
+
+  private renderFrameReview(): TemplateResult {
+    const inferredAwake = this.frameReviewContext === 'inferred-awake';
+    const current = this.frameReview.frames[this.frameReview.index];
+    const requested = this.frameReview.requestedAt ? new Date(this.frameReview.requestedAt) : null;
+    const captured = current ? new Date(current.capturedAt) : null;
+    const delta = requested && captured
+      ? Math.round(Math.abs(captured.getTime() - requested.getTime()) / 60_000)
+      : null;
+    const humanValue = (value: string | boolean | null | string[]): string => {
+      if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
+      if (value == null || value === 'unknown') return this.language === 'es' ? 'Sin determinar' : 'Unknown';
+      if (typeof value === 'boolean') return value
+        ? (this.language === 'es' ? 'Sí' : 'Yes')
+        : (this.language === 'es' ? 'No' : 'No');
+      const labels: Record<string, [string, string]> = {
+        awake: ['Despierto', 'Awake'],
+        asleep: ['Dormido', 'Asleep'],
+        uncertain: ['Incierto', 'Uncertain'],
+        yes: ['Sí', 'Yes'],
+        no: ['No', 'No'],
+        left: ['Izquierda', 'Left'],
+        right: ['Derecha', 'Right'],
+        back: ['Boca arriba', 'On back'],
+        face_down: ['Boca abajo', 'Face down'],
+        crib: ['Cuna', 'Crib'],
+        family_bed: ['Cama familiar', 'Family bed'],
+        other: ['Otro lugar', 'Other place'],
+      };
+      return labels[value]?.[this.language === 'es' ? 0 : 1] ?? value.replaceAll('_', ' ');
+    };
+    const modelMetadata = current?.label ? [
+      [this.language === 'es' ? 'Proveedor' : 'Provider', current.provider || '—'],
+      [this.language === 'es' ? 'Modelo' : 'Model', current.model || '—'],
+      [this.language === 'es' ? 'Estado' : 'State', humanValue(current.label.state)],
+      [this.language === 'es' ? 'Confianza' : 'Confidence', `${Math.round(current.label.confidence * 100)}%`],
+      [this.language === 'es' ? 'Bebé presente' : 'Baby present', humanValue(current.label.babyPresent)],
+      [this.language === 'es' ? 'Zona de sueño' : 'Sleep surface', humanValue(current.label.sleepSurface)],
+      [this.language === 'es' ? 'Cara visible' : 'Face visible', humanValue(current.label.faceVisible)],
+      [this.language === 'es' ? 'Orientación de la cabeza' : 'Head side', humanValue(current.label.headSide)],
+      [this.language === 'es' ? 'Posición del cuerpo' : 'Body position', humanValue(current.label.bodyPosition)],
+      [this.language === 'es' ? 'Ropa' : 'Clothing', humanValue(current.label.clothingItems)],
+      [this.language === 'es' ? 'Chupete' : 'Pacifier', humanValue(current.label.pacifier)],
+      [this.language === 'es' ? 'Boca abierta' : 'Mouth open', humanValue(current.label.mouthOpen)],
+      [this.language === 'es' ? 'Etiquetas' : 'Tags', humanValue(current.label.tags)],
+    ] : [];
+    return html`
+      <section class="editor-frames">
+        <div class="editor-frames-heading">
+          <div>
+            <h4>${inferredAwake
+              ? (this.language === 'es' ? 'Frames del despertar nocturno' : 'Night waking frames')
+              : (this.language === 'es' ? 'Imágenes del segmento' : 'Images in this segment')}</h4>
+            ${inferredAwake && this.manualFrameReviewBounds ? html`<p>${this.language === 'es'
+              ? `Todas las capturas entre ${formatClock(this.manualFrameReviewBounds.startedAt, this.language)} y ${formatClock(this.manualFrameReviewBounds.endedAt, this.language)} para comprobar la detección.`
+              : `Every capture from ${formatClock(this.manualFrameReviewBounds.startedAt, this.language)} to ${formatClock(this.manualFrameReviewBounds.endedAt, this.language)} so you can verify the detection.`}</p>` : nothing}
+          </div>
+          ${this.frameReview.frames.length ? html`<span>${this.frameReview.frames.length} ${this.language === 'es' ? 'capturas' : 'captures'}</span>` : nothing}
         </div>
-        ${this.inlineError ? html`<div class="inline-error" role="alert">${this.inlineError}</div>` : nothing}
-        <div class="form-actions"><button type="button" class="button ghost" @click=${() => { this.manualOpen = false; }}>${this.t('cancel')}</button><button class="button primary" ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? this.t('addingSleep') : this.t('addSleep')}</button></div>
+        <div class="frame-point-switch">
+          ${(['start', 'middle', 'end'] as const).map((point) => html`<button type="button" class=${this.frameReview.point === point ? 'active' : ''} ?disabled=${this.frameReview.loading} @click=${() => this.selectFrameReviewPoint(point)}>${icon(point === 'middle' ? 'eye' : 'clock', 17)}<span>${this.language === 'es' ? ({ start: 'Inicio', middle: 'Mitad', end: 'Fin' }[point]) : ({ start: 'Start', middle: 'Middle', end: 'End' }[point])}</span></button>`)}
+        </div>
+        ${this.frameReview.loading ? html`<div class="frame-review-empty"><span class="spinner"></span> ${this.language === 'es' ? 'Cargando todas las imágenes del segmento…' : 'Loading every image in this segment…'}</div>` : this.frameReview.error ? html`<div class="frame-review-empty error">${this.frameReview.error}</div>` : current ? html`
+          <article class="frame-review-card">
+            ${current.imageAvailable ? html`<img src=${current.imageUrl} alt=${this.language === 'es' ? 'Captura del segmento' : 'Capture in this segment'}>` : html`<div class="frame-review-missing">${icon('camera', 24)}</div>`}
+            <div class="frame-review-copy">
+              <div><strong>${formatDateTime(current.capturedAt, this.language)}</strong><span>${delta == null ? '' : delta === 0 ? (this.language === 'es' ? 'mismo minuto' : 'same minute') : `${delta} min`}</span></div>
+              <p>${current.label?.description || (this.language === 'es' ? 'Sin lectura de IA para este frame.' : 'No AI reading for this frame.')}</p>
+              ${current.label ? html`<div class="frame-labels"><span>${humanValue(current.label.state)}</span><span>${Math.round(current.label.confidence * 100)}%</span><span>${humanValue(current.label.sleepSurface)}</span></div>` : nothing}
+              ${current.label ? html`
+                <details class="frame-model-details">
+                  <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Ver análisis del modelo' : 'View model analysis'}</span></summary>
+                  <div class="frame-model-metadata">
+                    ${modelMetadata.map(([label, value]) => html`<div><span>${label}</span><strong>${value}</strong></div>`)}
+                  </div>
+                </details>
+              ` : nothing}
+              ${this.frameReview.frames.length > 1 ? html`<input class="frame-scrubber" type="range" min="0" max=${String(this.frameReview.frames.length - 1)} .value=${String(this.frameReview.index)} aria-label=${this.language === 'es' ? 'Recorrer capturas del segmento' : 'Browse segment captures'} @input=${(event: Event) => this.selectFrameReviewIndex(Number(inputValue(event)))}>` : nothing}
+              <div class="frame-stepper"><button type="button" aria-label=${this.language === 'es' ? 'Captura anterior' : 'Previous capture'} ?disabled=${this.frameReview.index === 0} @click=${() => this.stepFrameReview(-1)}>${icon('chevron', 18)}</button><span><strong>${this.frameReview.index + 1} / ${this.frameReview.frames.length}</strong><small>${this.language === 'es' ? 'capturas del segmento' : 'segment captures'}</small></span><button type="button" aria-label=${this.language === 'es' ? 'Captura siguiente' : 'Next capture'} ?disabled=${this.frameReview.index >= this.frameReview.frames.length - 1} @click=${() => this.stepFrameReview(1)}>${icon('chevron', 18)}</button></div>
+            </div>
+          </article>
+        ` : html`<div class="frame-review-empty">${this.language === 'es' ? 'No hay imágenes guardadas dentro de este segmento.' : 'There are no stored images inside this segment.'}</div>`}
+      </section>
+    `;
+  }
+
+  private renderTemporalPicker(): TemplateResult | typeof nothing {
+    if (!this.temporalPicker) return nothing;
+    const selected = new Date(this.temporalPicker.value);
+    const locale = this.language === 'es' ? 'es-ES' : 'en-GB';
+    const hours = Array.from({ length: 24 }, (_, index) => index);
+    const minutes = Array.from({ length: 60 }, (_, index) => index);
+    const days = Array.from({ length: 7 }, (_, index) => {
+      const day = new Date(selected);
+      day.setDate(day.getDate() + index - 3);
+      return day;
+    });
+    return html`
+      <div class=${`temporal-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.temporalPicker = null; }}>
+        <section class="temporal-picker" role="dialog" aria-modal="true" aria-label=${this.temporalPicker.title}>
+          <div class="sheet-handle"></div>
+          <header><button type="button" @click=${() => { this.temporalPicker = null; }}>&times;</button><div><small>${this.temporalPicker.title}</small><strong>${new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(selected)}</strong></div><button type="button" class="temporal-done" @click=${() => this.applyTemporalPicker()}>${this.language === 'es' ? 'Listo' : 'Done'}</button></header>
+          <div class="temporal-days">${days.map((day) => {
+            const active = localDateKey(day) === localDateKey(selected);
+            return html`<button type="button" class=${active ? 'active' : ''} @click=${() => {
+              const value = new Date(selected);
+              value.setFullYear(day.getFullYear(), day.getMonth(), day.getDate());
+              this.temporalPicker = this.temporalPicker ? { ...this.temporalPicker, value: localDateTime(value) } : null;
+            }}><span>${new Intl.DateTimeFormat(locale, { weekday: 'narrow' }).format(day)}</span><strong>${day.getDate()}</strong></button>`;
+          })}</div>
+          <div class="temporal-date-jump"><button type="button" @click=${() => this.updateTemporalDate(-7)}>${icon('chevron', 16)} ${this.language === 'es' ? '7 días' : '7 days'}</button><button type="button" @click=${() => {
+            const now = new Date();
+            now.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+            this.temporalPicker = this.temporalPicker ? { ...this.temporalPicker, value: localDateTime(now) } : null;
+          }}>${this.language === 'es' ? 'Hoy' : 'Today'}</button><button type="button" @click=${() => this.updateTemporalDate(7)}>${this.language === 'es' ? '7 días' : '7 days'} ${icon('chevron', 16)}</button></div>
+          <div class="temporal-clock" aria-label=${this.language === 'es' ? 'Hora y minutos' : 'Hours and minutes'}>
+            <div><small>${this.language === 'es' ? 'Hora' : 'Hour'}</small><div class="temporal-column">${hours.map((hour) => html`<button type="button" class=${`temporal-option ${selected.getHours() === hour ? 'active' : ''}`} @click=${() => this.updateTemporalClock('hour', hour)}>${String(hour).padStart(2, '0')}</button>`)}</div></div>
+            <b>:</b>
+            <div><small>${this.language === 'es' ? 'Minuto' : 'Minute'}</small><div class="temporal-column">${minutes.map((minute) => html`<button type="button" class=${`temporal-option ${selected.getMinutes() === minute ? 'active' : ''}`} @click=${() => this.updateTemporalClock('minute', minute)}>${String(minute).padStart(2, '0')}</button>`)}</div></div>
+          </div>
+          <div class="temporal-quick">${[-15, -5, 5, 15].map((minutes) => html`<button type="button" @click=${() => this.adjustTemporal(minutes)}>${minutes > 0 ? '+' : ''}${minutes} min</button>`)}</div>
+          <button type="button" class="button primary temporal-confirm" @click=${() => this.applyTemporalPicker()}>${this.language === 'es' ? 'Usar esta fecha y hora' : 'Use this date and time'}</button>
+        </section>
+      </div>
+    `;
+  }
+
+  private renderPredictionDialog(): TemplateResult | typeof nothing {
+    const target = this.selectedPrediction;
+    if (!target) return nothing;
+    const calculation = target.calculation;
+    const model = this.sleepPlan?.modelDetails;
+    const subject = this.settings.baby.name.trim() || (this.language === 'es' ? 'El bebé' : 'The baby');
+    const spanish = this.language === 'es';
+    const historyPercent = model ? Math.round(model.wakeWindows.historyWeight * 100) : 0;
+    const agePercent = 100 - historyPercent;
+    const ageLabels: Record<string, string> = {
+      unknown: spanish ? 'edad sin configurar' : 'age not configured',
+      '0-3m': spanish ? '0–3 meses' : '0–3 months',
+      '4-5m': spanish ? '4–5 meses' : '4–5 months',
+      '6-8m': spanish ? '6–8 meses' : '6–8 months',
+      '9-11m': spanish ? '9–11 meses' : '9–11 months',
+      '12-17m': spanish ? '12–17 meses' : '12–17 months',
+      '18-23m': spanish ? '18–23 meses' : '18–23 months',
+      '24m+': spanish ? '24 meses o más' : '24 months or older',
+    };
+    const ageLabel = model ? ageLabels[model.baseline.ageBand] ?? model.baseline.ageBand : '';
+    const anchorLabels: Record<string, string> = spanish ? {
+      last_observed_wake: 'Último despertar observado',
+      typical_morning_wake: 'Despertar habitual de la mañana',
+      previous_predicted_nap_end: 'Fin previsto de la siesta anterior',
+      recent_bedtime_median: 'Mediana de acostarse reciente',
+      age_guidance: 'Referencia por edad',
+    } : {
+      last_observed_wake: 'Last observed wake-up',
+      typical_morning_wake: 'Typical morning wake-up',
+      previous_predicted_nap_end: 'Predicted end of the previous nap',
+      recent_bedtime_median: 'Recent median bedtime',
+      age_guidance: 'Age guidance',
+    };
+    const anchorLabel = calculation ? anchorLabels[calculation.anchorType] : '';
+    const learnedWake = model?.wakeWindows.medianMinutes;
+    const wakeRange = model?.wakeWindows.minMinutes != null && model.wakeWindows.maxMinutes != null
+      ? `${formatDuration(model.wakeWindows.minMinutes)}–${formatDuration(model.wakeWindows.maxMinutes)}`
+      : '—';
+    const wakeSpread = model?.wakeWindows.minMinutes != null && model.wakeWindows.maxMinutes != null
+      ? model.wakeWindows.maxMinutes - model.wakeWindows.minMinutes
+      : 0;
+    const variabilityWarning = wakeSpread >= 180
+      ? (spanish ? ' Hay mucha dispersión: conviene revisar las muestras extremas.' : ' The spread is wide, so the extreme samples are worth reviewing.')
+      : '';
+    const pattern = target.kind === 'nap'
+      ? learnedWake != null && model
+        ? spanish
+          ? `La mediana reciente de ${subject} es ${formatDuration(learnedWake)} (rango observado ${wakeRange}). El historial pesa ahora un ${historyPercent}% y la referencia por edad un ${agePercent}%.${variabilityWarning}`
+          : `${subject}'s recent median is ${formatDuration(learnedWake)} (observed range ${wakeRange}). Personal history currently weighs ${historyPercent}% and age guidance ${agePercent}%.${variabilityWarning}`
+        : spanish
+          ? `Todavía no hay tres ventanas despierto válidas. Esta hora se apoya principalmente en la referencia por edad y se irá personalizando.`
+          : `There are not yet three valid wake windows. This time relies mainly on age guidance and will personalize as history grows.`
+      : model
+        ? spanish
+          ? `${subject} suele acostarse alrededor de ${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)} y despertarse sobre las ${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}. La duración nocturna agrupada tiene una mediana de ${formatDuration(model.nightDurations.finalMinutes)}.`
+          : `${subject} usually goes to bed around ${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)} and wakes around ${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}. Grouped night sleep has a median duration of ${formatDuration(model.nightDurations.finalMinutes)}.`
+        : target.explanation;
+    return html`
+      <div class=${`manual-dialog-backdrop prediction-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.selectedPrediction = null; }}>
+        <section class="manual-dialog prediction-dialog" role="dialog" aria-modal="true">
+          <button class="dialog-close" type="button" @click=${() => { this.selectedPrediction = null; }}>&times;</button>
+          <span class="prediction-dialog-icon">${icon(target.kind === 'night' ? 'moon' : 'sun', 28)}</span>
+          <small>${this.language === 'es' ? 'Predicción del modelo' : 'Model prediction'}</small>
+          <h2>${this.language === 'es' ? target.kind === 'night' ? 'Sueño largo previsto' : 'Siesta prevista' : target.label}</h2>
+          <div class="prediction-dialog-time"><div><span>${this.language === 'es' ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(target.recommendedStart, this.language)}</strong></div><i>–</i><div><span>${this.language === 'es' ? 'Fin estimado' : 'Estimated end'}</span><strong>${formatClock(new Date(new Date(target.recommendedStart).getTime() + target.durationMinutes * 60_000).toISOString(), this.language)}</strong></div></div>
+          <div class="prediction-dialog-grid"><div><span>${this.language === 'es' ? 'Ventana' : 'Window'}</span><strong>${formatClock(target.windowStart, this.language)}–${formatClock(target.windowEnd, this.language)}</strong></div><div><span>${this.language === 'es' ? 'Duración' : 'Duration'}</span><strong>${formatDuration(target.durationMinutes)}</strong></div><div><span>${this.language === 'es' ? 'Confianza' : 'Confidence'}</span><strong>${Math.round(target.confidence * 100)}%</strong></div></div>
+          ${calculation && model ? html`
+            <section class="prediction-receipt">
+              <header><span>${icon('sparkle', 17)}</span><div><strong>${spanish ? `Cómo llegamos a las ${formatClock(target.recommendedStart, this.language)}` : `How we reached ${formatClock(target.recommendedStart, this.language)}`}</strong><small>${spanish ? 'Un cálculo local que puedes comprobar' : 'A local calculation you can verify'}</small></div></header>
+              ${target.kind === 'nap' && calculation.anchorAt && calculation.wakeWindowMinutes != null ? html`
+                <div class="prediction-equation">
+                  <div><span>${spanish ? 'Partimos de' : 'Starting from'}</span><strong>${formatClock(calculation.anchorAt, this.language)}</strong><small>${anchorLabel}</small></div>
+                  <b>+</b>
+                  <div><span>${spanish ? 'Ventana ajustada' : 'Adjusted wake window'}</span><strong>${formatDuration(calculation.wakeWindowMinutes)}</strong><small>${calculation.startSampleCount} ${spanish ? 'muestras recientes' : 'recent samples'}</small></div>
+                  <b>=</b>
+                  <div class="result"><span>${spanish ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(calculation.baseRecommendedStart || target.recommendedStart, this.language)}</strong><small>${calculation.adjustmentMinutes ? (spanish ? 'antes de salvaguardas' : 'before safeguards') : (spanish ? 'resultado exacto' : 'exact result')}</small></div>
+                </div>
+                ${calculation.adjustmentMinutes ? html`<p class="prediction-adjustment">${icon('clock', 15)} ${spanish ? `La ventana original ya había pasado al actualizar el plan. Se desplazó ${formatDuration(calculation.adjustmentMinutes)} para no recomendar una hora caducada: ${formatClock(target.recommendedStart, this.language)}.` : `The original window had already passed when the plan refreshed. It was moved by ${formatDuration(calculation.adjustmentMinutes)} so it would not recommend an expired time: ${formatClock(target.recommendedStart, this.language)}.`}</p>` : nothing}
+              ` : html`
+                <div class="prediction-equation night-equation">
+                  <div><span>${spanish ? 'Patrón usado' : 'Pattern used'}</span><strong>${model.bedtimes.count || '—'}</strong><small>${model.bedtimes.count ? (spanish ? 'noches recientes' : 'recent nights') : (spanish ? 'referencia por edad' : 'age guidance')}</small></div>
+                  <b>→</b>
+                  <div><span>${spanish ? 'Mediana de acostarse' : 'Median bedtime'}</span><strong>${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)}</strong><small>${calculation.anchorType === 'age_guidance' ? (spanish ? 'valor inicial' : 'initial value') : (spanish ? 'patrón personal' : 'personal pattern')}</small></div>
+                  <b>=</b>
+                  <div class="result"><span>${spanish ? 'Inicio previsto' : 'Expected start'}</span><strong>${formatClock(target.recommendedStart, this.language)}</strong><small>${calculation.expectedWakeAt ? `${spanish ? 'despertar ~' : 'wake ~'} ${formatClock(calculation.expectedWakeAt, this.language)}` : ''}</small></div>
+                </div>
+              `}
+            </section>
+
+            <section class="prediction-learning"><span>${icon('moon', 17)}</span><div><strong>${spanish ? 'Lo que estamos aprendiendo' : 'What we are learning'}</strong><p>${pattern}</p></div></section>
+
+            <details class="prediction-method">
+              <summary>${icon('chevron', 15)}<div><strong>${spanish ? 'Ver datos y método' : 'See data and method'}</strong><small>${spanish ? 'Medianas, pesos y muestras exactas' : 'Medians, weights and exact samples'}</small></div></summary>
+              <div class="prediction-method-body">
+                <div class="prediction-evidence-grid">
+                  ${target.kind === 'nap' ? html`
+                    <div><span>${spanish ? 'Base por edad' : 'Age baseline'}</span><strong>${formatDuration(model.baseline.wakeWindowMinutes)}</strong><small>${ageLabel} · ${model.baseline.expectedNaps} ${spanish ? 'siestas esperadas' : 'expected naps'}</small></div>
+                    <div><span>${spanish ? 'Mediana personal' : 'Personal median'}</span><strong>${learnedWake == null ? '—' : formatDuration(learnedWake)}</strong><small>${model.wakeWindows.count} ${spanish ? 'ventanas válidas' : 'valid windows'}</small></div>
+                    <div><span>${spanish ? 'Objetivo final' : 'Final target'}</span><strong>${formatDuration(model.wakeWindows.finalMinutes)}</strong><small>${historyPercent}% ${spanish ? 'historial' : 'history'} · ${agePercent}% ${spanish ? 'edad' : 'age'}</small></div>
+                    <div><span>${spanish ? 'Margen' : 'Margin'}</span><strong>±${formatDuration(this.sleepPlan?.wakeWindowMarginMinutes ?? 0)}</strong><small>${spanish ? 'según variabilidad' : 'from variability'}</small></div>
+                    <div><span>${spanish ? 'Duración de siesta' : 'Nap duration'}</span><strong>${formatDuration(model.napDurations.finalMinutes)}</strong><small>${model.napDurations.count} ${spanish ? 'siestas recientes' : 'recent naps'}</small></div>
+                  ` : html`
+                    <div><span>${spanish ? 'Inicio nocturno' : 'Night start'}</span><strong>${this.formatPredictionMinute(model.bedtimes.medianMinuteOfDay)}</strong><small>${model.bedtimes.count} ${spanish ? 'noches recientes' : 'recent nights'}</small></div>
+                    <div><span>${spanish ? 'Despertar matinal' : 'Morning wake'}</span><strong>${this.formatPredictionMinute(model.morningWakes.medianMinuteOfDay)}</strong><small>${model.morningWakes.count} ${spanish ? 'mañanas recientes' : 'recent mornings'}</small></div>
+                    <div><span>${spanish ? 'Duración nocturna' : 'Night duration'}</span><strong>${formatDuration(model.nightDurations.finalMinutes)}</strong><small>${model.nightDurations.count} ${spanish ? 'noches agrupadas' : 'grouped nights'}</small></div>
+                    <div><span>${spanish ? 'Duración prevista' : 'Expected duration'}</span><strong>${formatDuration(target.durationMinutes)}</strong><small>${calculation.durationSource === 'recent_night_duration' ? (spanish ? 'mediana de duración' : 'duration median') : (spanish ? 'de acostarse a despertar' : 'bedtime to wake-up')}</small></div>
+                  `}
+                  <div><span>${spanish ? 'Confianza global' : 'Overall confidence'}</span><strong>${Math.round(target.confidence * 100)}%</strong><small>${model.confidence.sampleCount} ${spanish ? 'ventanas recientes' : 'recent windows'}</small></div>
+                </div>
+
+                <div class="prediction-formula">
+                  <strong>${spanish ? 'Cómo funciona por debajo' : 'How it works underneath'}</strong>
+                  ${target.kind === 'nap' ? html`
+                    <p>${learnedWake != null ? (spanish
+                      ? `Ventana = redondeo de ${formatDuration(model.baseline.wakeWindowMinutes)} × ${agePercent}% + ${formatDuration(learnedWake)} × ${historyPercent}% = ${formatDuration(model.wakeWindows.finalMinutes)}.`
+                      : `Wake window = rounded ${formatDuration(model.baseline.wakeWindowMinutes)} × ${agePercent}% + ${formatDuration(learnedWake)} × ${historyPercent}% = ${formatDuration(model.wakeWindows.finalMinutes)}.`) : (spanish ? 'Sin tres muestras válidas se usa directamente la referencia por edad.' : 'With fewer than three valid samples, age guidance is used directly.')}</p>
+                    <p>${spanish ? `La ventana de tolerancia usa la desviación mediana de las muestras × 1,7, limitada entre 25 y 75 minutos; con menos de cuatro muestras son 35 minutos.` : `The tolerance window uses median sample deviation × 1.7, clamped between 25 and 75 minutes; with fewer than four samples it is 35 minutes.`}</p>
+                  ` : html`<p>${spanish ? 'El inicio es la mediana de hasta 10 noches recientes. El fin usa la mediana de hasta 14 despertares matinales; si el intervalo resultante cae fuera de 6–13 horas, se usa la mediana de duración nocturna.' : 'Start time is the median of up to 10 recent nights. End time uses the median of up to 14 morning wake-ups; if that span falls outside 6–13 hours, median night duration is used.'}</p>`}
+                  <p>${model.confidence.rule === 'recent_wake_samples'
+                    ? (spanish ? `Confianza = mínimo(92%, 57% + ${model.confidence.sampleCount} muestras × 2,5 puntos) = ${Math.round(model.confidence.value * 100)}%.` : `Confidence = min(92%, 57% + ${model.confidence.sampleCount} samples × 2.5 points) = ${Math.round(model.confidence.value * 100)}%.`)
+                    : (spanish ? `A falta de historial suficiente, la confianza inicial es ${Math.round(model.confidence.value * 100)}%.` : `Without enough history, initial confidence is ${Math.round(model.confidence.value * 100)}%.`)}</p>
+                  <p>${spanish ? `Se revisan como máximo 80 tramos cerrados. Solo entran ventanas despierto de 15 min a 12 h y siestas de 15 min a 3 h.` : `At most 80 closed sleep periods are reviewed. Only wake windows from 15 min to 12 h and naps from 15 min to 3 h are accepted.`}</p>
+                </div>
+
+                ${this.renderPredictionSamples(target)}
+
+                <p class="prediction-local-note">${icon('lock', 15)} ${spanish ? 'El predictor es determinista y local: no llama a Gemini ni vuelve a mirar las fotos. Usa los tramos de sueño ya guardados, así que una detección visual errónea puede influir hasta que corrijas ese tramo.' : 'The predictor is deterministic and local: it does not call Gemini or inspect images again. It uses saved sleep periods, so an incorrect visual detection can influence it until that period is corrected.'}</p>
+                <p class="prediction-generated">${spanish ? 'Calculado' : 'Calculated'} · ${formatDateTime(model.generatedAt, this.language)}</p>
+              </div>
+            </details>
+          ` : html`<p>${spanish ? 'Calculado con las ventanas despierto, las duraciones y los horarios recientes guardados en este historial.' : target.explanation}</p>`}
+        </section>
+      </div>
+    `;
+  }
+
+  private formatPredictionMinute(value: number): string {
+    if (!Number.isFinite(value)) return '—';
+    const normalized = ((Math.round(value) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
+  }
+
+  private renderPredictionSamples(target: SleepPredictionTarget): TemplateResult | typeof nothing {
+    const model = this.sleepPlan?.modelDetails;
+    if (!model) return nothing;
+    const spanish = this.language === 'es';
+    if (target.kind === 'nap') {
+      const wakeSamples = model.wakeWindows.samples.slice().reverse();
+      const durationSamples = model.napDurations.samples.slice().reverse();
+      if (!wakeSamples.length && !durationSamples.length) return nothing;
+      return html`
+        <section class="prediction-samples">
+          <h3>${spanish ? 'Muestras exactas usadas' : 'Exact samples used'}</h3>
+          ${wakeSamples.length ? html`<h4>${spanish ? 'Ventanas despierto' : 'Wake windows'}</h4><ol>${wakeSamples.map((sample) => html`<li><span>${formatDateTime(sample.previousSleepEndedAt, this.language)} → ${formatClock(sample.nextSleepStartedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+          ${durationSamples.length ? html`<h4>${spanish ? 'Duraciones de siesta' : 'Nap durations'}</h4><ol>${durationSamples.map((sample) => html`<li><span>${formatDateTime(sample.startedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+        </section>
+      `;
+    }
+    const bedtimes = model.bedtimes.samples.slice().reverse();
+    const wakes = model.morningWakes.samples.slice().reverse();
+    const durations = model.nightDurations.samples.slice().reverse();
+    if (!bedtimes.length && !wakes.length && !durations.length) return nothing;
+    return html`
+      <section class="prediction-samples night-samples">
+        <h3>${spanish ? 'Noches exactas usadas' : 'Exact nights used'}</h3>
+        ${bedtimes.length ? html`<h4>${spanish ? 'Horas de acostarse' : 'Bedtimes'}</h4><ol>${bedtimes.map((sample) => html`<li><span>${formatDateTime(sample.at, this.language)}</span><strong>${formatClock(sample.at, this.language)}</strong></li>`)}</ol>` : nothing}
+        ${wakes.length ? html`<h4>${spanish ? 'Despertares matinales' : 'Morning wake-ups'}</h4><ol>${wakes.map((sample) => html`<li><span>${formatDateTime(sample.at, this.language)}</span><strong>${formatClock(sample.at, this.language)}</strong></li>`)}</ol>` : nothing}
+        ${durations.length ? html`<h4>${spanish ? 'Duraciones nocturnas agrupadas' : 'Grouped night durations'}</h4><ol>${durations.map((sample) => html`<li><span>${sample.nightDate || formatDateTime(sample.startedAt, this.language)}</span><strong>${formatDuration(sample.minutes)}</strong></li>`)}</ol>` : nothing}
+      </section>
+    `;
+  }
+
+  private renderManualForm(): TemplateResult {
+    const suggestion = this.suggestedEnd(this.manualForm.startedAt, this.manualForm.kind);
+    const start = new Date(this.manualForm.startedAt);
+    const effectiveEnd = this.manualForm.endedAt ? new Date(this.manualForm.endedAt) : new Date(suggestion);
+    const duration = Number.isFinite(start.getTime()) && Number.isFinite(effectiveEnd.getTime())
+      ? Math.max(0, Math.round((effectiveEnd.getTime() - start.getTime()) / 60_000))
+      : 0;
+    const title = this.manualForm.kind === 'awake'
+      ? (this.language === 'es' ? 'Despertar' : 'Awake period')
+      : this.manualForm.kind === 'night'
+        ? (this.language === 'es' ? 'Sueño largo' : 'Night sleep')
+        : (this.language === 'es' ? 'Siesta' : 'Nap');
+    const startsActiveSleep = this.manualForm.kind !== 'awake' && !this.manualForm.endedAt;
+    const missingAwakeEnd = this.manualForm.kind === 'awake' && !this.manualForm.endedAt;
+    const submitLabel = missingAwakeEnd
+      ? (this.language === 'es' ? 'Define una hora de fin' : 'Choose an end time')
+      : startsActiveSleep
+        ? (this.language === 'es' ? 'Comenzar ahora' : 'Start now')
+        : (this.language === 'es' ? 'Guardar entrada' : 'Save entry');
+    const submitHint = startsActiveSleep
+      ? (this.language === 'es' ? 'Seguirá visible hasta que la finalices' : 'It stays visible until you stop it')
+      : (this.language === 'es' ? 'Guarda este intervalo' : 'Save this interval');
+    return html`
+      <form class="manual-form legacy-sleep-form manual-create-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
+        <button type="button" class="dialog-close" aria-label=${this.t('dismiss')} @click=${() => this.closeManualForm()}>&times;</button>
+        <div class="manual-form-scroll">
+          <header class="sleep-form-hero">
+            <span>${icon(this.manualForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span>
+            <small>${this.language === 'es' ? 'Nuevo dato de sueño' : 'New sleep entry'}</small>
+            <h2>${title}</h2>
+            <div class="sleep-type-pills" role="radiogroup">
+              <button type="button" class=${this.manualForm.kind === 'nap' ? 'selected' : ''} @click=${() => this.setManualKind('nap')}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button>
+              <button type="button" class=${this.manualForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => this.setManualKind('awake')}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button>
+              <button type="button" class=${this.manualForm.kind === 'night' ? 'selected' : ''} @click=${() => this.setManualKind('night')}>${this.language === 'es' ? 'Noche' : 'Night'}</button>
+            </div>
+          </header>
+          <div class="sleep-time-editor">
+            ${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.manualForm.startedAt, 'manual-start', this.manualForm.startedAt)}
+            <i>–</i>
+            ${this.renderTemporalButton(
+              this.language === 'es' ? 'Fin' : 'End',
+              this.manualForm.endedAt,
+              'manual-end',
+              suggestion,
+              !this.manualForm.endedAt && duration ? `${this.language === 'es' ? 'máx. previsto' : 'suggested max'} ${formatDuration(duration)}` : '',
+            )}
+          </div>
+          ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
+          ${this.manualFrameReviewBounds ? this.renderFrameReview() : nothing}
+          ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
+          <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
+          ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}
+        </div>
+        <footer class="sleep-form-actions manual-create-actions">
+          <button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button>
+          <div class="manual-submit-cluster">
+            <button class=${`sheet-save ${startsActiveSleep ? 'start-now' : ''}`} aria-label=${submitLabel} ?disabled=${this.sleepBusy === 'add' || missingAwakeEnd}>
+              ${this.sleepBusy === 'add' ? html`<span class="spinner"></span>` : icon(startsActiveSleep ? 'play' : 'check', 31)}
+            </button>
+            <span><strong>${submitLabel}</strong><small>${missingAwakeEnd ? '' : submitHint}</small></span>
+          </div>
+        </footer>
       </form>
     `;
   }
 
+  private renderManualDialog(): TemplateResult | typeof nothing {
+    if (!this.manualOpen) return nothing;
+    return html`
+      <div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.closeManualForm(); }}>
+        <section class="manual-dialog manual-create-dialog" role="dialog" aria-modal="true" aria-label=${this.t('manualTitle')}>
+          ${this.renderManualForm()}
+        </section>
+      </div>
+    `;
+  }
+
+  private renderSleepEditor(): TemplateResult | typeof nothing {
+    if (!this.editingSleep) return nothing;
+    const start = new Date(this.editSleepForm.startedAt);
+    const end = this.editSleepForm.endedAt ? new Date(this.editSleepForm.endedAt) : null;
+    const minutes = end && end > start ? Math.round((end.getTime() - start.getTime()) / 60_000) : 0;
+    const title = this.language === 'es'
+      ? this.editSleepForm.kind === 'awake' ? 'Despertar' : this.editSleepForm.kind === 'night' ? 'Sueño largo' : 'Siesta'
+      : this.editSleepForm.kind === 'awake' ? 'Awake period' : this.editSleepForm.kind === 'night' ? 'Night sleep' : 'Nap';
+    return html`<div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.editingSleep = null; }}><form class="manual-dialog manual-form legacy-sleep-form sleep-edit-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.saveSleepEditor(); }}>
+      <button type="button" class="dialog-close" @click=${() => { this.editingSleep = null; }}>&times;</button>
+      <header class="sleep-form-hero"><span>${icon(this.editSleepForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span><small>${this.language === 'es' ? 'Editar segmento' : 'Edit segment'}</small><h2>${title}</h2></header>
+      <div class="sleep-time-editor">${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.editSleepForm.startedAt, 'edit-start', this.editSleepForm.startedAt)}<i>–</i>${this.renderTemporalButton(this.language === 'es' ? 'Fin' : 'End', this.editSleepForm.endedAt, 'edit-end', this.editSleepForm.endedAt || this.suggestedEnd(this.editSleepForm.startedAt, this.editSleepForm.kind))}</div>
+      <div class="editor-duration">${minutes ? `${formatDuration(minutes)} ${this.language === 'es' ? 'de duración' : 'duration'}` : (this.language === 'es' ? 'Sueño activo' : 'Active sleep')} · ${formatDateTime(this.editingSleep.startedAt, this.language)}</div>
+      <div class="sleep-type-pills editor-types" role="radiogroup"><button type="button" class=${this.editSleepForm.kind === 'nap' ? 'selected' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'nap' }; }}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button><button type="button" class=${this.editSleepForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'awake', details: EMPTY_DETAILS() }; }}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button><button type="button" class=${this.editSleepForm.kind === 'night' ? 'selected' : ''} @click=${() => { this.editSleepForm = { ...this.editSleepForm, kind: 'night' }; }}>${this.language === 'es' ? 'Sueño largo' : 'Night sleep'}</button></div>
+      <div class="event-source-note">${icon(this.editingSleep.source === 'manual' ? 'heart' : 'sparkle', 16)}<span>${this.language === 'es' ? `Origen: ${this.editingSleep.source === 'manual' ? 'añadido a mano' : this.editingSleep.source === 'vision' ? 'detección de cámara' : 'histórico importado'}` : `Source: ${this.editingSleep.source}`}</span></div>
+      ${this.renderFrameReview()}
+      ${this.editSleepForm.kind !== 'awake' ? html`${this.renderPauses('edit', this.editSleepForm.details.pauses)}${this.renderDetailGroups('edit', this.editSleepForm.details)}` : nothing}
+      <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.editSleepForm.notes} @input=${(event: Event) => { this.editSleepForm = { ...this.editSleepForm, notes: inputValue(event) }; }}></textarea></section>
+      <details class="editor-more-options">
+        <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Más opciones' : 'More options'}</span></summary>
+        <div class="editor-delete-copy">
+          <strong>${this.language === 'es' ? 'Eliminar segmento' : 'Delete segment'}</strong>
+          <span>${this.language === 'es'
+            ? this.editingSleep.source === 'manual'
+              ? 'El registro desaparecerá, pero las capturas se conservarán.'
+              : 'Se elimina esta detección; las capturas y sus análisis se conservarán. Si el sueño continúa, futuras detecciones podrán iniciar un segmento nuevo.'
+            : this.editingSleep.source === 'manual'
+              ? 'The record will be removed, but captures will be preserved.'
+              : 'This detection is removed; captures and analyses are preserved. If sleep continues, future detections may start a new segment.'}</span>
+        </div>
+        <button type="button" class="editor-delete-action" ?disabled=${this.editSleepBusy} @click=${() => this.deleteSleepEditor()}>
+          ${this.language === 'es' ? 'Eliminar este segmento' : 'Delete this segment'}
+        </button>
+      </details>
+      ${this.inlineError ? html`<div class="inline-error sleep-form-error">${this.inlineError}</div>` : nothing}<div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => { this.editingSleep = null; }}>${this.language === 'es' ? 'Cancelar' : 'Cancel'}</button><button class="sheet-save" ?disabled=${this.editSleepBusy}>${this.editSleepBusy ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
+    </form></div>`;
+  }
+
+  private renderActiveSleepOverlay(): TemplateResult | typeof nothing {
+    const event = this.activeSleepOverlay;
+    if (!event) return nothing;
+    const title = this.language === 'es'
+      ? event.kind === 'night' ? 'Sueño largo en curso' : 'Siesta en curso'
+      : event.kind === 'night' ? 'Night sleep in progress' : 'Nap in progress';
+    const started = formatClock(event.startedAt, this.language);
+    return html`
+      <aside class=${`active-sleep-float ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} role="dialog" aria-labelledby="active-sleep-title">
+        <div class="active-sleep-heading">
+          <span class="active-sleep-pulse" aria-hidden="true">${icon('moon', 24)}</span>
+          <div><small>${this.language === 'es' ? 'Sueño activo' : 'Active sleep'}</small><strong id="active-sleep-title">${title}</strong></div>
+        </div>
+        <time class="active-sleep-clock" role="timer" datetime=${event.startedAt}>${formatElapsedClock(event.startedAt, this.activeSleepNow)}</time>
+        <p>${this.language === 'es' ? `Empezó a las ${started}` : `Started at ${started}`}</p>
+        <div class="active-sleep-live-line" aria-hidden="true"><span></span></div>
+        <div class="active-sleep-actions">
+          <button type="button" class="active-sleep-edit" ?disabled=${Boolean(this.sleepBusy)} @click=${() => this.editActiveSleep()}>
+            ${this.language === 'es' ? 'Editar detalles' : 'Edit details'}
+          </button>
+          <button type="button" class="active-sleep-stop" ?disabled=${Boolean(this.sleepBusy)} @click=${() => this.finishActiveSleep()}>
+            ${this.sleepBusy === 'stop' ? html`<span class="spinner"></span>` : icon('stop', 17)}
+            <span>${this.language === 'es' ? 'Finalizar ahora' : 'Stop now'}</span>
+          </button>
+        </div>
+      </aside>
+    `;
+  }
+
+  private sleepSeries(): Array<{ date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }> {
+    const rows = new Map<string, { date: string; total: number; naps: number; night: number; count: number; wake: string; bed: string }>();
+    for (const event of this.sleepEvents) {
+      if (!event.endedAt || event.kind === 'awake') continue;
+      const start = new Date(event.startedAt);
+      const end = new Date(event.endedAt);
+      const date = event.kind === 'night' && start.getHours() >= 18 ? localDateKey(new Date(start.getTime() + 86_400_000)) : localDateKey(start);
+      const row = rows.get(date) ?? { date, total: 0, naps: 0, night: 0, count: 0, wake: '', bed: '' };
+      const pausedMinutes = (event.details?.pauses ?? []).reduce((total, pause) => {
+        const pauseStart = Math.max(start.getTime(), new Date(pause.startedAt).getTime());
+        const pauseEnd = Math.min(end.getTime(), new Date(pause.endedAt).getTime());
+        return total + Math.max(0, Math.round((pauseEnd - pauseStart) / 60_000));
+      }, 0);
+      const minutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60_000) - pausedMinutes);
+      row.total += minutes;
+      row.count += 1;
+      if (event.kind === 'nap') row.naps += minutes;
+      else {
+        row.night += minutes;
+        if (!row.bed || start < new Date(`${date}T${row.bed}:00`)) row.bed = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`;
+        row.wake = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+      }
+      rows.set(date, row);
+    }
+    return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  private renderMetricBars(rows: Array<{ label: string; value: number }>): TemplateResult {
+    const visible = rows.slice(-21);
+    const maximum = Math.max(1, ...visible.map((row) => row.value));
+    return html`<div class="legacy-chart" role="img">${visible.map((row) => html`
+      <div class="legacy-chart-column" title=${`${formatTrendDate(row.label)}: ${formatDuration(row.value)}`}>
+        <strong>${formatDuration(row.value)}</strong><i style=${`--height:${Math.max(2, row.value / maximum * 100)}%`}></i><small>${formatTrendDate(row.label)}</small>
+      </div>`)}
+    </div>`;
+  }
+
+  private renderVisualStatistic(kind: 'pacifier' | 'mouth_open' | 'head_side' | 'clothing', title: string): TemplateResult {
+    const metric = this.visionStatistics?.metrics[kind];
+    if (this.visionStatisticsLoading) return html`<div class="empty-state"><span class="spinner"></span><p>Cargando el histórico visual…</p></div>`;
+    if (!metric?.segments.length) return html`<div class="empty-state"><p>No hay observaciones estructuradas para este periodo.</p></div>`;
+    const total = metric.total_minutes;
+    const label = (value: string): string => ({
+      pacifier: 'Con chupete', 'no pacifier': 'Sin chupete', 'mouth open': 'Boca abierta', 'mouth closed': 'Boca cerrada',
+      left: 'Izquierda', right: 'Derecha', back: 'Boca arriba', face_down: 'Boca abajo', diaper_only: 'Solo pañal',
+      short_sleeve_onesie: 'Body de manga corta', long_sleeve_onesie: 'Body de manga larga', sleep_sack: 'Saco de dormir', blanket: 'Manta',
+    }[value] ?? value.replaceAll('_', ' '));
+    return html`
+      <section class="legacy-stat-grid">
+        <article class="legacy-stat-card hero-stat"><span>Tiempo observado</span><strong>${formatDuration(total)}</strong><small>${this.visionStatistics?.visible_sample_count ?? 0} imágenes válidas</small></article>
+        <article class="legacy-stat-card"><h2>${title}</h2><div class="donut-legend">${metric.segments.map((segment) => html`<div><i style=${`--color:${segment.color}`}></i><span>${label(segment.label)}</span><strong>${segment.percent}%</strong><small>${formatDuration(segment.minutes)}</small></div>`)}</div></article>
+      </section>
+      ${kind === 'pacifier' || kind === 'mouth_open' ? html`<article class="legacy-stat-card"><h2>Evolución diaria</h2>${this.renderMetricBars((this.visionStatistics?.daily ?? []).map((day) => ({ label: day.date, value: kind === 'pacifier' ? day.pacifier_minutes : day.mouth_open_minutes })))}</article>` : nothing}
+    `;
+  }
+
   private renderHistory(): TemplateResult {
+    const series = this.sleepSeries();
+    const total = series.reduce((sum, row) => sum + row.total, 0);
+    const nightRows = series.filter((row) => row.night > 0);
+    const medianNight = medianMinutes(nightRows.map((row) => row.night));
+    const medianNaps = medianMinutes(series.map((row) => row.naps));
+    const tabs = [
+      ['summary', 'Resumen de sueño'], ['naps', 'Siestas'], ['awake', 'Tiempo despierto'], ['night', 'Sueño nocturno'],
+      ['pacifier', 'Chupete'], ['head', 'Cabeza'], ['clothing', 'Ropa'], ['mouth', 'Boca'],
+    ] as const;
     return html`
       <main class="page history-page" id="main">
         <section class="page-heading">
-          <div><span class="eyebrow">${this.t('navHistory')}</span><h1>${this.t('historyTitle')}</h1><p>${this.t('historyIntro')}</p></div>
-          <div class="heading-actions"><button class="button secondary" @click=${() => { this.manualOpen = !this.manualOpen; }}>${icon('plus', 17)} ${this.t('manualTitle')}</button><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
+          <div><span class="eyebrow">Histórico completo</span><h1>Tendencias</h1><p>El mismo análisis de sueño y de las imágenes de la app original.</p></div>
+          <div class="heading-actions"><button class="icon-button" aria-label=${this.t('refresh')} ?disabled=${this.refreshingData} @click=${() => this.loadOperationalData(true)}><span class=${this.refreshingData ? 'spin' : ''}>${icon('refresh', 19)}</span></button></div>
         </section>
-        ${this.manualOpen ? this.renderManualForm() : nothing}
-        ${this.renderDailyRhythm()}
-        ${this.renderNightRibbon()}
-        <section class="history-grid">
-          <article class="history-panel" aria-busy=${this.historyPages.sleep.loading}><div class="panel-heading"><span class="panel-icon">${icon('moon', 18)}</span><div><h2>${this.t('sleepTimeline')}</h2><small>${this.historyPages.sleep.total}</small></div></div>${this.sleepEvents.length || (!this.historyPages.sleep.loading && !this.historyPages.sleep.error) ? this.renderSleepList(this.sleepEvents) : nothing}${this.renderHistoryPager('sleep', this.sleepEvents.length)}</article>
-          <article class="history-panel" aria-busy=${this.historyPages.cry.loading}><div class="panel-heading"><span class="panel-icon coral">${icon('waves', 18)}</span><div><h2>${this.t('cryTimeline')}</h2><small>${this.historyPages.cry.total}</small></div></div>${this.cryEvents.length || (!this.historyPages.cry.loading && !this.historyPages.cry.error) ? this.renderCryList() : nothing}${this.renderHistoryPager('cry', this.cryEvents.length)}</article>
-        </section>
-        <section class="frame-section" aria-busy=${this.historyPages.frames.loading}>
-          <div class="section-heading"><div><span class="eyebrow">${this.t('cameraTitle')}</span><h2>${this.t('imageTimeline')}</h2></div></div>
-          ${this.frames.length ? html`<div class="frame-grid">${this.frames.map((frame) => this.renderFrame(frame))}</div>` : !this.historyPages.frames.loading && !this.historyPages.frames.error ? html`<div class="empty-state">${icon('camera', 26)}<p>${this.t('noFrames')}</p></div>` : nothing}
-          ${this.renderHistoryPager('frames', this.frames.length)}
-        </section>
+        <nav class="legacy-stats-tabs" aria-label="Estadísticas">${tabs.map(([tab, label]) => html`<button class=${this.statsTab === tab ? 'active' : ''} @click=${() => { this.statsTab = tab; if (['pacifier', 'head', 'clothing', 'mouth'].includes(tab)) void this.loadVisionStatistics(); }}>${label}</button>`)}</nav>
+        ${this.statsTab === 'summary' ? html`
+          <section class="legacy-stat-grid three"><article class="legacy-stat-card hero-stat"><span>Sueño total</span><strong>${formatDuration(total)}</strong><small>${series.length} días con datos</small></article><article class="legacy-stat-card hero-stat"><span>Mediana nocturna</span><strong>${formatDuration(medianNight)}</strong><small>${nightRows.length} noches con datos</small></article><article class="legacy-stat-card hero-stat"><span>Mediana diaria de siestas</span><strong>${formatDuration(medianNaps)}</strong><small>${series.length} días analizados</small></article></section>
+          <article class="legacy-stat-card"><h2>Sueño diario</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.total })))}</article>
+        ` : this.statsTab === 'naps' ? html`<article class="legacy-stat-card"><h2>Sueño durante el día</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.naps })))}</article>
+        <section class="legacy-stat-grid"><article class="legacy-stat-card hero-stat"><span>Mediana diaria de siestas</span><strong>${formatDuration(medianNaps)}</strong></article><article class="legacy-stat-card hero-stat"><span>Días analizados</span><strong>${series.length}</strong></article></section>`
+        : this.statsTab === 'awake' ? html`<article class="legacy-stat-card"><h2>Hora de despertar</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${formatTrendDate(row.date)}</span><strong>${row.wake || '—'}</strong></div>`)}</div></article>`
+        : this.statsTab === 'night' ? html`<article class="legacy-stat-card"><h2>Sueño nocturno</h2>${this.renderMetricBars(series.map((row) => ({ label: row.date, value: row.night })))}</article><article class="legacy-stat-card"><h2>Se durmió / se despertó</h2><div class="clock-history">${series.slice(-21).map((row) => html`<div><span>${formatTrendDate(row.date)}</span><strong>${row.bed || '—'} → ${row.wake || '—'}</strong></div>`)}</div></article>`
+        : this.statsTab === 'pacifier' ? this.renderVisualStatistic('pacifier', 'Uso del chupete')
+        : this.statsTab === 'head' ? this.renderVisualStatistic('head_side', 'Posición de la cabeza')
+        : this.statsTab === 'clothing' ? this.renderVisualStatistic('clothing', 'Ropa detectada')
+        : this.renderVisualStatistic('mouth_open', 'Boca abierta o cerrada')}
+        <details class="legacy-raw-history"><summary>Ver registros detallados</summary><section class="history-grid"><article class="history-panel">${this.renderSleepList(this.sleepEvents)}${this.renderHistoryPager('sleep', this.sleepEvents.length)}</article><article class="history-panel">${this.renderCryList()}${this.renderHistoryPager('cry', this.cryEvents.length)}</article></section></details>
       </main>
     `;
   }
@@ -1319,7 +2827,22 @@ export class BabyMonitorApp extends LitElement {
           this.inlineError = '';
         })}</div>
         ${this.cameraSource === 'entity'
-          ? html`<div class="field"><span>${this.t('cameraEntity')}</span>${this.renderSinglePicker(this.entities.camera, this.draft.camera.entityId, this.t('noCamera'), (id) => this.updateDraft((draft) => { draft.camera.entityId = id; }))}</div>`
+          ? html`
+            <details class="camera-setup-guide">
+              <summary>${icon('camera', 16)}<span>${this.t('boifunGuideTitle')}</span></summary>
+              <div class="camera-setup-guide-body">
+                <p>${this.t('boifunGuideIntro')}</p>
+                <ol>
+                  <li>${this.t('boifunGuideStepOne')}</li>
+                  <li>${this.t('boifunGuideStepTwo')}</li>
+                  <li>${this.t('boifunGuideStepThree')}</li>
+                  <li>${this.t('boifunGuideStepFour')}</li>
+                </ol>
+                <small>${this.t('boifunGuideNetworkHint')}</small>
+              </div>
+            </details>
+            <div class="field"><span>${this.t('cameraEntity')}</span>${this.renderSinglePicker(this.entities.camera, this.draft.camera.entityId, this.t('noCamera'), (id) => this.updateDraft((draft) => { draft.camera.entityId = id; }))}</div>
+          `
           : html`<label class="field"><span>${this.t('cameraStream')}</span><input type="password" autocomplete="new-password" .value=${this.draft.camera.streamUrl ?? ''} placeholder=${this.t('streamPlaceholder')} @input=${(event: Event) => this.setSecretValue('camera_stream_url', inputValue(event))}>${this.renderSecretNote(this.draft.camera.streamUrlConfigured, 'camera_stream_url')}</label>`}
         <label class="field range-field"><span><b>${this.t('captureInterval')}</b><output>${Math.round(this.draft.camera.captureIntervalSeconds / 60)} min</output></span><input type="range" min="1" max="60" step="1" .value=${String(Math.round(this.draft.camera.captureIntervalSeconds / 60))} @input=${(event: Event) => this.updateDraft((draft) => { draft.camera.captureIntervalSeconds = Number(inputValue(event)) * 60; })}></label>
         ${this.renderTestButton('camera')}
@@ -1366,12 +2889,142 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderNotificationsSection(compact = false): TemplateResult {
+    const recipients = this.draft.notifications.recipients;
+    const selectedPeople = recipients
+      .map((recipient) => recipient.personEntityId)
+      .filter((value): value is string => Boolean(value));
+    const enabledEvents = new Set(recipients.filter((recipient) => recipient.enabled).flatMap((recipient) => recipient.events));
     const content = html`
-      <div class="field"><span>${this.t('notificationService')}</span>${this.renderSinglePicker(this.entities.notify, this.draft.notifications.service, this.t('noNotification'), (id) => this.updateDraft((draft) => { draft.notifications.service = id; }))}</div>
-      ${this.draft.notifications.service ? html`<label class="field"><span>${this.t('notificationTargets')} <em>${this.t('optional')}</em></span><input .value=${this.draft.notifications.targets.join(', ')} @input=${(event: Event) => this.updateDraft((draft) => { draft.notifications.targets = inputValue(event).split(',').map((value) => value.trim()).filter(Boolean); })}><small>${this.t('notificationTargetsHint')}</small></label>` : nothing}
-      ${this.draft.notifications.service ? this.renderTestButton('notifications', 'testNotification') : nothing}
+      <div class="notification-overview">
+        <div><strong>${this.t('notificationActiveTitle')}</strong><small>${recipients.length ? this.t('notificationPeopleCount', { count: recipients.length }) : this.t('notificationNoneConfigured')}</small></div>
+        <div class="notification-event-chips">
+          ${NOTIFICATION_EVENTS.map((item) => html`<span class=${enabledEvents.has(item.event) ? `active ${item.tone}` : ''}>${icon(item.icon, 13)} ${this.t(item.title)}</span>`)}
+        </div>
+      </div>
+      <div class="field"><span>${this.t('notificationPeople')}</span>${this.renderPeoplePicker(selectedPeople)}</div>
+      ${recipients.length ? html`
+        <div class="caregiver-list">
+          ${recipients.map((recipient, index) => this.renderNotificationRecipient(recipient, index))}
+        </div>
+        <div class="notification-timing">
+          <div><strong>${this.t('notificationAdvance')}</strong><small>${this.t('notificationAdvanceHint')}</small></div>
+          <div class="lead-options" role="radiogroup">
+            ${[5, 10, 15, 20].map((minutes) => html`<button type="button" class=${this.draft.notifications.leadMinutes === minutes ? 'active' : ''} @click=${() => this.updateDraft((draft) => { draft.notifications.leadMinutes = minutes; })}>${minutes} min</button>`)}
+          </div>
+        </div>
+        ${this.renderTestButton('notifications', 'testNotification')}
+      ` : html`<div class="notification-empty">${icon('heart', 22)}<div><strong>${this.t('notificationEmptyTitle')}</strong><small>${this.t('notificationEmptyHint')}</small></div></div>`}
     `;
     return compact ? html`<div class="compact-section subsection"><h3>${icon('heart', 18)} ${this.t('settingsNotifications')}</h3>${content}</div>` : this.renderSettingsCard('notifications', 'heart', 'settingsNotifications', 'settingsNotificationsHint', content);
+  }
+
+  private suggestedNotifyService(person: HomeAssistantEntity): string {
+    const slug = person.entityId.split('.', 2)[1] ?? '';
+    const compactSlug = slug.replaceAll('_', '');
+    const mobile = this.entities.notify.filter((entity) => entity.entityId.startsWith('notify.mobile_app_'));
+    const matching = mobile.filter((entity) => {
+      const service = entity.entityId.replace('notify.mobile_app_', '').replaceAll('_', '');
+      return service.includes(compactSlug) || compactSlug.includes(service.replace(/s$/, ''));
+    });
+    if (matching.length === 1) return matching[0].entityId;
+    return '';
+  }
+
+  private setNotificationPeople(personIds: string[]): void {
+    this.updateDraft((draft) => {
+      const previous = draft.notifications.recipients;
+      const legacy = previous.find((recipient) => recipient.personEntityId == null);
+      let legacyUsed = false;
+      draft.notifications.recipients = personIds.map((personId) => {
+        const existing = previous.find((recipient) => recipient.personEntityId === personId);
+        if (existing) return existing;
+        const person = this.entities.person.find((entity) => entity.entityId === personId);
+        const suggestion = person ? this.suggestedNotifyService(person) : '';
+        if (legacy && !legacyUsed && suggestion === legacy.notifyService) {
+          legacyUsed = true;
+          return {
+            ...legacy,
+            personEntityId: personId,
+            name: person?.name ?? legacy.name,
+            language: this.language,
+          };
+        }
+        return {
+          personEntityId: personId,
+          name: person?.name ?? personId,
+          notifyService: suggestion,
+          targets: [],
+          enabled: true,
+          language: this.language,
+          events: ['cry_started'],
+        } satisfies NotificationRecipient;
+      });
+    });
+  }
+
+  private renderPeoplePicker(selected: string[]): TemplateResult {
+    const selectedNames = selected.map((id) => this.entities.person.find((person) => person.entityId === id)?.name ?? id);
+    return html`
+      <details class="entity-picker multi-picker people-picker">
+        <summary><span>${selected.length ? this.t('notificationPeopleCount', { count: selected.length }) : this.t('notificationChoosePeople')}<small>${selectedNames.join(', ')}</small></span>${icon('chevron', 16)}</summary>
+        <div class="picker-menu checkbox-menu">
+          ${this.entities.person.length ? this.entities.person.map((person) => html`
+            <label class=${person.available ? '' : 'disabled'}>
+              <input type="checkbox" .checked=${selected.includes(person.entityId)} ?disabled=${!person.available} @change=${(event: Event) => {
+                const next = inputChecked(event) ? [...selected, person.entityId] : selected.filter((id) => id !== person.entityId);
+                this.setNotificationPeople(next);
+              }}>
+              <span class="person-option-avatar">${this.personInitials(person.name)}</span>
+              <span><strong>${person.name}</strong><small>${person.entityId}</small></span>
+            </label>
+          `) : html`<p>${this.t('notificationNoPeople')}</p>`}
+        </div>
+      </details>
+    `;
+  }
+
+  private personInitials(name: string): string {
+    return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || '·';
+  }
+
+  private renderNotificationRecipient(recipient: NotificationRecipient, index: number): TemplateResult {
+    const person = recipient.personEntityId
+      ? this.entities.person.find((entity) => entity.entityId === recipient.personEntityId)
+      : null;
+    const activeCount = recipient.enabled ? recipient.events.length : 0;
+    return html`
+      <article class=${`caregiver-card ${recipient.enabled ? '' : 'muted'}`}>
+        <header>
+          <span class="caregiver-avatar">${this.personInitials(person?.name ?? recipient.name)}</span>
+          <div><strong>${person?.name ?? recipient.name}</strong><small>${activeCount ? this.t('notificationActiveCount', { count: activeCount }) : this.t('notificationMuted')}</small></div>
+          <label class="mini-toggle" aria-label=${this.t('notificationRecipientEnabled')}><input type="checkbox" .checked=${recipient.enabled} @change=${(event: Event) => this.updateDraft((draft) => { draft.notifications.recipients[index].enabled = inputChecked(event); })}><i></i></label>
+        </header>
+        <div class="caregiver-device">
+          <div><strong>${this.t('notificationDevice')}</strong><small>${this.t('notificationDeviceHint')}</small></div>
+          ${this.renderSinglePicker(this.entities.notify, recipient.notifyService || null, this.t('notificationChooseDevice'), (service) => this.updateDraft((draft) => { draft.notifications.recipients[index].notifyService = service ?? ''; }))}
+        </div>
+        <div class="caregiver-language"><span>${this.t('notificationLanguage')}</span>${this.renderChoiceRow([
+          ['es', 'spanish'], ['en', 'english'],
+        ], recipient.language, (language) => this.updateDraft((draft) => { draft.notifications.recipients[index].language = language as Language; }))}</div>
+        <div class="subscription-list">
+          ${NOTIFICATION_EVENTS.map((item) => {
+            const checked = recipient.events.includes(item.event);
+            return html`
+              <label class=${`subscription-row ${item.tone}`}>
+                <span class="subscription-icon">${icon(item.icon, 17)}</span>
+                <span><strong>${this.t(item.title)}</strong><small>${this.t(item.hint)}</small></span>
+                <input type="checkbox" .checked=${checked} ?disabled=${!recipient.enabled} @change=${(event: Event) => this.updateDraft((draft) => {
+                  const events = draft.notifications.recipients[index].events;
+                  draft.notifications.recipients[index].events = inputChecked(event)
+                    ? [...events, item.event]
+                    : events.filter((value) => value !== item.event);
+                })}>
+              </label>
+            `;
+          })}
+        </div>
+      </article>
+    `;
   }
 
   private renderVisionSection(compact = false): TemplateResult {
@@ -1537,7 +3190,12 @@ export class BabyMonitorApp extends LitElement {
     return html`
       <a class="skip-link" href="#main">${this.t('skipContent')}</a>
       ${this.loading ? this.renderLoading() : this.fatalError ? this.renderFatalError() : this.onboarding ? this.renderOnboarding() : html`
-        <div class="app-shell">${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'dashboard' ? this.renderDashboard() : this.page === 'history' ? this.renderHistory() : this.renderSettings()}</div>
+        <div class=${`app-shell ${this.page === 'sleep' && this.rhythmMode === 'day' ? 'theme-day' : 'theme-night'}`}>${this.renderHeader()}${this.renderHealthBanner()}${this.page === 'sleep' ? this.renderDashboard() : this.page === 'camera' ? this.renderCamera() : this.page === 'data' ? this.renderHistory() : this.renderSettings()}</div>
+        ${this.renderManualDialog()}
+        ${this.renderActiveSleepOverlay()}
+        ${this.renderSleepEditor()}
+        ${this.renderPredictionDialog()}
+        ${this.renderTemporalPicker()}
       `}
       <div class="toast-region" aria-live="polite" aria-atomic="true">${this.toast ? html`<div class=${`toast ${this.toast.tone}`}>${this.toast.tone === 'success' ? icon('check', 17) : this.toast.tone === 'error' ? '!' : icon('heart', 17)}<span>${this.toast.message}</span><button aria-label=${this.t('dismiss')} @click=${() => { this.toast = null; }}>&times;</button></div>` : nothing}</div>
     `;
