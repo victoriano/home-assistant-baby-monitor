@@ -2,13 +2,14 @@ import { render, type TemplateResult } from 'lit';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { api } from '../src/api';
-import { BabyMonitorApp } from '../src/baby-monitor-app';
+import { BabyMonitorApp, rhythmModeForTime } from '../src/baby-monitor-app';
 import type { RhythmSegment } from '../src/sleep-rhythm';
 import type { FrameRecord, Language, SleepEvent, SleepEventDetails, SleepKind } from '../src/types';
 
 interface SleepEditorHarness {
   language: Language;
   manualOpen: boolean;
+  sleepEvents: SleepEvent[];
   activeSleepOverlay: SleepEvent | null;
   activeSleepNow: number;
   editingSleep: SleepEvent | null;
@@ -25,11 +26,13 @@ interface SleepEditorHarness {
     index: number;
   };
   loadOperationalData(initial?: boolean): Promise<void>;
+  addManualSleep(): Promise<void>;
   deleteSleepEditor(): Promise<void>;
   closeActiveSleepOverlay(): void;
   finishActiveSleep(): Promise<void>;
   openSleepEditor(event: SleepEvent): void;
   openRhythmSegment(segment: RhythmSegment): void;
+  syncActiveSleepOverlay(): void;
   renderActiveSleepOverlay(): TemplateResult;
   renderManualDialog(): TemplateResult;
   renderSleepEditor(): TemplateResult;
@@ -269,11 +272,93 @@ describe('sleep segment editor', () => {
     expect(container.textContent).toContain('Empezó a las');
     expect(container.querySelector('.active-sleep-stop')?.textContent).toContain('Finalizar ahora');
     expect(container.querySelector('.active-sleep-edit')?.textContent).toContain('Editar detalles');
+    expect(container.querySelector('.active-sleep-close')).toBeNull();
 
     vi.advanceTimersByTime(1000);
     render(app.renderActiveSleepOverlay(), container);
     expect(container.querySelector('.active-sleep-clock')?.textContent).toBe('2:07:04');
     app.closeActiveSleepOverlay();
+  });
+
+  it('defaults to day at 09:00 and night at 21:00', () => {
+    expect(rhythmModeForTime(new Date(2026, 6, 19, 8, 59))).toBe('night');
+    expect(rhythmModeForTime(new Date(2026, 6, 19, 9, 0))).toBe('day');
+    expect(rhythmModeForTime(new Date(2026, 6, 19, 20, 59))).toBe('day');
+    expect(rhythmModeForTime(new Date(2026, 6, 19, 21, 0))).toBe('night');
+  });
+
+  it('keeps the manual sleep action visible and uses Play when no end is defined', () => {
+    const app = harness();
+    app.manualOpen = true;
+    app.manualForm = {
+      startedAt: '2026-07-19T13:12',
+      endedAt: '',
+      kind: 'nap',
+      notes: '',
+      details: { tags: [], pauses: [] },
+    };
+    const container = document.createElement('div');
+    render(app.renderManualDialog(), container);
+
+    expect(container.querySelector('.manual-create-dialog')).not.toBeNull();
+    expect(container.querySelector('.manual-form-scroll')).not.toBeNull();
+    expect(container.querySelector('.manual-create-actions')).not.toBeNull();
+    expect(container.querySelector('.manual-create-actions .icon-play')).not.toBeNull();
+    expect(container.querySelector('.manual-create-actions')?.textContent).toContain('Comenzar ahora');
+    expect(container.querySelector('.manual-create-actions')?.textContent).toContain('visible hasta que la finalices');
+
+    app.manualForm = { ...app.manualForm, endedAt: '2026-07-19T14:00' };
+    render(app.renderManualDialog(), container);
+    expect(container.querySelector('.manual-create-actions .icon-check')).not.toBeNull();
+    expect(container.querySelector('.manual-create-actions')?.textContent).toContain('Guardar entrada');
+  });
+
+  it('opens the persistent timer immediately after starting a manual nap', async () => {
+    const ongoing: SleepEvent = {
+      ...automaticSleep,
+      id: 'manual-just-started',
+      startedAt: '2026-07-19T13:12:00.000Z',
+      endedAt: null,
+      kind: 'nap',
+      source: 'manual',
+    };
+    vi.spyOn(api, 'addManualSleep').mockResolvedValue(ongoing);
+    const app = harness();
+    app.manualOpen = true;
+    app.manualForm = {
+      startedAt: '2026-07-19T15:12',
+      endedAt: '',
+      kind: 'nap',
+      notes: '',
+      details: { tags: [], pauses: [] },
+    };
+
+    await app.addManualSleep();
+
+    expect(api.addManualSleep).toHaveBeenCalledWith(expect.objectContaining({ endedAt: null, kind: 'nap' }));
+    expect(app.manualOpen).toBe(false);
+    expect(app.activeSleepOverlay?.id).toBe(ongoing.id);
+    expect(app.loadOperationalData).toHaveBeenCalledWith(false);
+    app.closeActiveSleepOverlay();
+  });
+
+  it('restores an open manual sleep on reload and only hides it once it has ended', () => {
+    const ongoing: SleepEvent = {
+      ...automaticSleep,
+      id: 'manual-restored',
+      endedAt: null,
+      kind: 'nap',
+      source: 'manual',
+    };
+    const app = harness();
+    app.sleepEvents = [ongoing];
+
+    app.syncActiveSleepOverlay();
+    expect(app.activeSleepOverlay?.id).toBe(ongoing.id);
+
+    app.sleepEvents = [{ ...ongoing, endedAt: '2026-07-19T14:00:00.000Z' }];
+    app.syncActiveSleepOverlay();
+    expect(app.activeSleepOverlay).toBeNull();
   });
 
   it('stops the active timer, refreshes the public app, and closes the floating window', async () => {

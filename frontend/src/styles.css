@@ -787,6 +787,21 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 }
 .manual-dialog { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow: auto; border-radius: var(--radius-large); box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58); }
 .manual-dialog .manual-form { margin: 0; }
+.manual-create-dialog { height: min(820px, calc(100vh - 48px)); overflow: hidden; }
+.manual-create-form {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  padding: 0 !important;
+  overflow: hidden;
+}
+.manual-form-scroll {
+  min-height: 0;
+  padding: 26px 24px 22px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 @keyframes dialog-fade-in { from { opacity: 0; } }
 
 .manual-dialog-backdrop.theme-day { background: rgba(224, 232, 248, .72); }
@@ -820,23 +835,6 @@ h1, h2, h3, strong { font-family: var(--font-display); }
   color: #202442;
   box-shadow: 0 24px 64px rgba(45,57,105,.25), inset 0 1px 0 rgba(255,255,255,.88);
 }
-.active-sleep-close {
-  position: absolute;
-  top: 10px;
-  right: 11px;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--quiet);
-  font-size: 22px;
-  cursor: pointer;
-}
-.active-sleep-close:hover { background: rgba(255,255,255,.07); color: var(--linen); }
 .active-sleep-heading { display: flex; align-items: center; gap: 11px; min-width: 0; padding-right: 4px; }
 .active-sleep-heading > div { display: grid; gap: 2px; min-width: 0; }
 .active-sleep-heading small { color: var(--quiet); font-size: 9px; font-weight: 780; letter-spacing: .11em; text-transform: uppercase; }
@@ -863,7 +861,6 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 }
 .active-sleep-clock {
   align-self: center;
-  margin-right: 30px;
   font-family: var(--font-data);
   font-size: 29px;
   font-weight: 650;
@@ -879,7 +876,6 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .active-sleep-stop { border: 1px solid rgba(255,229,178,.42); background: var(--amber); color: #2d1d05; box-shadow: 0 8px 24px rgba(189,132,64,.22); }
 .active-sleep-stop svg { fill: currentColor; stroke-width: 1.5; }
 .active-sleep-float.theme-day .active-sleep-edit { background: rgba(76,91,151,.045); color: #46506d; }
-.active-sleep-float.theme-day .active-sleep-close:hover { background: rgba(76,91,151,.07); color: #202442; }
 @keyframes active-sleep-in { from { opacity: 0; transform: translate(-50%, 12px) scale(.98); } }
 @keyframes active-sleep-pulse { 0% { opacity: .8; transform: scale(.86); } 75%,100% { opacity: 0; transform: scale(1.18); } }
 @keyframes active-sleep-line { 0% { transform: translateX(-110%); } 55%,100% { transform: translateX(315%); } }
@@ -957,7 +953,31 @@ h1, h2, h3, strong { font-family: var(--font-display); }
 .sleep-comment:focus { border-color: rgba(168,178,255,.48); box-shadow: 0 0 0 3px rgba(139,152,244,.08); }
 .sleep-form-error { width: min(100%,560px); margin: 18px auto 0; }
 .sleep-form-actions { display: flex; align-items: center; justify-content: center; gap: 18px; margin-top: 28px; }
+.manual-create-actions {
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 112px;
+  margin: 0;
+  padding: 12px 24px 17px;
+  border-top: 1px solid var(--edge);
+  background: rgba(17,22,42,.94);
+  box-shadow: 0 -18px 38px rgba(5,8,18,.20);
+  backdrop-filter: blur(18px);
+}
+.theme-day .manual-create-actions {
+  border-top-color: rgba(76,91,151,.12);
+  background: rgba(248,250,255,.95);
+  box-shadow: 0 -18px 38px rgba(53,69,119,.10);
+}
+.manual-submit-cluster { display: grid; grid-template-columns: 72px minmax(0,1fr); align-items: center; gap: 12px; min-width: 0; max-width: 260px; }
+.manual-submit-cluster > span { display: grid; gap: 3px; min-width: 0; text-align: left; }
+.manual-submit-cluster strong { color: var(--linen); font-size: 11px; }
+.manual-submit-cluster small { max-width: 150px; color: var(--faint); font-size: 8px; line-height: 1.35; }
+.theme-day .manual-submit-cluster strong { color: #202442; }
 .sheet-save { display: grid; place-items: center; width: 72px; height: 72px; padding: 0; border: 0; border-radius: 50%; background: radial-gradient(circle at 45% 28%, #f1edff, #9185f4 55%, #5d55b5); color: #17182c; box-shadow: 0 0 30px rgba(148,131,255,.42); cursor: pointer; }
+.sheet-save.start-now { background: radial-gradient(circle at 43% 27%, #fff3ce, #efbb58 54%, #c88422); color: #2c1d06; box-shadow: 0 0 34px rgba(232,174,68,.40); }
+.sheet-save.start-now:hover { transform: translateY(-1px); box-shadow: 0 8px 38px rgba(232,174,68,.48); }
 .sheet-save:disabled { filter: saturate(.5); opacity: .5; }
 .editor-duration { margin: 11px auto 0; color: var(--faint); font-family: var(--font-data); font-size: 9px; text-align: center; }
 .editor-types { width: max-content; max-width: 100%; margin: 18px auto 0; }
@@ -1616,12 +1636,19 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .active-sleep-heading { gap: 9px; }
   .active-sleep-pulse { width: 41px; height: 41px; }
   .active-sleep-heading strong { font-size: 14px; }
-  .active-sleep-clock { margin-right: 26px; font-size: 24px; }
+  .active-sleep-clock { font-size: 24px; }
   .active-sleep-float > p { margin-left: 50px; }
   .active-sleep-actions button { min-height: 40px; padding: 0 9px; font-size: 9px; }
   .manual-dialog { max-height: min(82vh, 720px); border-radius: 22px 22px 16px 16px; }
   .manual-dialog .manual-form { padding: 20px; }
   .legacy-sleep-form { padding: 22px 15px 27px !important; }
+  .manual-create-dialog { height: min(82vh, 720px); overflow: hidden; }
+  .manual-create-form { padding: 0 !important; }
+  .manual-form-scroll { padding: 22px 15px 18px; scrollbar-gutter: auto; }
+  .manual-create-actions { min-height: 106px; padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .manual-submit-cluster { grid-template-columns: 64px minmax(0,1fr); gap: 9px; }
+  .manual-submit-cluster .sheet-save { width: 64px; height: 64px; }
+  .manual-submit-cluster small { max-width: 126px; }
   .sleep-form-hero { margin-right: 42px; margin-left: 42px; }
   .sleep-form-hero h2 { font-size: 23px; }
   .sleep-type-pills button { padding: 0 10px; }

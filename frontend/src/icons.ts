@@ -13,6 +13,7 @@ export type IconName =
   | 'light'
   | 'lock'
   | 'moon'
+  | 'play'
   | 'plus'
   | 'refresh'
   | 'settings'
@@ -47,6 +48,8 @@ function path(name: IconName): SVGTemplateResult {
       return svg`<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/>`;
     case 'moon':
       return svg`<path d="M20 15.2A8.7 8.7 0 0 1 8.8 4a9 9 0 1 0 11.2 11.2Z"/>`;
+    case 'play':
+      return svg`<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>`;
     case 'plus':
       return svg`<path d="M12 5v14M5 12h14"/>`;
     case 'refresh':

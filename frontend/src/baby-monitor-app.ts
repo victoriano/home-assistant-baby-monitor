@@ -184,6 +184,11 @@ function localDateTime(date: Date): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+export function rhythmModeForTime(now: Date): RhythmMode {
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return minutes >= 21 * 60 || minutes < 9 * 60 ? 'night' : 'day';
+}
+
 function asIso(value: string): string {
   return new Date(value).toISOString();
 }
@@ -256,7 +261,7 @@ export class BabyMonitorApp extends LitElement {
   private editSleepEndChanged = false;
   @state() private manualEndTouched = false;
   @state() private rhythmDate = localDateKey(new Date());
-  @state() private rhythmMode: RhythmMode = new Date().getHours() >= 19 || new Date().getHours() < 9 ? 'night' : 'day';
+  @state() private rhythmMode: RhythmMode = rhythmModeForTime(new Date());
   @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
   @state() private visionStatistics: VisionStatistics | null = null;
   @state() private visionStatisticsLoading = false;
@@ -291,7 +296,6 @@ export class BabyMonitorApp extends LitElement {
     if (event.key === 'Escape') {
       if (this.temporalPicker) { this.temporalPicker = null; return; }
       if (this.selectedPrediction) { this.selectedPrediction = null; return; }
-      if (this.activeSleepOverlay) { this.closeActiveSleepOverlay(); return; }
       if (this.manualOpen) this.closeManualForm();
       if (this.editingSleep) this.editingSleep = null;
     }
@@ -455,14 +459,24 @@ export class BabyMonitorApp extends LitElement {
     }
     if (results[4].status === 'fulfilled') this.sleepPlan = results[4].value;
     this.historyPages = nextPages;
-    if (this.activeSleepOverlay) {
-      const current = this.summary.currentSleep
-        ?? this.sleepEvents.find((event) => event.id === this.activeSleepOverlay?.id && !event.endedAt)
-        ?? null;
-      if (!current || current.id !== this.activeSleepOverlay.id || current.endedAt) this.closeActiveSleepOverlay();
-      else this.activeSleepOverlay = current;
-    }
+    this.syncActiveSleepOverlay();
     this.refreshingData = false;
+  }
+
+  private syncActiveSleepOverlay(): void {
+    const summarySleep = this.summary.currentSleep;
+    const current = summarySleep?.source === 'manual' && !summarySleep.endedAt
+      ? summarySleep
+      : this.sleepEvents.find((event) => event.source === 'manual' && !event.endedAt) ?? null;
+    if (!current) {
+      if (this.activeSleepOverlay) this.closeActiveSleepOverlay();
+      return;
+    }
+    if (this.activeSleepOverlay?.id === current.id) {
+      this.activeSleepOverlay = current;
+      return;
+    }
+    this.openActiveSleepOverlay(current);
   }
 
   private historyError(error: unknown): string {
@@ -635,7 +649,7 @@ export class BabyMonitorApp extends LitElement {
   private manualKindForNow(now: Date): SleepKind {
     const minutes = now.getHours() * 60 + now.getMinutes();
     if (minutes < 9 * 60) return this.summary.state === 'awake' ? 'awake' : 'night';
-    if (minutes >= 20 * 60) return 'night';
+    if (minutes >= 21 * 60) return 'night';
     return 'nap';
   }
 
@@ -747,7 +761,6 @@ export class BabyMonitorApp extends LitElement {
   private editActiveSleep(): void {
     const event = this.activeSleepOverlay;
     if (!event) return;
-    this.closeActiveSleepOverlay();
     this.openSleepEditor(event);
   }
 
@@ -1379,15 +1392,16 @@ export class BabyMonitorApp extends LitElement {
     }
     this.sleepBusy = 'add';
     try {
-      await api.addManualSleep({
+      const created = await api.addManualSleep({
         startedAt: asIso(this.manualForm.startedAt),
         endedAt: this.manualForm.endedAt ? asIso(this.manualForm.endedAt) : null,
         kind: this.manualForm.kind,
         notes: this.manualForm.notes,
         details: this.manualForm.details,
       });
-      this.manualOpen = false;
-      this.showToast(this.t('sleepAdded'));
+      this.closeManualForm();
+      if (!created.endedAt && created.source === 'manual') this.openActiveSleepOverlay(created);
+      this.showToast(created.endedAt ? this.t('sleepAdded') : this.t('sleepStarted'));
       await this.loadOperationalData(false);
     } catch (error) {
       this.inlineError = error instanceof Error ? error.message : this.t('saveError');
@@ -2470,36 +2484,56 @@ export class BabyMonitorApp extends LitElement {
       : this.manualForm.kind === 'night'
         ? (this.language === 'es' ? 'Sueño largo' : 'Night sleep')
         : (this.language === 'es' ? 'Siesta' : 'Nap');
+    const startsActiveSleep = this.manualForm.kind !== 'awake' && !this.manualForm.endedAt;
+    const missingAwakeEnd = this.manualForm.kind === 'awake' && !this.manualForm.endedAt;
+    const submitLabel = missingAwakeEnd
+      ? (this.language === 'es' ? 'Define una hora de fin' : 'Choose an end time')
+      : startsActiveSleep
+        ? (this.language === 'es' ? 'Comenzar ahora' : 'Start now')
+        : (this.language === 'es' ? 'Guardar entrada' : 'Save entry');
+    const submitHint = startsActiveSleep
+      ? (this.language === 'es' ? 'Seguirá visible hasta que la finalices' : 'It stays visible until you stop it')
+      : (this.language === 'es' ? 'Guarda este intervalo' : 'Save this interval');
     return html`
-      <form class="manual-form legacy-sleep-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
+      <form class="manual-form legacy-sleep-form manual-create-form" @submit=${(event: SubmitEvent) => { event.preventDefault(); void this.addManualSleep(); }}>
         <button type="button" class="dialog-close" aria-label=${this.t('dismiss')} @click=${() => this.closeManualForm()}>&times;</button>
-        <header class="sleep-form-hero">
-          <span>${icon(this.manualForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span>
-          <small>${this.language === 'es' ? 'Nuevo dato de sueño' : 'New sleep entry'}</small>
-          <h2>${title}</h2>
-          <div class="sleep-type-pills" role="radiogroup">
-            <button type="button" class=${this.manualForm.kind === 'nap' ? 'selected' : ''} @click=${() => this.setManualKind('nap')}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button>
-            <button type="button" class=${this.manualForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => this.setManualKind('awake')}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button>
-            <button type="button" class=${this.manualForm.kind === 'night' ? 'selected' : ''} @click=${() => this.setManualKind('night')}>${this.language === 'es' ? 'Noche' : 'Night'}</button>
+        <div class="manual-form-scroll">
+          <header class="sleep-form-hero">
+            <span>${icon(this.manualForm.kind === 'awake' ? 'waves' : 'moon', 28)}</span>
+            <small>${this.language === 'es' ? 'Nuevo dato de sueño' : 'New sleep entry'}</small>
+            <h2>${title}</h2>
+            <div class="sleep-type-pills" role="radiogroup">
+              <button type="button" class=${this.manualForm.kind === 'nap' ? 'selected' : ''} @click=${() => this.setManualKind('nap')}>${this.language === 'es' ? 'Siesta' : 'Nap'}</button>
+              <button type="button" class=${this.manualForm.kind === 'awake' ? 'selected awake' : ''} @click=${() => this.setManualKind('awake')}>${this.language === 'es' ? 'Despertar' : 'Awake'}</button>
+              <button type="button" class=${this.manualForm.kind === 'night' ? 'selected' : ''} @click=${() => this.setManualKind('night')}>${this.language === 'es' ? 'Noche' : 'Night'}</button>
+            </div>
+          </header>
+          <div class="sleep-time-editor">
+            ${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.manualForm.startedAt, 'manual-start', this.manualForm.startedAt)}
+            <i>–</i>
+            ${this.renderTemporalButton(
+              this.language === 'es' ? 'Fin' : 'End',
+              this.manualForm.endedAt,
+              'manual-end',
+              suggestion,
+              !this.manualForm.endedAt && duration ? `${this.language === 'es' ? 'máx. previsto' : 'suggested max'} ${formatDuration(duration)}` : '',
+            )}
           </div>
-        </header>
-        <div class="sleep-time-editor">
-          ${this.renderTemporalButton(this.language === 'es' ? 'Inicio' : 'Start', this.manualForm.startedAt, 'manual-start', this.manualForm.startedAt)}
-          <i>–</i>
-          ${this.renderTemporalButton(
-            this.language === 'es' ? 'Fin' : 'End',
-            this.manualForm.endedAt,
-            'manual-end',
-            suggestion,
-            !this.manualForm.endedAt && duration ? `${this.language === 'es' ? 'máx. previsto' : 'suggested max'} ${formatDuration(duration)}` : '',
-          )}
+          ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
+          ${this.manualFrameReviewBounds ? this.renderFrameReview() : nothing}
+          ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
+          <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
+          ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}
         </div>
-        ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
-        ${this.manualFrameReviewBounds ? this.renderFrameReview() : nothing}
-        ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
-        <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
-        ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}
-        <div class="sleep-form-actions"><button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button><button class="sheet-save" aria-label=${this.t('addSleep')} ?disabled=${this.sleepBusy === 'add'}>${this.sleepBusy === 'add' ? html`<span class="spinner"></span>` : icon('check', 31)}</button></div>
+        <footer class="sleep-form-actions manual-create-actions">
+          <button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button>
+          <div class="manual-submit-cluster">
+            <button class=${`sheet-save ${startsActiveSleep ? 'start-now' : ''}`} aria-label=${submitLabel} ?disabled=${this.sleepBusy === 'add' || missingAwakeEnd}>
+              ${this.sleepBusy === 'add' ? html`<span class="spinner"></span>` : icon(startsActiveSleep ? 'play' : 'check', 31)}
+            </button>
+            <span><strong>${submitLabel}</strong><small>${missingAwakeEnd ? '' : submitHint}</small></span>
+          </div>
+        </footer>
       </form>
     `;
   }
@@ -2508,7 +2542,7 @@ export class BabyMonitorApp extends LitElement {
     if (!this.manualOpen) return nothing;
     return html`
       <div class=${`manual-dialog-backdrop ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} @click=${(event: Event) => { if (event.target === event.currentTarget) this.closeManualForm(); }}>
-        <section class="manual-dialog" role="dialog" aria-modal="true" aria-label=${this.t('manualTitle')}>
+        <section class="manual-dialog manual-create-dialog" role="dialog" aria-modal="true" aria-label=${this.t('manualTitle')}>
           ${this.renderManualForm()}
         </section>
       </div>
@@ -2562,7 +2596,6 @@ export class BabyMonitorApp extends LitElement {
     const started = formatClock(event.startedAt, this.language);
     return html`
       <aside class=${`active-sleep-float ${this.rhythmMode === 'day' ? 'theme-day' : ''}`} role="dialog" aria-labelledby="active-sleep-title">
-        <button type="button" class="active-sleep-close" aria-label=${this.language === 'es' ? 'Cerrar' : 'Close'} @click=${() => this.closeActiveSleepOverlay()}>&times;</button>
         <div class="active-sleep-heading">
           <span class="active-sleep-pulse" aria-hidden="true">${icon('moon', 24)}</span>
           <div><small>${this.language === 'es' ? 'Sueño activo' : 'Active sleep'}</small><strong id="active-sleep-title">${title}</strong></div>
