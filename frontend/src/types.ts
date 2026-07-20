@@ -411,6 +411,25 @@ export interface ManualSleepInput {
   details: SleepEventDetails;
 }
 
+export interface SleepOverlapConflict {
+  id: string;
+  kind: SleepKind;
+  source: SleepEvent['source'];
+  startedAt: string;
+  endedAt: string | null;
+  resolution: {
+    action: 'trim_start' | 'trim_end' | 'manual';
+    startedAt: string;
+    endedAt: string | null;
+  };
+}
+
+export interface SleepOverlapWarning {
+  canAutoResolve: boolean;
+  confirmationToken: string;
+  conflicts: SleepOverlapConflict[];
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   message?: string;

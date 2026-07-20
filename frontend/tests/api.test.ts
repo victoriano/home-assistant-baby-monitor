@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { api, apiTesting, apiUrl } from '../src/api';
+import { ApiError, api, apiTesting, apiUrl, sleepOverlapFromError } from '../src/api';
 import { cloneDefaultSettings, isValidHttpBaseUrl, settingsToPayload } from '../src/types';
 
 describe('settings contract', () => {
@@ -406,6 +406,48 @@ describe('paginated history contract', () => {
       const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
       expect(event.kind).toBe('awake');
       expect(body.details).toEqual({ tags: [], pauses: [] });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('parses overlap previews and only sends the adjustment query after confirmation', async () => {
+    const overlapBody = {
+      detail: 'sleep event overlaps an existing event',
+      code: 'sleep_event_overlap',
+      canAutoResolve: true,
+      confirmationToken: 'b'.repeat(64),
+      conflicts: [{
+        id: 'night-1',
+        kind: 'night',
+        source: 'vision',
+        startedAt: '2026-07-13T22:00:00Z',
+        endedAt: '2026-07-14T07:08:00Z',
+        resolution: {
+          action: 'trim_end',
+          startedAt: '2026-07-13T22:00:00Z',
+          endedAt: '2026-07-14T06:08:00Z',
+        },
+      }],
+    };
+    expect(sleepOverlapFromError(new ApiError(overlapBody.detail, 409, overlapBody))).toEqual({
+      canAutoResolve: true,
+      confirmationToken: overlapBody.confirmationToken,
+      conflicts: overlapBody.conflicts,
+    });
+    const response = new Response(JSON.stringify({
+      id: 'awake-1', startedAt: '2026-07-14T06:08:00Z', endedAt: '2026-07-14T07:18:00Z',
+      kind: 'awake', source: 'manual', notes: null, locationId: 'granada', details: { tags: [], pauses: [] },
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    try {
+      await api.addManualSleep({
+        startedAt: '2026-07-14T06:08:00Z', endedAt: '2026-07-14T07:18:00Z',
+        kind: 'awake', notes: '', details: { tags: [], pauses: [] },
+      }, overlapBody.confirmationToken);
+
+      expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/sleep?resolve_overlaps=adjust');
+      expect(String(fetchMock.mock.calls[0][0])).toContain(`overlap_confirmation=${overlapBody.confirmationToken}`);
     } finally {
       fetchMock.mockRestore();
     }

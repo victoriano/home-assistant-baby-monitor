@@ -7,7 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from baby_monitor.database import Database, StorageError
+from baby_monitor.database import Database, SleepOverlapError, StorageError
 from baby_monitor.media import (
     SAMPLE_RATE,
     MediaError,
@@ -16,7 +16,14 @@ from baby_monitor.media import (
     _subprocess_env,
     analyze_pcm,
 )
-from baby_monitor.models import SecretChanges, SleepEventCreate, SleepEventPatch, utc_now
+from baby_monitor.models import (
+    SecretChanges,
+    SleepDetails,
+    SleepEventCreate,
+    SleepEventPatch,
+    SleepPause,
+    utc_now,
+)
 
 
 def test_sleep_crud_and_retention_keep_metadata(tmp_path: Path) -> None:
@@ -166,6 +173,136 @@ def test_sleep_events_cannot_overlap(tmp_path: Path) -> None:
     with pytest.raises(StorageError, match="overlaps"):
         database.update_sleep_event(other.id, SleepEventPatch(started_at=start + timedelta(minutes=30)))
     assert database.get_sleep_event(first.id) is not None
+
+
+def test_awake_overlap_is_previewed_then_trims_adjacent_sleep_after_confirmation(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    start = utc_now() - timedelta(hours=6)
+    left = database.add_sleep_event(
+        SleepEventCreate(
+            started_at=start,
+            ended_at=start + timedelta(hours=2),
+            kind="night",
+            source="vision",
+            details=SleepDetails(
+                tags=["in_bed"],
+                pauses=[
+                    SleepPause(
+                        started_at=start + timedelta(minutes=90),
+                        ended_at=start + timedelta(minutes=110),
+                    )
+                ],
+            ),
+        )
+    )
+    right = database.add_sleep_event(
+        SleepEventCreate(
+            started_at=start + timedelta(hours=3),
+            ended_at=start + timedelta(hours=5),
+            kind="nap",
+            source="vision",
+        )
+    )
+    awake = SleepEventCreate(
+        started_at=start + timedelta(hours=1),
+        ended_at=start + timedelta(hours=4),
+        kind="awake",
+        source="manual",
+    )
+
+    with pytest.raises(SleepOverlapError) as preview_error:
+        database.add_sleep_event(awake)
+
+    assert preview_error.value.can_auto_resolve is True
+    assert [item["resolution"]["action"] for item in preview_error.value.conflicts] == [
+        "trim_end",
+        "trim_start",
+    ]
+    assert database.get_sleep_event(left.id).ended_at == start + timedelta(hours=2)
+    assert database.get_sleep_event(right.id).started_at == start + timedelta(hours=3)
+
+    created = database.add_sleep_event(
+        awake,
+        resolve_overlaps=True,
+        overlap_confirmation=preview_error.value.confirmation_token,
+    )
+
+    adjusted_left = database.get_sleep_event(left.id)
+    adjusted_right = database.get_sleep_event(right.id)
+    assert created.kind == "awake"
+    assert adjusted_left is not None and adjusted_left.ended_at == awake.started_at
+    assert adjusted_left.details.tags == ["in_bed"]
+    assert adjusted_left.details.pauses == []
+    assert adjusted_right is not None and adjusted_right.started_at == awake.ended_at
+    assert database.list_sleep_events()[1] == 3
+
+
+def test_awake_overlap_that_would_split_sleep_cannot_be_auto_resolved(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    start = utc_now() - timedelta(hours=4)
+    existing = database.add_sleep_event(
+        SleepEventCreate(
+            started_at=start,
+            ended_at=start + timedelta(hours=3),
+            kind="night",
+            source="vision",
+        )
+    )
+    awake = SleepEventCreate(
+        started_at=start + timedelta(hours=1),
+        ended_at=start + timedelta(hours=2),
+        kind="awake",
+        source="manual",
+    )
+
+    with pytest.raises(SleepOverlapError) as preview_error:
+        database.add_sleep_event(awake)
+    assert preview_error.value.can_auto_resolve is False
+    assert preview_error.value.conflicts[0]["resolution"]["action"] == "manual"
+
+    with pytest.raises(SleepOverlapError):
+        database.add_sleep_event(
+            awake,
+            resolve_overlaps=True,
+            overlap_confirmation=preview_error.value.confirmation_token,
+        )
+    assert database.get_sleep_event(existing.id).ended_at == start + timedelta(hours=3)
+    assert database.list_sleep_events()[1] == 1
+
+
+def test_awake_overlap_confirmation_expires_when_the_conflict_changes(tmp_path: Path) -> None:
+    database = Database(tmp_path)
+    start = utc_now() - timedelta(hours=5)
+    existing = database.add_sleep_event(
+        SleepEventCreate(
+            started_at=start,
+            ended_at=start + timedelta(hours=4),
+            kind="night",
+            source="vision",
+        )
+    )
+    awake = SleepEventCreate(
+        started_at=start + timedelta(hours=3),
+        ended_at=start + timedelta(hours=5),
+        kind="awake",
+        source="manual",
+    )
+
+    with pytest.raises(SleepOverlapError) as first_preview:
+        database.add_sleep_event(awake)
+    changed_end = start + timedelta(hours=3, minutes=30)
+    database.update_sleep_event(existing.id, SleepEventPatch(ended_at=changed_end))
+
+    with pytest.raises(SleepOverlapError) as refreshed_preview:
+        database.add_sleep_event(
+            awake,
+            resolve_overlaps=True,
+            overlap_confirmation=first_preview.value.confirmation_token,
+        )
+
+    assert refreshed_preview.value.confirmation_token != first_preview.value.confirmation_token
+    assert database.get_sleep_event(existing.id).ended_at == changed_end
+    assert database.list_sleep_events()[1] == 1
 
 
 def test_fft_cry_analysis_and_ffmpeg_args_do_not_expose_stream_url() -> None:

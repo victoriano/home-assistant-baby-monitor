@@ -1,10 +1,17 @@
 import { render, type TemplateResult } from 'lit';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { api } from '../src/api';
+import { ApiError, api } from '../src/api';
 import { BabyMonitorApp, rhythmModeForTime } from '../src/baby-monitor-app';
 import type { RhythmSegment } from '../src/sleep-rhythm';
-import type { FrameRecord, Language, SleepEvent, SleepEventDetails, SleepKind } from '../src/types';
+import type {
+  FrameRecord,
+  Language,
+  SleepEvent,
+  SleepEventDetails,
+  SleepKind,
+  SleepOverlapWarning,
+} from '../src/types';
 
 interface SleepEditorHarness {
   language: Language;
@@ -14,6 +21,7 @@ interface SleepEditorHarness {
   activeSleepNow: number;
   editingSleep: SleepEvent | null;
   sleepBusy: 'start' | 'stop' | 'add' | '';
+  manualOverlap: SleepOverlapWarning | null;
   manualForm: {
     startedAt: string;
     endedAt: string;
@@ -26,7 +34,7 @@ interface SleepEditorHarness {
     index: number;
   };
   loadOperationalData(initial?: boolean): Promise<void>;
-  addManualSleep(): Promise<void>;
+  addManualSleep(resolveOverlaps?: boolean): Promise<void>;
   deleteSleepEditor(): Promise<void>;
   closeActiveSleepOverlay(): void;
   finishActiveSleep(): Promise<void>;
@@ -313,6 +321,68 @@ describe('sleep segment editor', () => {
     expect(container.querySelector('.manual-create-actions')?.textContent).toContain('Guardar entrada');
   });
 
+  it('warns before trimming overlapping sleep and only adjusts it from the explicit button', async () => {
+    const awake: SleepEvent = {
+      ...automaticSleep,
+      id: 'awake-1',
+      startedAt: '2026-07-14T03:00:00.000Z',
+      endedAt: '2026-07-14T04:20:00.000Z',
+      kind: 'awake',
+      source: 'manual',
+    };
+    const conflict = {
+      detail: 'sleep event overlaps an existing event',
+      code: 'sleep_event_overlap',
+      canAutoResolve: true,
+      confirmationToken: 'a'.repeat(64),
+      conflicts: [{
+        id: automaticSleep.id,
+        kind: automaticSleep.kind,
+        source: automaticSleep.source,
+        startedAt: automaticSleep.startedAt,
+        endedAt: automaticSleep.endedAt,
+        resolution: {
+          action: 'trim_end',
+          startedAt: automaticSleep.startedAt,
+          endedAt: awake.startedAt,
+        },
+      }],
+    };
+    const addRequest = vi.spyOn(api, 'addManualSleep')
+      .mockRejectedValueOnce(new ApiError(conflict.detail, 409, conflict))
+      .mockResolvedValueOnce(awake);
+    const app = harness();
+    app.manualOpen = true;
+    app.manualForm = {
+      startedAt: '2026-07-14T05:00',
+      endedAt: '2026-07-14T06:20',
+      kind: 'awake',
+      notes: '',
+      details: { tags: [], pauses: [] },
+    };
+
+    await app.addManualSleep();
+
+    expect(app.manualOpen).toBe(true);
+    expect(app.manualOverlap?.canAutoResolve).toBe(true);
+    expect(app.loadOperationalData).not.toHaveBeenCalled();
+    const container = document.createElement('div');
+    render(app.renderManualDialog(), container);
+    const warning = container.querySelector('.manual-overlap-warning');
+    expect(warning?.textContent).toContain('se solapa con sueño registrado');
+    expect(warning?.textContent).toContain('se recortará para terminar');
+    const adjustButton = warning?.querySelector<HTMLButtonElement>('button');
+    expect(adjustButton?.textContent).toContain('Recortar sueño y guardar');
+
+    adjustButton?.click();
+    await vi.waitFor(() => expect(addRequest).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(app.manualOpen).toBe(false));
+
+    expect(addRequest.mock.calls[0]?.[1]).toBeUndefined();
+    expect(addRequest.mock.calls[1]?.[1]).toBe(conflict.confirmationToken);
+    expect(app.loadOperationalData).toHaveBeenCalledWith(false);
+  });
+
   it('opens the persistent timer immediately after starting a manual nap', async () => {
     const ongoing: SleepEvent = {
       ...automaticSleep,
@@ -335,7 +405,10 @@ describe('sleep segment editor', () => {
 
     await app.addManualSleep();
 
-    expect(api.addManualSleep).toHaveBeenCalledWith(expect.objectContaining({ endedAt: null, kind: 'nap' }));
+    expect(api.addManualSleep).toHaveBeenCalledWith(
+      expect.objectContaining({ endedAt: null, kind: 'nap' }),
+      undefined,
+    );
     expect(app.manualOpen).toBe(false);
     expect(app.activeSleepOverlay?.id).toBe(ongoing.id);
     expect(app.loadOperationalData).toHaveBeenCalledWith(false);

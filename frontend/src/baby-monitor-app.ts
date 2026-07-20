@@ -1,7 +1,7 @@
 import { LitElement, html, nothing, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
-import { ApiError, api } from './api';
+import { ApiError, api, sleepOverlapFromError } from './api';
 import { icon, type IconName } from './icons';
 import { connectWebRtcVideo } from './webrtc';
 import {
@@ -50,6 +50,8 @@ import {
   type SleepEvent,
   type SleepEventDetails,
   type SleepKind,
+  type SleepOverlapConflict,
+  type SleepOverlapWarning,
   type SleepPause,
   type SleepPlan,
   type SleepPredictionTarget,
@@ -260,6 +262,7 @@ export class BabyMonitorApp extends LitElement {
   private editSleepStartChanged = false;
   private editSleepEndChanged = false;
   @state() private manualEndTouched = false;
+  @state() private manualOverlap: SleepOverlapWarning | null = null;
   @state() private rhythmDate = localDateKey(new Date());
   @state() private rhythmMode: RhythmMode = rhythmModeForTime(new Date());
   @state() private statsTab: 'summary' | 'naps' | 'awake' | 'night' | 'pacifier' | 'head' | 'clothing' | 'mouth' = 'summary';
@@ -705,11 +708,13 @@ export class BabyMonitorApp extends LitElement {
       details: EMPTY_DETAILS(),
     };
     this.manualEndTouched = false;
+    this.manualOverlap = null;
     this.manualOpen = true;
   }
 
   private closeManualForm(): void {
     this.inlineError = '';
+    this.manualOverlap = null;
     this.temporalPicker = null;
     this.frameReviewRequest += 1;
     this.frameReviewContext = 'edit';
@@ -881,10 +886,14 @@ export class BabyMonitorApp extends LitElement {
     if (!this.temporalPicker) return;
     const { target, value } = this.temporalPicker;
     let reloadFrameReview = false;
-    if (target === 'manual-start') this.manualForm = { ...this.manualForm, startedAt: value };
+    if (target === 'manual-start') {
+      this.manualForm = { ...this.manualForm, startedAt: value };
+      this.manualOverlap = null;
+    }
     else if (target === 'manual-end') {
       this.manualForm = { ...this.manualForm, endedAt: value };
       this.manualEndTouched = true;
+      this.manualOverlap = null;
     } else if (target === 'edit-start') {
       this.editSleepForm = { ...this.editSleepForm, startedAt: value };
       this.editSleepFrameBounds = {
@@ -933,6 +942,7 @@ export class BabyMonitorApp extends LitElement {
     if (kind === 'awake' && !this.manualForm.endedAt) {
       this.manualForm = { ...this.manualForm, endedAt: suggestion };
     }
+    this.manualOverlap = null;
   }
 
   private toggleDetailTag(scope: 'manual' | 'edit', tag: string): void {
@@ -1377,7 +1387,7 @@ export class BabyMonitorApp extends LitElement {
     }
   }
 
-  private async addManualSleep(): Promise<void> {
+  private async addManualSleep(resolveOverlaps = false): Promise<void> {
     const start = new Date(this.manualForm.startedAt);
     const end = this.manualForm.endedAt ? new Date(this.manualForm.endedAt) : null;
     if (Number.isNaN(start.getTime()) || (end && (Number.isNaN(end.getTime()) || end <= start))) {
@@ -1390,6 +1400,8 @@ export class BabyMonitorApp extends LitElement {
         : 'Awake periods need an end time.';
       return;
     }
+    if (!resolveOverlaps) this.manualOverlap = null;
+    this.inlineError = '';
     this.sleepBusy = 'add';
     try {
       const created = await api.addManualSleep({
@@ -1398,13 +1410,21 @@ export class BabyMonitorApp extends LitElement {
         kind: this.manualForm.kind,
         notes: this.manualForm.notes,
         details: this.manualForm.details,
-      });
+      }, resolveOverlaps ? this.manualOverlap?.confirmationToken : undefined);
       this.closeManualForm();
       if (!created.endedAt && created.source === 'manual') this.openActiveSleepOverlay(created);
-      this.showToast(created.endedAt ? this.t('sleepAdded') : this.t('sleepStarted'));
+      this.showToast(resolveOverlaps
+        ? this.language === 'es' ? 'Despertar guardado y sueño ajustado' : 'Awake period saved and sleep adjusted'
+        : created.endedAt ? this.t('sleepAdded') : this.t('sleepStarted'));
       await this.loadOperationalData(false);
     } catch (error) {
-      this.inlineError = error instanceof Error ? error.message : this.t('saveError');
+      const overlap = sleepOverlapFromError(error);
+      if (overlap) {
+        this.manualOverlap = overlap;
+      } else {
+        this.inlineError = error instanceof Error ? error.message : this.t('saveError');
+        this.showToast(this.inlineError, 'error');
+      }
     } finally {
       this.sleepBusy = '';
     }
@@ -1949,6 +1969,7 @@ export class BabyMonitorApp extends LitElement {
     };
     this.frameReview = { point: '', frames: [], index: 0, loading: false, error: '', requestedAt: '' };
     this.manualEndTouched = true;
+    this.manualOverlap = null;
     this.manualOpen = true;
     void this.loadFrameReview('start');
   }
@@ -2472,6 +2493,55 @@ export class BabyMonitorApp extends LitElement {
     `;
   }
 
+  private sleepOverlapDescription(conflict: SleepOverlapConflict): string {
+    const kind = this.language === 'es'
+      ? conflict.kind === 'night' ? 'sueño largo' : conflict.kind === 'nap' ? 'siesta' : 'segmento de sueño'
+      : conflict.kind === 'night' ? 'night sleep' : conflict.kind === 'nap' ? 'nap' : 'sleep segment';
+    const originalStart = formatClock(conflict.startedAt, this.language);
+    const originalEnd = conflict.endedAt ? formatClock(conflict.endedAt, this.language) : null;
+    if (conflict.resolution.action === 'trim_end' && conflict.resolution.endedAt) {
+      const adjustedEnd = formatClock(conflict.resolution.endedAt, this.language);
+      return this.language === 'es'
+        ? `El ${kind} de ${originalStart} a ${originalEnd ?? 'ahora'} se recortará para terminar a las ${adjustedEnd}.`
+        : `The ${kind} from ${originalStart} to ${originalEnd ?? 'now'} will be trimmed to end at ${adjustedEnd}.`;
+    }
+    if (conflict.resolution.action === 'trim_start') {
+      const adjustedStart = formatClock(conflict.resolution.startedAt, this.language);
+      return this.language === 'es'
+        ? `El ${kind} de ${originalStart} a ${originalEnd ?? 'ahora'} se recortará para empezar a las ${adjustedStart}.`
+        : `The ${kind} from ${originalStart} to ${originalEnd ?? 'now'} will be trimmed to start at ${adjustedStart}.`;
+    }
+    return this.language === 'es'
+      ? `El ${kind} de ${originalStart} a ${originalEnd ?? 'ahora'} atraviesa este intervalo y no se puede recortar sin dividirlo o eliminarlo.`
+      : `The ${kind} from ${originalStart} to ${originalEnd ?? 'now'} crosses this interval and cannot be trimmed without splitting or deleting it.`;
+  }
+
+  private renderManualOverlapWarning(): TemplateResult | typeof nothing {
+    const warning = this.manualOverlap;
+    if (!warning) return nothing;
+    const overlapTitle = this.manualForm.kind === 'awake'
+      ? this.language === 'es' ? 'Este despertar se solapa con sueño registrado' : 'This awake period overlaps recorded sleep'
+      : this.language === 'es' ? 'Este intervalo se solapa con sueño registrado' : 'This interval overlaps recorded sleep';
+    return html`
+      <section class="manual-overlap-warning" role="alert" aria-live="assertive">
+        <span class="manual-overlap-icon">${icon('waves', 20)}</span>
+        <div>
+          <strong>${overlapTitle}</strong>
+          ${warning.conflicts.map((conflict) => html`<p>${this.sleepOverlapDescription(conflict)}</p>`)}
+          <small>${warning.canAutoResolve
+            ? this.language === 'es' ? 'No cambiaremos nada hasta que confirmes el ajuste.' : 'Nothing will change until you confirm the adjustment.'
+            : this.language === 'es' ? 'Corrige las horas manualmente; no se ha cambiado ningún dato.' : 'Adjust the times manually; no data has been changed.'}</small>
+        </div>
+        ${warning.canAutoResolve ? html`
+          <button type="button" ?disabled=${this.sleepBusy === 'add'} @click=${() => { void this.addManualSleep(true); }}>
+            ${this.sleepBusy === 'add' ? html`<span class="spinner"></span>` : icon('sparkle', 16)}
+            <span>${this.language === 'es' ? 'Recortar sueño y guardar' : 'Trim sleep and save'}</span>
+          </button>
+        ` : nothing}
+      </section>
+    `;
+  }
+
   private renderManualForm(): TemplateResult {
     const suggestion = this.suggestedEnd(this.manualForm.startedAt, this.manualForm.kind);
     const start = new Date(this.manualForm.startedAt);
@@ -2519,13 +2589,14 @@ export class BabyMonitorApp extends LitElement {
               !this.manualForm.endedAt && duration ? `${this.language === 'es' ? 'máx. previsto' : 'suggested max'} ${formatDuration(duration)}` : '',
             )}
           </div>
-          ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
+          ${!this.manualForm.endedAt ? html`<button type="button" class="suggested-end" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: suggestion }; this.manualEndTouched = true; this.manualOverlap = null; }}>${icon('sparkle', 16)}<span>${this.language === 'es' ? `Usar fin sugerido · ${formatClock(new Date(suggestion).toISOString(), this.language)}` : `Use suggested end · ${formatClock(new Date(suggestion).toISOString(), this.language)}`}</span></button>` : html`<button type="button" class="suggested-end subtle" @click=${() => { this.manualForm = { ...this.manualForm, endedAt: '' }; this.manualEndTouched = false; this.manualOverlap = null; }}>${this.language === 'es' ? 'Dejar el sueño activo, sin hora de fin' : 'Leave this sleep active without an end time'}</button>`}
           ${this.manualFrameReviewBounds ? this.renderFrameReview() : nothing}
           ${this.manualForm.kind !== 'awake' ? html`${this.renderPauses('manual', this.manualForm.details.pauses)}${this.renderDetailGroups('manual', this.manualForm.details)}` : nothing}
           <section class="sleep-detail-group"><h4>${this.language === 'es' ? 'Comentario' : 'Comment'}</h4><textarea class="sleep-comment" .value=${this.manualForm.notes} placeholder=${this.language === 'es' ? 'Aún no se han agregado comentarios' : 'No comments yet'} @input=${(event: Event) => { this.manualForm = { ...this.manualForm, notes: inputValue(event) }; }}></textarea></section>
           ${this.inlineError ? html`<div class="inline-error sleep-form-error" role="alert">${this.inlineError}</div>` : nothing}
         </div>
         <footer class="sleep-form-actions manual-create-actions">
+          ${this.renderManualOverlapWarning()}
           <button type="button" class="button ghost" @click=${() => this.closeManualForm()}>${this.t('cancel')}</button>
           <div class="manual-submit-cluster">
             <button class=${`sheet-save ${startsActiveSleep ? 'start-now' : ''}`} aria-label=${submitLabel} ?disabled=${this.sleepBusy === 'add' || missingAwakeEnd}>

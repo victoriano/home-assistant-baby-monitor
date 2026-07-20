@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from . import __version__
 from .auth import SESSION_COOKIE, AccessControlMiddleware, session_value, validate_admin_token
-from .database import Database, StorageError
+from .database import Database, SleepOverlapError, StorageError
 from .home_assistant import HomeAssistantClient, HomeAssistantError
 from .media import AudioWindowReader, MediaError, analyze_pcm, snapshot_from_stream, stream_mjpeg_from_stream
 from .models import (
@@ -242,6 +242,20 @@ def create_app(
     @app.exception_handler(ServiceError)
     async def service_error(_: Request, error: ServiceError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @app.exception_handler(SleepOverlapError)
+    async def sleep_overlap_error(_: Request, error: SleepOverlapError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(error),
+                "code": "sleep_event_overlap",
+                "canAutoResolve": error.can_auto_resolve,
+                "confirmationToken": error.confirmation_token,
+                "conflicts": error.conflicts,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.exception_handler(StorageError)
     async def storage_error(_: Request, error: StorageError) -> JSONResponse:
@@ -691,10 +705,20 @@ def create_app(
         return {"items": [_sleep(item) for item in items], "limit": limit, "offset": offset, "total": total}
 
     @app.post(f"{API_PREFIX}/sleep", status_code=201)
-    async def add_sleep(event: SleepEventCreate) -> dict[str, Any]:
+    async def add_sleep(
+        event: SleepEventCreate,
+        resolve_overlaps: Literal["adjust"] | None = Query(None),
+        overlap_confirmation: str | None = Query(None, min_length=64, max_length=64, pattern=r"^[a-f0-9]+$"),
+    ) -> dict[str, Any]:
         history_transfer.ensure_writable()
         located = event.model_copy(update={"location_id": settings.get().baby.location_id})
-        return _sleep(database.add_sleep_event(located))
+        return _sleep(
+            database.add_sleep_event(
+                located,
+                resolve_overlaps=resolve_overlaps == "adjust",
+                overlap_confirmation=overlap_confirmation,
+            )
+        )
 
     @app.patch(f"{API_PREFIX}/sleep/{{event_id}}")
     async def patch_sleep(event_id: str, update: SleepEventPatch) -> dict[str, Any]:

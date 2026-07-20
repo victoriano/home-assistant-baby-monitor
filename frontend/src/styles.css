@@ -970,6 +970,31 @@ h1, h2, h3, strong { font-family: var(--font-display); }
   background: rgba(248,250,255,.95);
   box-shadow: 0 -18px 38px rgba(53,69,119,.10);
 }
+.manual-overlap-warning {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0,1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 11px 12px;
+  border: 1px solid rgba(240,124,114,.28);
+  border-radius: 15px;
+  background: rgba(240,124,114,.09);
+  color: var(--linen);
+  text-align: left;
+}
+.manual-overlap-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--coral-wash); color: var(--coral); }
+.manual-overlap-warning > div { display: grid; gap: 3px; min-width: 0; }
+.manual-overlap-warning strong { color: #ffc1bc; font-size: 10px; }
+.manual-overlap-warning p { margin: 0; color: var(--oat); font-size: 8px; line-height: 1.4; }
+.manual-overlap-warning small { color: var(--faint); font-size: 7px; line-height: 1.35; }
+.manual-overlap-warning > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 0 12px; border: 1px solid rgba(240,124,114,.30); border-radius: 11px; background: var(--coral); color: #24100f; font-size: 8px; font-weight: 780; cursor: pointer; }
+.manual-overlap-warning > button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 7px 20px rgba(240,124,114,.20); }
+.theme-day .manual-overlap-warning { color: #29243c; }
+.theme-day .manual-overlap-warning strong { color: #9b3835; }
+.theme-day .manual-overlap-warning p { color: #51485f; }
 .manual-submit-cluster { display: grid; grid-template-columns: 72px minmax(0,1fr); align-items: center; gap: 12px; min-width: 0; max-width: 260px; }
 .manual-submit-cluster > span { display: grid; gap: 3px; min-width: 0; text-align: left; }
 .manual-submit-cluster strong { color: var(--linen); font-size: 11px; }
@@ -1646,6 +1671,8 @@ input[type="range"] { width: 100%; height: 4px; border-radius: 999px; accent-col
   .manual-create-form { padding: 0 !important; }
   .manual-form-scroll { padding: 22px 15px 18px; scrollbar-gutter: auto; }
   .manual-create-actions { min-height: 106px; padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .manual-overlap-warning { grid-template-columns: auto minmax(0,1fr); }
+  .manual-overlap-warning > button { grid-column: 1 / -1; width: 100%; }
   .manual-submit-cluster { grid-template-columns: 64px minmax(0,1fr); gap: 9px; }
   .manual-submit-cluster .sheet-save { width: 64px; height: 64px; }
   .manual-submit-cluster small { max-width: 126px; }

@@ -20,12 +20,27 @@ from .models import (
     SleepEvent,
     SleepEventCreate,
     SleepEventPatch,
+    SleepPause,
     VisionLabel,
 )
 
 
 class StorageError(RuntimeError):
     pass
+
+
+class SleepOverlapError(StorageError):
+    def __init__(
+        self,
+        conflicts: list[dict[str, Any]],
+        *,
+        can_auto_resolve: bool,
+        confirmation_token: str,
+    ) -> None:
+        super().__init__("sleep event overlaps an existing event")
+        self.conflicts = conflicts
+        self.can_auto_resolve = can_auto_resolve
+        self.confirmation_token = confirmation_token
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -142,9 +157,7 @@ class Database:
                 if "location_id" not in columns:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN location_id TEXT NOT NULL DEFAULT 'home'")
                 if table == "sleep_events" and "details_json" not in columns:
-                    connection.execute(
-                        "ALTER TABLE sleep_events ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
-                    )
+                    connection.execute("ALTER TABLE sleep_events ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'")
             connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     def ready(self) -> bool:
@@ -311,10 +324,7 @@ class Database:
                    ORDER BY captured_at ASC LIMIT ?""",
                 (_iso(start), _iso(end), limit),
             ).fetchall()
-        return [
-            (_dt(row["captured_at"]), VisionLabel.model_validate_json(row["label_json"]))
-            for row in rows
-        ]
+        return [(_dt(row["captured_at"]), VisionLabel.model_validate_json(row["label_json"])) for row in rows]
 
     def latest_frame(self) -> FrameRecord | None:
         with self._connect() as connection:
@@ -370,31 +380,151 @@ class Database:
             )
         return {"frames": purged, "bytes": bytes_removed}
 
-    def add_sleep_event(self, event: SleepEventCreate) -> SleepEvent:
+    def add_sleep_event(
+        self,
+        event: SleepEventCreate,
+        *,
+        resolve_overlaps: bool = False,
+        overlap_confirmation: str | None = None,
+    ) -> SleepEvent:
         values = event.model_dump()
         values["started_at"] = _as_utc(event.started_at)
         values["ended_at"] = _as_utc(event.ended_at) if event.ended_at else None
         item = SleepEvent(id=str(uuid4()), **values)
         with self._lock, self._connect() as connection:
-            if self._sleep_overlaps(connection, item.started_at, item.ended_at):
-                raise StorageError("sleep event overlaps an existing event")
-            connection.execute(
-                """INSERT INTO sleep_events
-                (id, started_at, ended_at, kind, source, notes, details_json, location_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    item.id,
-                    _iso(item.started_at),
-                    _iso(item.ended_at) if item.ended_at else None,
-                    item.kind,
-                    item.source,
-                    item.notes,
-                    item.details.model_dump_json(),
-                    item.location_id,
-                    _iso(item.created_at),
-                ),
+            rows = self._sleep_overlap_rows(connection, item.started_at, item.ended_at)
+            conflicts = [self._sleep(row) for row in rows]
+            preview = [self._sleep_overlap_preview(item, conflict) for conflict in conflicts]
+            can_auto_resolve = (
+                bool(conflicts)
+                and item.kind == "awake"
+                and item.source == "manual"
+                and all(conflict["resolution"]["action"] in {"trim_start", "trim_end"} for conflict in preview)
             )
+            confirmation_token = self._sleep_overlap_token(item, preview)
+            if conflicts and (
+                not resolve_overlaps or not can_auto_resolve or overlap_confirmation != confirmation_token
+            ):
+                raise SleepOverlapError(
+                    preview,
+                    can_auto_resolve=can_auto_resolve,
+                    confirmation_token=confirmation_token,
+                )
+            if resolve_overlaps:
+                for conflict, resolution in zip(conflicts, preview, strict=True):
+                    self._apply_sleep_overlap_resolution(connection, conflict, resolution)
+            self._insert_sleep_event(connection, item)
         return item
+
+    @staticmethod
+    def _sleep_overlap_token(proposed: SleepEvent, conflicts: list[dict[str, Any]]) -> str:
+        payload = {
+            "proposed": {
+                "startedAt": _iso(proposed.started_at),
+                "endedAt": _iso(proposed.ended_at) if proposed.ended_at else None,
+                "kind": proposed.kind,
+                "source": proposed.source,
+                "locationId": proposed.location_id,
+            },
+            "conflicts": conflicts,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _insert_sleep_event(connection: sqlite3.Connection, item: SleepEvent) -> None:
+        connection.execute(
+            """INSERT INTO sleep_events
+            (id, started_at, ended_at, kind, source, notes, details_json, location_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                item.id,
+                _iso(item.started_at),
+                _iso(item.ended_at) if item.ended_at else None,
+                item.kind,
+                item.source,
+                item.notes,
+                item.details.model_dump_json(),
+                item.location_id,
+                _iso(item.created_at),
+            ),
+        )
+
+    @staticmethod
+    def _sleep_overlap_preview(proposed: SleepEvent, conflict: SleepEvent) -> dict[str, Any]:
+        action = "manual"
+        adjusted_start = conflict.started_at
+        adjusted_end = conflict.ended_at
+        if proposed.ended_at is not None and conflict.kind != "awake":
+            if (
+                conflict.started_at < proposed.started_at
+                and conflict.ended_at is not None
+                and conflict.ended_at <= proposed.ended_at
+            ):
+                action = "trim_end"
+                adjusted_end = proposed.started_at
+            elif conflict.started_at >= proposed.started_at and (
+                conflict.ended_at is None or conflict.ended_at > proposed.ended_at
+            ):
+                action = "trim_start"
+                adjusted_start = proposed.ended_at
+        return {
+            "id": conflict.id,
+            "kind": conflict.kind,
+            "source": conflict.source,
+            "startedAt": _iso(conflict.started_at),
+            "endedAt": _iso(conflict.ended_at) if conflict.ended_at else None,
+            "resolution": {
+                "action": action,
+                "startedAt": _iso(adjusted_start),
+                "endedAt": _iso(adjusted_end) if adjusted_end else None,
+            },
+        }
+
+    @staticmethod
+    def _trim_sleep_details(details: SleepDetails, start: datetime, end: datetime | None) -> SleepDetails:
+        pauses: list[SleepPause] = []
+        for pause in details.pauses:
+            clipped_start = max(_as_utc(pause.started_at), _as_utc(start))
+            clipped_end = _as_utc(pause.ended_at)
+            if end is not None:
+                clipped_end = min(clipped_end, _as_utc(end))
+            if clipped_end > clipped_start:
+                pauses.append(SleepPause(started_at=clipped_start, ended_at=clipped_end))
+        return SleepDetails(tags=list(details.tags), pauses=pauses)
+
+    def _apply_sleep_overlap_resolution(
+        self,
+        connection: sqlite3.Connection,
+        conflict: SleepEvent,
+        preview: dict[str, Any],
+    ) -> None:
+        resolution = preview["resolution"]
+        action = resolution["action"]
+        if action not in {"trim_start", "trim_end"}:
+            raise StorageError("sleep overlap cannot be adjusted automatically")
+        started_at = _dt(resolution["startedAt"])
+        ended_at = _dt(resolution["endedAt"]) if resolution["endedAt"] else None
+        details = self._trim_sleep_details(conflict.details, started_at, ended_at)
+        adjusted = SleepEventCreate(
+            started_at=started_at,
+            ended_at=ended_at,
+            kind=conflict.kind,
+            source=conflict.source,
+            notes=conflict.notes,
+            details=details,
+            location_id=conflict.location_id,
+        )
+        connection.execute(
+            """UPDATE sleep_events
+               SET started_at = ?, ended_at = ?, details_json = ? WHERE id = ?""",
+            (
+                _iso(adjusted.started_at),
+                _iso(adjusted.ended_at) if adjusted.ended_at else None,
+                adjusted.details.model_dump_json(),
+                conflict.id,
+            ),
+        )
 
     @staticmethod
     def _sleep(row: sqlite3.Row) -> SleepEvent:
@@ -489,9 +619,19 @@ class Database:
         *,
         exclude_id: str | None = None,
     ) -> bool:
+        return bool(Database._sleep_overlap_rows(connection, started_at, ended_at, exclude_id=exclude_id))
+
+    @staticmethod
+    def _sleep_overlap_rows(
+        connection: sqlite3.Connection,
+        started_at: datetime,
+        ended_at: datetime | None,
+        *,
+        exclude_id: str | None = None,
+    ) -> list[sqlite3.Row]:
         end_limit = _iso(ended_at) if ended_at else "9999-12-31T23:59:59.999999Z"
         query = """
-            SELECT 1 FROM sleep_events
+            SELECT * FROM sleep_events
             WHERE started_at < ?
               AND COALESCE(ended_at, '9999-12-31T23:59:59.999999Z') > ?
         """
@@ -499,7 +639,8 @@ class Database:
         if exclude_id is not None:
             query += " AND id != ?"
             parameters.append(exclude_id)
-        return connection.execute(query, parameters).fetchone() is not None
+        query += " ORDER BY started_at"
+        return connection.execute(query, parameters).fetchall()
 
     def delete_sleep_event(self, event_id: str) -> bool:
         with self._connect() as connection:

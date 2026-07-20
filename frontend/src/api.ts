@@ -26,6 +26,9 @@ import {
   type SecretName,
   type SleepEvent,
   type SleepEventDetails,
+  type SleepKind,
+  type SleepOverlapConflict,
+  type SleepOverlapWarning,
   type SleepPlan,
   type SleepPredictionTarget,
   type VisionLabel,
@@ -234,6 +237,49 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(errorMessage(body, response.statusText || 'Request failed'), response.status, body);
   }
   return body as T;
+}
+
+export function sleepOverlapFromError(error: unknown): SleepOverlapWarning | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const body = asRecord(error.details);
+  if (body.code !== 'sleep_event_overlap' || !Array.isArray(body.conflicts)) return null;
+  const confirmationToken = asString(body.confirmationToken);
+  if (!/^[a-f0-9]{64}$/.test(confirmationToken)) return null;
+  const validKinds: SleepKind[] = ['nap', 'night', 'awake', 'unknown'];
+  const validSources: SleepEvent['source'][] = ['manual', 'vision', 'import'];
+  const validActions: SleepOverlapConflict['resolution']['action'][] = ['trim_start', 'trim_end', 'manual'];
+  const conflicts = body.conflicts.flatMap((raw): SleepOverlapConflict[] => {
+    const conflict = asRecord(raw);
+    const resolution = asRecord(conflict.resolution);
+    const kind = asString(conflict.kind) as SleepKind;
+    const source = asString(conflict.source) as SleepEvent['source'];
+    const action = asString(resolution.action) as SleepOverlapConflict['resolution']['action'];
+    const id = asString(conflict.id);
+    const startedAt = asString(conflict.startedAt);
+    const adjustedStart = asString(resolution.startedAt);
+    if (
+      !id
+      || !startedAt
+      || !adjustedStart
+      || !validKinds.includes(kind)
+      || !validSources.includes(source)
+      || !validActions.includes(action)
+    ) return [];
+    return [{
+      id,
+      kind,
+      source,
+      startedAt,
+      endedAt: asNullableString(conflict.endedAt),
+      resolution: {
+        action,
+        startedAt: adjustedStart,
+        endedAt: asNullableString(resolution.endedAt),
+      },
+    }];
+  });
+  if (!conflicts.length) return null;
+  return { canAutoResolve: asBoolean(body.canAutoResolve), confirmationToken, conflicts };
 }
 
 export function normalizeSettings(value: unknown): AppSettings {
@@ -872,8 +918,11 @@ export const api = {
     return normalizePage(result, ['items', 'events'], normalizeCry, limit, offset);
   },
 
-  async addManualSleep(input: ManualSleepInput): Promise<SleepEvent> {
-    return normalizeSleep(await request<unknown>('api/v1/sleep', {
+  async addManualSleep(input: ManualSleepInput, overlapConfirmation = ''): Promise<SleepEvent> {
+    const path = overlapConfirmation
+      ? `api/v1/sleep?resolve_overlaps=adjust&overlap_confirmation=${encodeURIComponent(overlapConfirmation)}`
+      : 'api/v1/sleep';
+    return normalizeSleep(await request<unknown>(path, {
       method: 'POST',
       body: JSON.stringify({
         started_at: input.startedAt,

@@ -235,6 +235,70 @@ def test_manual_sleep_history_and_cry_webhook(tmp_path: Path, ui_settings_payloa
         assert stopped.status_code == 200, stopped.text
 
 
+def test_awake_overlap_api_requires_explicit_adjustment_confirmation(
+    tmp_path: Path,
+    ui_settings_payload: dict,
+) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    with TestClient(app) as client:
+        ui_settings_payload["baby"].update({"location_id": "granada", "location_name": "Granada"})
+        assert client.put("/api/v1/settings", json=ui_settings_payload).status_code == 200
+        start = utc_now() - timedelta(hours=5)
+        sleep = app.state.database.add_sleep_event(
+            SleepEventCreate(
+                started_at=start,
+                ended_at=start + timedelta(hours=4),
+                kind="night",
+                source="vision",
+                location_id="granada",
+            )
+        )
+        payload = {
+            "started_at": (start + timedelta(hours=3)).isoformat(),
+            "ended_at": (start + timedelta(hours=5)).isoformat(),
+            "kind": "awake",
+            "source": "manual",
+        }
+
+        preview = client.post("/api/v1/sleep", json=payload)
+
+        assert preview.status_code == 409
+        preview_body = preview.json()
+        assert preview_body["detail"] == "sleep event overlaps an existing event"
+        assert preview_body["code"] == "sleep_event_overlap"
+        assert preview_body["canAutoResolve"] is True
+        assert len(preview_body["confirmationToken"]) == 64
+        assert preview_body["conflicts"] == [
+            {
+                "id": sleep.id,
+                "kind": "night",
+                "source": "vision",
+                "startedAt": sleep.started_at.isoformat().replace("+00:00", "Z"),
+                "endedAt": sleep.ended_at.isoformat().replace("+00:00", "Z"),
+                "resolution": {
+                    "action": "trim_end",
+                    "startedAt": sleep.started_at.isoformat().replace("+00:00", "Z"),
+                    "endedAt": payload["started_at"].replace("+00:00", "Z"),
+                },
+            }
+        ]
+        assert app.state.database.get_sleep_event(sleep.id).ended_at == sleep.ended_at
+
+        confirmed = client.post(
+            "/api/v1/sleep",
+            params={
+                "resolve_overlaps": "adjust",
+                "overlap_confirmation": preview_body["confirmationToken"],
+            },
+            json=payload,
+        )
+
+        assert confirmed.status_code == 201, confirmed.text
+        assert confirmed.json()["kind"] == "awake"
+        assert app.state.database.get_sleep_event(sleep.id).ended_at == start + timedelta(hours=3)
+        assert client.get("/api/v1/sleep").json()["total"] == 2
+
+
 def test_sleep_editor_lists_every_interval_frame_and_deletion_preserves_images(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
     start = utc_now() - timedelta(hours=2)
