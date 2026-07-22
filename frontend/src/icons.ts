@@ -2,6 +2,7 @@ import { svg, type SVGTemplateResult } from 'lit';
 
 export type IconName =
   | 'baby'
+  | 'calendar'
   | 'camera'
   | 'check'
   | 'chevron'
@@ -26,6 +27,8 @@ function path(name: IconName): SVGTemplateResult {
   switch (name) {
     case 'baby':
       return svg`<path d="M9 12h6"/><path d="M10 16c.6.7 1.3 1 2 1s1.4-.3 2-1"/><path d="M12 2a3 3 0 0 0-3 3c0 .4.1.8.2 1.1A7 7 0 1 0 18.9 9"/><circle cx="9" cy="10" r=".6" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r=".6" fill="currentColor" stroke="none"/>`;
+    case 'calendar':
+      return svg`<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/>`;
     case 'camera':
       return svg`<path d="M14.5 5 13 3h-2L9.5 5H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4.5Z"/><circle cx="12" cy="12" r="4"/>`;
     case 'check':
