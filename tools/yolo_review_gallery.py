@@ -10,10 +10,12 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baby_monitor.providers import YoloLocalProvider
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 MARKER = ".baby-monitor-yolo-review-gallery"
 TASKS = ("presence", "awake", "pacifier")
@@ -190,6 +192,8 @@ def _annotated_frame(
     *,
     max_width: int = 960,
 ) -> Image.Image:
+    from PIL import Image, ImageDraw, ImageFont
+
     preview = image.copy()
     preview.thumbnail((max_width, max_width), Image.Resampling.LANCZOS)
     scale_x = preview.width / image.width
@@ -349,6 +353,8 @@ def build_gallery(
     limit: int | None = None,
     verify_sha256: bool = True,
 ) -> dict[str, Any]:
+    from PIL import Image, ImageOps
+
     manifest_path = manifest_path.expanduser().resolve()
     frames_dir = frames_dir.expanduser().resolve()
     model_dir = model_dir.expanduser().resolve()
