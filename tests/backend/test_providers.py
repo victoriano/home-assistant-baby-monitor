@@ -14,6 +14,7 @@ from baby_monitor.providers import (
     ProviderError,
     YoloLocalProvider,
 )
+from PIL import Image
 
 LABEL = {
     "baby_present": True,
@@ -34,7 +35,10 @@ def test_vision_contract_supports_crib_and_family_bed_without_using_adult_state(
         "unknown",
     ]
     assert "sleep_surface" in VISION_SCHEMA["required"]
+    assert "adult_present" in VISION_SCHEMA["required"]
+    assert "adult_count" in VISION_SCHEMA["required"]
     assert "Never use an adult's" in VISION_PROMPT
+    assert "Do not infer sex, gender, identity" in VISION_PROMPT
     assert "Both crib and family_bed are valid monitored sleep surfaces" in VISION_PROMPT
 
 
@@ -243,6 +247,200 @@ def test_yolo_local_provider_marks_unavailable_detail_without_guessing(tmp_path)
     assert label.state == "uncertain"
     assert label.pacifier == "unknown"
     assert "detail_unavailable" in label.tags
+
+
+def test_yolo_local_provider_maps_validated_secondary_details(tmp_path) -> None:
+    provider = _yolo_artifacts(tmp_path)
+    root = provider.root
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    for task, classes, crop in (
+        ("head_side", ["back", "left", "right"], "head"),
+        ("body_position", ["back", "belly", "side"], "body"),
+        ("mouth_open", ["no", "yes"], "mouth"),
+    ):
+        (root / "models" / f"{task}.pt").write_bytes(b"detail model")
+        metadata["tasks"][task] = {
+            "path": f"models/{task}.pt",
+            "classes": classes,
+            "crop": crop,
+            "thresholds": {
+                "overall": {
+                    class_name: {
+                        "enabled": True,
+                        "probability": 0.8,
+                        "margin": 0.2,
+                    }
+                    for class_name in classes
+                }
+            },
+        }
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    provider = YoloLocalProvider(str(root))
+    profiles = provider.metadata["roi_profiles"]["granada"]
+
+    label = provider._build_label(
+        profiles,
+        [0.92, 0.08],
+        0.88,
+        0.15,
+        details={
+            "face_visible": "yes",
+            "head_side": "left",
+            "body_position": "side",
+            "mouth_open": "yes",
+            "adult_count": 1,
+        },
+    )
+
+    assert label.face_visible == "yes"
+    assert label.head_side == "left"
+    assert label.body_position == "side"
+    assert label.mouth_open == "yes"
+    assert label.adult_present == "yes"
+    assert label.adult_count == 1
+    assert {
+        "head_left",
+        "body_side",
+        "mouth_open",
+        "adult_present",
+        "adult_count_1",
+    } <= set(label.tags)
+
+    occluded = provider._build_label(
+        profiles,
+        [0.92, 0.08],
+        0.88,
+        0.95,
+        details={"face_visible": "yes", "mouth_open": "yes"},
+    )
+    assert occluded.pacifier == "yes"
+    assert occluded.mouth_open == "unknown"
+
+    presence_without_count = provider._build_label(
+        profiles,
+        [0.92, 0.08],
+        0.88,
+        0.15,
+        details={"adult_present": "yes", "adult_count": 0},
+    )
+    assert presence_without_count.adult_present == "yes"
+    assert presence_without_count.adult_count is None
+
+
+def test_yolo_local_provider_counts_only_decisively_larger_people() -> None:
+    boxes = [
+        [0.65, 0.45, 0.88, 0.92],
+        [0.02, 0.05, 0.62, 0.98],
+    ]
+    assert (
+        YoloLocalProvider._conservative_adult_count(
+            boxes,
+            [0.95, 0.91],
+            baby_index=0,
+            minimum_confidence=0.25,
+        )
+        == 1
+    )
+    assert (
+        YoloLocalProvider._conservative_adult_count(
+            [boxes[0], [0.1, 0.2, 0.3, 0.65]],
+            [0.95, 0.8],
+            baby_index=0,
+            minimum_confidence=0.25,
+        )
+        is None
+    )
+    assert YoloLocalProvider._conservative_adult_evidence(
+        [
+            boxes[0],
+            [0.02, 0.05, 0.62, 0.98],
+            [0.0, 0.0, 0.5, 0.9],
+        ],
+        [0.95, 0.91, 0.89],
+        baby_index=0,
+        minimum_confidence=0.25,
+    ) == (True, None)
+    assert (
+        YoloLocalProvider._adult_count_without_baby(
+            [[0.02, 0.0, 0.54, 0.99]],
+            [0.83],
+            roi=(0.5, 0.45, 1.0, 0.95),
+            minimum_confidence=0.25,
+        )
+        == 1
+    )
+    assert (
+        YoloLocalProvider._adult_count_without_baby(
+            [
+                [0.0, 0.046, 0.285, 0.997],
+                [0.605, 0.161, 0.847, 0.732],
+            ],
+            [0.896, 0.8],
+            roi=(0.5, 0.45, 1.0, 0.95),
+            minimum_confidence=0.25,
+        )
+        == 1
+    )
+
+
+def test_yolo_local_provider_accepts_selective_adult_presence_task(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    provider = _yolo_artifacts(tmp_path)
+    root = provider.root
+    (root / "models" / "adult_presence.pt").write_bytes(b"adult model")
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    metadata["tasks"]["adult_presence"] = {
+        "path": "models/adult_presence.pt",
+        "positive_class": "yes",
+        "threshold": 0.5,
+        "crop": "scene",
+        "thresholds": {
+            "overall": {"negative": 0.2, "positive": 0.8},
+            "granada": {"negative": 0.1, "positive": 0.9},
+        },
+    }
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    provider = YoloLocalProvider(str(root))
+    monkeypatch.setattr(provider, "_scores", lambda task, images: [0.92])
+
+    frame = Image.new("RGB", (640, 360))
+    assert provider._adult_presence_decision(frame, 0, "granada") == "yes"
+    assert provider._adult_presence_decision(frame, 2, "granada") == "yes"
+
+
+def test_yolo_local_provider_rejects_unsafe_secondary_thresholds(tmp_path) -> None:
+    provider = _yolo_artifacts(tmp_path)
+    root = provider.root
+    (root / "models" / "mouth_open.pt").write_bytes(b"detail model")
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    metadata["tasks"]["mouth_open"] = {
+        "path": "models/mouth_open.pt",
+        "classes": ["no", "yes"],
+        "crop": "mouth",
+        "thresholds": {
+            "overall": {
+                "no": {"enabled": True, "probability": 0.8, "margin": 0.2},
+                "yes": {"enabled": True, "probability": 1.5, "margin": 0.2},
+            }
+        },
+    }
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ProviderError, match="thresholds for mouth_open"):
+        YoloLocalProvider(str(root))
+
+
+def test_yolo_local_provider_rejects_unknown_pacifier_crop(tmp_path) -> None:
+    provider = _yolo_artifacts(tmp_path)
+    root = provider.root
+    metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    metadata["tasks"]["pacifier"]["crop"] = "whole_frame"
+    (root / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(ProviderError, match="pacifier has an invalid crop"):
+        YoloLocalProvider(str(root))
 
 
 def test_yolo_local_provider_rejects_model_paths_outside_artifact(tmp_path) -> None:

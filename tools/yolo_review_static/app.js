@@ -179,6 +179,11 @@
             <div class="prediction"><span>Presence</span><strong>${escapeHtml(decisionLabel(frame.tasks.presence.decision))}</strong></div>
             <div class="prediction"><span>State</span><strong>${escapeHtml(decisionLabel(frame.tasks.awake.decision))}</strong></div>
             <div class="prediction"><span>Pacifier</span><strong>${escapeHtml(decisionLabel(frame.tasks.pacifier.decision))}</strong></div>
+            <div class="prediction"><span>Head</span><strong>${escapeHtml(decisionLabel(prediction.head_side))}</strong></div>
+            <div class="prediction"><span>Body</span><strong>${escapeHtml(decisionLabel(prediction.body_position))}</strong></div>
+            <div class="prediction"><span>Mouth open</span><strong>${escapeHtml(decisionLabel(prediction.mouth_open))}</strong></div>
+            <div class="prediction"><span>Adult</span><strong>${escapeHtml(decisionLabel(prediction.adult_present))}</strong></div>
+            <div class="prediction"><span>Adult count</span><strong>${escapeHtml(prediction.adult_count ?? "unknown")}</strong></div>
           </div>
           <div class="score-list">${taskNames.map((task) => scoreRow(task, frame.tasks[task])).join("")}</div>
           <div class="roi-list">
@@ -215,6 +220,11 @@
           frame.winner_roi,
           frame.winner_surface,
           frame.relative_path,
+          frame.prediction.head_side,
+          frame.prediction.body_position,
+          frame.prediction.mouth_open,
+          frame.prediction.adult_present,
+          frame.prediction.adult_count,
         ]
           .join(" ")
           .toLowerCase();

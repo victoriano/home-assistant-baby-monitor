@@ -14,6 +14,9 @@ stay in ignored local directories.
 For the complete experiment retrospective and the reusable procedure for
 future camera targets, read
 [`CAMERA_VISION_MODEL_PLAYBOOK.md`](CAMERA_VISION_MODEL_PLAYBOOK.md).
+The follow-up investigation of head orientation, body position, mouth state,
+pacifier hard cases, and adult presence/count is recorded in
+[`SECONDARY_FEATURE_MODEL_REPORT.md`](SECONDARY_FEATURE_MODEL_REPORT.md).
 
 ## Host-side YOLO workflow
 
@@ -76,10 +79,112 @@ only. The runtime abstains between the latter two thresholds instead of
 guessing. A failed pose localization also counts as an abstention in reported
 coverage and recall; it is never silently removed from the test denominator.
 
-Those are the three local outputs currently in scope. The fixed camera ROI
-supplies crib/family-bed placement; free-form secondary descriptors such as
-head side, clothing, body position, and mouth state remain `unknown` rather
-than being inferred by an unvalidated model.
+Those are the three outputs in the original accepted artifact. Optional
+secondary classifiers can be packaged independently, but a missing or rejected
+task remains `unknown`. The fixed camera ROI supplies crib/family-bed
+placement; clothing remains unsupported.
+
+### Secondary visible features
+
+Build the pose-localized head, body, and mouth datasets without changing the
+original accepted artifact:
+
+```bash
+uv run baby-monitor-edge prepare-yolo-details \
+  --source-manifest datasets/yolo-source/manifest.csv \
+  --database /private/path/baby_monitor.sqlite3 \
+  --frames-dir /private/path/frames \
+  --pose-model yolo26n-pose.pt \
+  --output-dir datasets/yolo-details-current
+
+uv run baby-monitor-edge train-yolo-details \
+  --dataset-dir datasets/yolo-details-current \
+  --output-dir artifacts/yolo-details-current \
+  --device mps
+
+uv run baby-monitor-edge evaluate-yolo-details \
+  --dataset-dir datasets/yolo-details-current \
+  --artifact-dir artifacts/yolo-details-current \
+  --device cpu
+```
+
+Ultralytics selects `best.pt` from its validation folder. If an older prepared
+dataset has naturally imbalanced validation folders, rebuild them with
+`rebalance-yolo-detail-validation`; its natural `index.csv` rows remain
+unchanged for calibration and final reporting.
+
+Generate the feature-specific static review:
+
+```bash
+.venv/bin/python tools/yolo_detail_review_gallery.py \
+  --dataset-dir ml/datasets/yolo-details-current \
+  --artifact-dir ml/artifacts/yolo-details-current \
+  --output-dir ml/review/yolo-details-current
+```
+
+Only explicitly reviewed tasks that passed their automated gate can be added
+to a candidate:
+
+```bash
+uv run baby-monitor-edge assemble-yolo-details \
+  --base-artifact artifacts/yolo-baby-current \
+  --detail-artifact artifacts/yolo-details-current \
+  --output-dir artifacts/yolo-baby-details-candidate \
+  --reviewed-task head_side
+```
+
+The 2026-07-29 weak-label run did not pass the complete head, body, or mouth
+gates. Its high-precision `back` and `mouth_open=no` slices were retained as
+evidence, not packaged as if the rare classes worked.
+
+### Visible adults
+
+Adult presence experiments use a full-scene classifier; exact count is a
+separate, conservative pose-geometry result. Presence may be `yes` while count
+remains unknown. The pipeline never infers sex or gender from appearance.
+
+```bash
+uv run baby-monitor-edge prepare-yolo-adults \
+  --source-manifest datasets/yolo-source/manifest.csv \
+  --database /private/path/baby_monitor.sqlite3 \
+  --frames-dir /private/path/frames \
+  --output-dir datasets/yolo-adults-current
+
+uv run baby-monitor-edge train-yolo-adults \
+  --dataset-dir datasets/yolo-adults-current \
+  --output-dir artifacts/yolo-adults-current \
+  --device mps
+
+uv run baby-monitor-edge evaluate-yolo-adults \
+  --dataset-dir datasets/yolo-adults-current \
+  --artifact-dir artifacts/yolo-adults-current \
+  --device cpu
+
+uv run baby-monitor-edge assemble-yolo-adults \
+  --base-artifact artifacts/yolo-baby-current \
+  --adult-artifact artifacts/yolo-adults-current \
+  --output-dir artifacts/yolo-baby-adults-candidate
+```
+
+Preparation includes adult-only scenes where the baby is absent. It defaults
+to downsampling the adult-negative majority separately inside each camera
+domain instead of duplicating weak adult-positive labels. A legacy negative is
+temporally repaired only when nearby positives bracket it on both sides.
+Validation and test remain natural, location/day-grouped distributions.
+
+From the repository root, build the adult-specific held-out gallery:
+
+```bash
+.venv/bin/python tools/yolo_adult_review_gallery.py \
+  --artifact-dir ml/artifacts/yolo-adults-current \
+  --frames-dir /private/path/frames \
+  --output-dir ml/review/yolo-adults-current-test \
+  --split test
+```
+
+Open `ml/review/yolo-adults-current-test/index.html`. It is sorted with
+decisive disagreements first and can filter by outcome, camera, reference, or
+decision. The copied images and generated HTML remain ignored private data.
 
 `report.json` and `report.md` measure the reserved test days both with full
 coverage and with abstention. A high selective accuracy is meaningful only
@@ -90,6 +195,13 @@ that they are no longer an untouched academic test set and must record the
 separate manual audit.
 `high_confidence_errors.csv` lists every decisive disagreement so those frames
 can be inspected before deployment.
+
+The 2026-07-29 shared full-scene candidate failed its held-out gate and was not
+assembled. The accepted artifact instead reuses its existing pose model as an
+affirmative-only signal: one unambiguous larger person yields
+`adult_present=yes, adult_count=1`; multiple or ambiguous poses yield
+`adult_present=yes, adult_count=null`; no pose evidence remains `unknown`
+rather than becoming an adult-negative decision.
 
 For a complete offline visual review of an accepted artifact, generate the
 static gallery from the repository root:

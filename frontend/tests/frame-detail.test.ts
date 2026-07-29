@@ -38,6 +38,8 @@ function labeledFrame(): FrameRecord {
       clothing_items: ['sleep_sack'],
       pacifier: 'yes',
       mouth_open: 'no',
+      adult_present: 'yes',
+      adult_count: 1,
       attention_score: 0.73,
     },
   });
@@ -50,6 +52,8 @@ describe('camera frame detail', () => {
     const frame = labeledFrame();
 
     expect(frame.label?.raw?.attention_score).toBe(0.73);
+    expect(frame.label?.adultPresent).toBe('yes');
+    expect(frame.label?.adultCount).toBe(1);
 
     const cardHost = document.createElement('div');
     render(app.renderFrame(frame), cardHost);
@@ -72,6 +76,8 @@ describe('camera frame detail', () => {
     expect(metadata).toContain('Confianza');
     expect(metadata).toContain('94,731% · 0,94731');
     expect(metadata).toContain('Chupete');
+    expect(metadata).toContain('Adulto presente');
+    expect(metadata).toContain('Adultos visibles');
     expect(metadata).toContain('Attention score');
     expect(metadata).toContain('0,73');
 
@@ -91,6 +97,8 @@ describe('camera frame detail', () => {
       'clothing_items',
       'pacifier',
       'mouth_open',
+      'adult_present',
+      'adult_count',
       'attention_score',
     ]));
 

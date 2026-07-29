@@ -68,6 +68,8 @@ describe('dashboard hierarchy', () => {
         clothingItems: ['short_sleeve_onesie'],
         pacifier: 'no',
         mouthOpen: 'no',
+        adultPresent: 'unknown',
+        adultCount: null,
       },
       provider: 'gemini',
       model: 'gemini-test',

@@ -457,6 +457,8 @@ class VisionLabel(StrictModel):
     ] = Field(default_factory=lambda: ["unknown"], max_length=5)
     pacifier: Literal["yes", "no", "unknown"] = "unknown"
     mouth_open: Literal["yes", "no", "unknown"] = "unknown"
+    adult_present: Literal["yes", "no", "unknown"] = "unknown"
+    adult_count: int | None = Field(default=None, ge=0, le=8)
 
     @model_validator(mode="after")
     def consistent_sleep_surface(self) -> VisionLabel:
@@ -464,6 +466,14 @@ class VisionLabel(StrictModel):
             raise ValueError("crib sleep surface requires in_crib=true")
         if self.sleep_surface in {"family_bed", "other"} and self.in_crib is True:
             raise ValueError("non-crib sleep surface requires in_crib=false")
+        if self.adult_count is not None:
+            inferred = "yes" if self.adult_count > 0 else "no"
+            if self.adult_present == "unknown":
+                # Preserve old stored payloads that had a count before the
+                # explicit presence field was introduced.
+                object.__setattr__(self, "adult_present", inferred)
+            elif self.adult_present != inferred:
+                raise ValueError("adult count and adult presence must agree")
         return self
 
     def resolved_sleep_surface(self) -> SleepSurface:

@@ -184,6 +184,12 @@ train/validation/test splits. It supports two targets:
 Private images, manifests, checkpoints, and generated model arrays are ignored
 by Git.
 
+The reusable engineering process is documented in the
+[camera-vision model playbook](ml/CAMERA_VISION_MODEL_PLAYBOOK.md). The
+[secondary-feature report](ml/SECONDARY_FEATURE_MODEL_REPORT.md) records the
+accepted and rejected head, body, mouth, pacifier, and visible-adult
+experiments.
+
 ## Import data from the legacy private schema
 
 The repository includes a conservative migration command for the earlier

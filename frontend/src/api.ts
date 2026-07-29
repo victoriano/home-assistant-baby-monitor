@@ -435,6 +435,8 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
       clothingItems: ['unknown'],
       pacifier: 'unknown',
       mouthOpen: 'unknown',
+      adultPresent: 'unknown',
+      adultCount: null,
       raw: { description: value },
     };
   }
@@ -468,6 +470,14 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
     clothingItems: asStringArray(pick(data, 'clothingItems', 'clothing_items')),
     pacifier: ['yes', 'no'].includes(asString(data.pacifier)) ? asString(data.pacifier) as 'yes' | 'no' : 'unknown',
     mouthOpen: ['yes', 'no'].includes(asString(pick(data, 'mouthOpen', 'mouth_open'))) ? asString(pick(data, 'mouthOpen', 'mouth_open')) as 'yes' | 'no' : 'unknown',
+    adultPresent: ['yes', 'no'].includes(asString(pick(data, 'adultPresent', 'adult_present')))
+      ? asString(pick(data, 'adultPresent', 'adult_present')) as 'yes' | 'no'
+      : typeof pick(data, 'adultCount', 'adult_count') === 'number'
+        ? asNumber(pick(data, 'adultCount', 'adult_count')) > 0 ? 'yes' : 'no'
+        : 'unknown',
+    adultCount: typeof pick(data, 'adultCount', 'adult_count') === 'number'
+      ? asNumber(pick(data, 'adultCount', 'adult_count'))
+      : null,
     raw: data,
   };
 }

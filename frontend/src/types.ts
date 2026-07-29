@@ -191,6 +191,8 @@ export interface VisionLabel {
   clothingItems: string[];
   pacifier: 'yes' | 'no' | 'unknown';
   mouthOpen: 'yes' | 'no' | 'unknown';
+  adultPresent: 'yes' | 'no' | 'unknown';
+  adultCount: number | null;
   /**
    * Exact label payload returned by the backend. Keeping it alongside the
    * normalized fields lets the review UI expose new model metadata without

@@ -657,17 +657,68 @@ The production-oriented verification sequence was:
 10. run backend, ML, and frontend tests; and
 11. run lint, frontend build, and `git diff --check`.
 
-The final recorded run passed 90 backend tests, 16 ML tests, and 72 frontend
-tests.
+The original deployment run passed 90 backend tests, 16 ML tests, and 72
+frontend tests. The secondary-feature extension passed 106 backend tests, 27
+ML tests, and 74 frontend tests.
 
-Observed stored-frame runtime was approximately 1.6 seconds on a cold first
-load and 16-91 ms warm, depending on the path and frame.
+The original component-oriented stored-frame measurements were approximately
+1.6 seconds on a cold first load and 16-91 ms warm, depending on the path and
+frame. After the full secondary response path was added, a new exact
+production-provider CPU benchmark measured 2,672 ms cold and, over 40
+alternating Granada/Madrid calls, 268 ms warm median, 396 ms p95, and
+213-438 ms observed range. This includes ROI selection, pose, the awake
+ensemble, pacifier, crop construction, and serialization; the affirmative
+adult rule reuses pose and adds no classifier.
 
 At final deployment, the camera snapshot endpoint returned HTTP 502 because the
 camera service was unavailable. Stored-frame production-path tests passed, but
 a fresh-camera proof remains pending. This limitation must stay visible; a
 healthy model service is not proof that the camera can currently deliver an
 image.
+
+## Secondary-feature extension
+
+The 2026-07-29 extension tested head orientation, body position, mouth state,
+adult presence/count, and a pacifier hard positive. Its detailed evidence is in
+[`SECONDARY_FEATURE_MODEL_REPORT.md`](SECONDARY_FEATURE_MODEL_REPORT.md).
+
+The extension added six transferable lessons:
+
+1. **Balance checkpoint selection as well as training.** Ultralytics chooses
+   `best.pt` from its validation folder. A natural body-position validation set
+   with 608 `back` crops and only 15 rare-position crops rewarded a degenerate
+   majority classifier. Training-time validation was balanced, while the
+   natural validation and test rows remained untouched for calibration and
+   reporting.
+2. **Directional augmentation changes the label.** Horizontal flipping is
+   invalid for image-relative left/right classes unless the class is swapped at
+   the same time. The accidental flipped launch was stopped and discarded.
+3. **A structured teacher field can still lack a stable visual contract.**
+   Review found torso-on-back images labeled `belly` or `side`, and closed
+   mouths labeled open. The honest remedy is adjudicated ground truth, not a
+   larger model or a lower gate.
+4. **Presence and exact count are different tasks.** A scene classifier can
+   establish that an adult is visible when a covered or lying person has no
+   usable pose. Pose geometry can sometimes establish the count. The runtime
+   can combine the evidence but does not turn a failed count into “no adult.”
+   In this run the scene classifier failed its deployment gate, while the
+   existing pose path supplied 43/43 visually correct affirmative-presence
+   decisions in its adult-task holdout and 47/47 in a separate
+   location/day-grouped production-gallery selection. One duplicate pose
+   showed why presence must survive even when exact count abstains.
+5. **Condition each target independently.** The first adult dataset reused the
+   baby-positive eligibility filter and therefore excluded adult-only frames.
+   That training run was discarded. Adult presence is observable on the full
+   scene regardless of whether the baby is present.
+6. **Balance inside every camera domain.** A globally balanced adult dataset
+   still associated many positives with one room and negatives with the other.
+   Per-location class balancing removed camera identity as an easy label
+   shortcut; natural validation and test prevalence remained untouched.
+
+The extension also explicitly rejected adult sex/gender inference. It is not
+an observable requirement of the monitor and is unreliable from these
+infrared frames. If a future product needs known-caregiver identity, it must
+use an explicit consented identity contract and its own evaluation.
 
 ## Experiment decision ledger
 
@@ -688,6 +739,14 @@ image.
 | Dual thresholds/abstention | Can precision be raised honestly? | Yes, at measured coverage cost | Core reusable step |
 | Full-int8 MobileNet conversion | Can size be reduced without revalidation? | Severe score drift | Reject |
 | Exact runtime parity test | Does offline success survive production decoding? | Found RGB/BGR bug | Mandatory |
+| Secondary full-ROI classifiers | Can head/body/mouth be read without tighter localization? | Shortcut-prone | Reject |
+| Pose head/body/mouth crops | Does task-specific localization expose the evidence? | Strong majority-class slices; rare-class gates failed | Keep infrastructure, not failed tasks |
+| Natural checkpoint validation | Will deployment prevalence choose a useful `best.pt`? | Selected majority-only body checkpoint | Reject; balance model selection |
+| Directional horizontal flip | Is ordinary augmentation safe for left/right? | Corrupts the label | Never use without label swapping |
+| Full-scene adult classifier | Can one shared scene model detect covered/lying adults? | Failed coverage/recall and per-camera gates; not packaged | Keep dataset and audit method, reject checkpoint |
+| Conservative adult pose evidence | Can an existing pose prove presence and sometimes exact count? | Two disjoint frame audits: 43/43 and 47/47 presences; all retained exact-one counts correct | Accept affirmative-only signal; abstain on absence and multi-count |
+| Baby-conditioned adult dataset | Is baby-positive eligibility valid for adult presence? | Omitted adult-only scenes | Reject; condition each task independently |
+| Globally balanced multi-camera adult data | Does aggregate class balance remove room shortcuts? | Retained a class/location correlation | Reject; balance inside each domain |
 
 ## Things deliberately not done
 
@@ -970,13 +1029,21 @@ The reusable implementation is primarily in:
 - [`src/baby_monitor_edge_ml/yolo_training.py`](src/baby_monitor_edge_ml/yolo_training.py):
   YOLO materialization, pose-head localization, training, calibration,
   abstention-aware evaluation, and artifact assembly;
+- [`src/baby_monitor_edge_ml/detail_training.py`](src/baby_monitor_edge_ml/detail_training.py):
+  grouped secondary-label extraction, pose-aligned crops, balanced checkpoint
+  validation, multiclass abstention, and task-level packaging;
+- [`src/baby_monitor_edge_ml/adult_training.py`](src/baby_monitor_edge_ml/adult_training.py):
+  adult weak-label repair, full-scene training, selective evaluation, and
+  packaging;
 - [`src/baby_monitor_edge_ml/metrics.py`](src/baby_monitor_edge_ml/metrics.py):
   ordinary and dual-threshold selection;
 - [`../baby_monitor/src/baby_monitor/providers.py`](../baby_monitor/src/baby_monitor/providers.py):
   verified artifact loading and exact local runtime;
 - [`../tests/backend/test_providers.py`](../tests/backend/test_providers.py):
   integrity, path-containment, color-order, ensemble, crop, and inference
-  regression tests; and
+  regression tests;
+- [`../tools/yolo_adult_review_gallery.py`](../tools/yolo_adult_review_gallery.py):
+  private, filterable full-frame review of adult-presence holdouts; and
 - [`README.md`](README.md): current commands for reproducing the private
   pipeline.
 

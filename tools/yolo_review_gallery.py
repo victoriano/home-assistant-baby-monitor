@@ -25,6 +25,11 @@ CSV_FIELDS = (
     "location_id",
     "overall_outcome",
     "winner_roi",
+    "head_side",
+    "body_position",
+    "mouth_open",
+    "adult_present",
+    "adult_count",
     "presence_score",
     "presence_decision",
     "presence_reference",
@@ -295,6 +300,11 @@ def _write_csv(frames: Iterable[dict[str, Any]], output_path: Path) -> None:
                     "location_id": frame["location_id"],
                     "overall_outcome": frame["overall_outcome"],
                     "winner_roi": frame["winner_roi"],
+                    "head_side": frame["prediction"]["head_side"],
+                    "body_position": frame["prediction"]["body_position"],
+                    "mouth_open": frame["prediction"]["mouth_open"],
+                    "adult_present": frame["prediction"]["adult_present"],
+                    "adult_count": frame["prediction"]["adult_count"],
                     **{
                         f"{task}_{field}": tasks[task][field]
                         for task in TASKS
@@ -383,15 +393,55 @@ def build_gallery(
             winner = max(range(len(rois)), key=presence_scores.__getitem__)
             presence_bounds = provider._threshold_bounds("presence", row["location_id"])
             decisive_present = presence_scores[winner] >= presence_bounds[1]
-            head = provider._detail_crop(image, profiles[winner], image_size) if decisive_present else None
+            detail_crops = (
+                provider._detail_crops(image, profiles[winner], image_size)
+                if decisive_present
+                else {
+                    "head": None,
+                    "body": None,
+                    "mouth": None,
+                    "adult_pose_present": False,
+                    "adult_count": None,
+                }
+            )
+            head = detail_crops["head"]
             awake_score = provider._scores("awake", [head])[0] if head is not None else None
-            pacifier_score = provider._scores("pacifier", [head])[0] if head is not None else None
+            pacifier_crop = detail_crops[
+                provider.metadata["tasks"]["pacifier"].get("crop", "head")
+            ]
+            pacifier_score = (
+                provider._scores("pacifier", [pacifier_crop])[0]
+                if pacifier_crop is not None
+                else None
+            )
+            details = {
+                "face_visible": "yes" if head is not None else "unknown",
+                "adult_count": detail_crops["adult_count"],
+                "adult_present": (
+                    "yes"
+                    if detail_crops["adult_pose_present"]
+                    else provider._adult_presence_decision(
+                        image,
+                        detail_crops["adult_count"],
+                        row["location_id"],
+                    )
+                ),
+                **{
+                    task: provider._multiclass_decision(
+                        task,
+                        detail_crops[crop_name],
+                        row["location_id"],
+                    )
+                    for task, crop_name in provider._OPTIONAL_TASK_CROPS.items()
+                },
+            }
         label = provider._build_label(
             profiles,
             presence_scores,
             awake_score,
             pacifier_score,
             row["location_id"],
+            details,
         )
         reference = _reference(rows)
         task_scores = {
@@ -437,6 +487,11 @@ def build_gallery(
                 "baby_present": label.baby_present,
                 "state": label.state,
                 "pacifier": label.pacifier,
+                "head_side": label.head_side,
+                "body_position": label.body_position,
+                "mouth_open": label.mouth_open,
+                "adult_present": label.adult_present,
+                "adult_count": label.adult_count,
                 "confidence": label.confidence,
                 "sleep_surface": label.sleep_surface,
                 "tags": label.tags,

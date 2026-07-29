@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from tools.yolo_review_gallery import (
     _overall_outcome,
     _prepare_output,
     _reference,
+    _write_csv,
 )
 
 
@@ -97,3 +99,47 @@ def test_output_overwrite_requires_gallery_marker(tmp_path: Path) -> None:
 
     assert (output / MARKER).is_file()
     assert not (output / "keep.txt").exists()
+
+
+def test_flat_export_includes_secondary_and_adult_decisions(tmp_path: Path) -> None:
+    output = tmp_path / "predictions.csv"
+    tasks = {
+        task: {
+            "score": 0.9,
+            "decision": "present" if task == "presence" else "yes",
+            "reference": None,
+            "outcome": "not_labeled",
+        }
+        for task in ("presence", "awake", "pacifier")
+    }
+    _write_csv(
+        [
+            {
+                "frame_id": "frame",
+                "captured_at": "2026-07-29T00:00:00Z",
+                "location_id": "granada",
+                "overall_outcome": "not_labeled",
+                "winner_roi": "crib",
+                "prediction": {
+                    "head_side": "unknown",
+                    "body_position": "unknown",
+                    "mouth_open": "unknown",
+                    "adult_present": "yes",
+                    "adult_count": 1,
+                },
+                "tasks": tasks,
+                "detail_available": True,
+                "images": {
+                    "frame": "frames/frame.webp",
+                    "roi": "rois/frame.webp",
+                    "head": "heads/frame.webp",
+                },
+            }
+        ],
+        output,
+    )
+
+    with output.open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["adult_present"] == "yes"
+    assert row["adult_count"] == "1"

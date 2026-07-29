@@ -5,7 +5,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .adult_training import (
+    assemble_reviewed_adult_artifact,
+    evaluate_adult_classifier,
+    prepare_adult_dataset,
+    train_adult_classifier,
+)
 from .dataset import prepare_dataset
+from .detail_training import (
+    assemble_reviewed_detail_artifact,
+    evaluate_detail_classifiers,
+    prepare_detail_dataset,
+    rebalance_detail_validation,
+    train_detail_classifiers,
+)
 from .training import TrainingConfig, train_and_export
 from .yolo_training import (
     PoseHeadConfig,
@@ -103,6 +116,127 @@ def _evaluate_yolo(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def _prepare_yolo_details(args: argparse.Namespace) -> dict[str, Any]:
+    return prepare_detail_dataset(
+        args.source_manifest,
+        args.database,
+        args.frames_dir,
+        args.pose_model,
+        args.output_dir,
+        image_size=args.image_size,
+        pose_config=PoseHeadConfig(
+            image_size=args.pose_image_size,
+            batch_size=args.pose_batch_size,
+            device=args.pose_device,
+            detection_confidence=args.pose_detection_confidence,
+            nose_confidence=args.pose_nose_confidence,
+            head_keypoint_confidence=args.pose_head_keypoint_confidence,
+        ),
+        seed=args.seed,
+        max_minority_repeats=args.max_minority_repeats,
+        temporal_consensus=not args.keep_isolated_detail_labels,
+        overwrite=args.overwrite,
+    )
+
+
+def _train_yolo_details(args: argparse.Namespace) -> dict[str, Any]:
+    return train_detail_classifiers(
+        args.dataset_dir,
+        args.output_dir,
+        config=YoloTrainingConfig(
+            base_model=args.base_model,
+            image_size=args.image_size,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            patience=args.patience,
+            learning_rate=args.learning_rate,
+            device=args.device,
+            seed=args.seed,
+            workers=args.workers,
+        ),
+        overwrite=args.overwrite,
+        resume=args.resume,
+    )
+
+
+def _rebalance_yolo_detail_validation(args: argparse.Namespace) -> dict[str, Any]:
+    return rebalance_detail_validation(
+        args.dataset_dir,
+        seed=args.seed,
+        max_minority_repeats=args.max_minority_repeats,
+    )
+
+
+def _evaluate_yolo_details(args: argparse.Namespace) -> dict[str, Any]:
+    return evaluate_detail_classifiers(
+        args.dataset_dir,
+        args.artifact_dir,
+        device=args.device,
+        batch_size=args.batch_size,
+    )
+
+
+def _assemble_yolo_details(args: argparse.Namespace) -> dict[str, Any]:
+    return assemble_reviewed_detail_artifact(
+        args.base_artifact,
+        args.detail_artifact,
+        args.output_dir,
+        reviewed_tasks=tuple(args.reviewed_task),
+        overwrite=args.overwrite,
+    )
+
+
+def _prepare_yolo_adults(args: argparse.Namespace) -> dict[str, Any]:
+    return prepare_adult_dataset(
+        args.source_manifest,
+        args.database,
+        args.frames_dir,
+        args.output_dir,
+        image_size=args.image_size,
+        seed=args.seed,
+        max_minority_repeats=args.max_minority_repeats,
+        temporal_consensus=not args.keep_isolated_labels,
+        overwrite=args.overwrite,
+    )
+
+
+def _train_yolo_adults(args: argparse.Namespace) -> dict[str, Any]:
+    return train_adult_classifier(
+        args.dataset_dir,
+        args.output_dir,
+        config=YoloTrainingConfig(
+            base_model=args.base_model,
+            image_size=args.image_size,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            patience=args.patience,
+            learning_rate=args.learning_rate,
+            device=args.device,
+            seed=args.seed,
+            workers=args.workers,
+        ),
+        overwrite=args.overwrite,
+    )
+
+
+def _evaluate_yolo_adults(args: argparse.Namespace) -> dict[str, Any]:
+    return evaluate_adult_classifier(
+        args.dataset_dir,
+        args.artifact_dir,
+        device=args.device,
+        batch_size=args.batch_size,
+    )
+
+
+def _assemble_yolo_adults(args: argparse.Namespace) -> dict[str, Any]:
+    return assemble_reviewed_adult_artifact(
+        args.base_artifact,
+        args.adult_artifact,
+        args.output_dir,
+        overwrite=args.overwrite,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="baby-monitor-edge",
@@ -195,6 +329,150 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_yolo.add_argument("--device", default="cpu")
     evaluate_yolo.add_argument("--batch-size", type=int, default=4)
     evaluate_yolo.set_defaults(handler=_evaluate_yolo)
+
+    prepare_details = commands.add_parser(
+        "prepare-yolo-details",
+        help="Build private pose-localized head, body, and mouth classification datasets.",
+    )
+    prepare_details.add_argument("--source-manifest", type=Path, required=True)
+    prepare_details.add_argument("--database", type=Path, required=True)
+    prepare_details.add_argument("--frames-dir", type=Path, required=True)
+    prepare_details.add_argument("--pose-model", type=Path, required=True)
+    prepare_details.add_argument("--output-dir", type=Path, required=True)
+    prepare_details.add_argument("--image-size", type=int, default=320)
+    prepare_details.add_argument("--seed", type=int, default=20260730)
+    prepare_details.add_argument("--max-minority-repeats", type=int, default=8)
+    prepare_details.add_argument("--keep-isolated-detail-labels", action="store_true")
+    prepare_details.add_argument("--pose-image-size", type=int, default=640)
+    prepare_details.add_argument("--pose-batch-size", type=int, default=16)
+    prepare_details.add_argument(
+        "--pose-device",
+        default="cpu",
+        help="Pose preprocessing device. CPU is the stable default; MPS can stall in batched top-k.",
+    )
+    prepare_details.add_argument("--pose-detection-confidence", type=float, default=0.2)
+    prepare_details.add_argument("--pose-nose-confidence", type=float, default=0.45)
+    prepare_details.add_argument("--pose-head-keypoint-confidence", type=float, default=0.3)
+    prepare_details.add_argument("--overwrite", action="store_true")
+    prepare_details.set_defaults(handler=_prepare_yolo_details)
+
+    train_details = commands.add_parser(
+        "train-yolo-details",
+        help="Train compact head-side, body-position, and mouth-open classifiers.",
+    )
+    train_details.add_argument("--dataset-dir", type=Path, required=True)
+    train_details.add_argument("--output-dir", type=Path, required=True)
+    train_details.add_argument("--base-model", default="yolo26n-cls.pt")
+    train_details.add_argument("--image-size", type=int, default=320)
+    train_details.add_argument("--batch-size", type=int, default=8)
+    train_details.add_argument("--epochs", type=int, default=40)
+    train_details.add_argument("--patience", type=int, default=8)
+    train_details.add_argument("--learning-rate", type=float, default=0.001)
+    train_details.add_argument("--device", default="mps")
+    train_details.add_argument("--seed", type=int, default=20260730)
+    train_details.add_argument("--workers", type=int, default=0)
+    train_details.add_argument("--overwrite", action="store_true")
+    train_details.add_argument("--resume", action="store_true")
+    train_details.set_defaults(handler=_train_yolo_details)
+
+    rebalance_details = commands.add_parser(
+        "rebalance-yolo-detail-validation",
+        help=(
+            "Balance the private model-selection folders while preserving the "
+            "natural validation rows used for calibration."
+        ),
+    )
+    rebalance_details.add_argument("--dataset-dir", type=Path, required=True)
+    rebalance_details.add_argument("--seed", type=int, default=20260730)
+    rebalance_details.add_argument("--max-minority-repeats", type=int, default=8)
+    rebalance_details.set_defaults(handler=_rebalance_yolo_detail_validation)
+
+    evaluate_details = commands.add_parser(
+        "evaluate-yolo-details",
+        help="Calibrate abstention and score grouped secondary-feature holdouts.",
+    )
+    evaluate_details.add_argument("--dataset-dir", type=Path, required=True)
+    evaluate_details.add_argument("--artifact-dir", type=Path, required=True)
+    evaluate_details.add_argument("--device", default="cpu")
+    evaluate_details.add_argument("--batch-size", type=int, default=8)
+    evaluate_details.set_defaults(handler=_evaluate_yolo_details)
+
+    assemble_details = commands.add_parser(
+        "assemble-yolo-details",
+        help="Package explicitly reviewed, gate-passing secondary classifiers.",
+    )
+    assemble_details.add_argument("--base-artifact", type=Path, required=True)
+    assemble_details.add_argument("--detail-artifact", type=Path, required=True)
+    assemble_details.add_argument("--output-dir", type=Path, required=True)
+    assemble_details.add_argument(
+        "--reviewed-task",
+        action="append",
+        required=True,
+        choices=("head_side", "body_position", "mouth_open"),
+    )
+    assemble_details.add_argument("--overwrite", action="store_true")
+    assemble_details.set_defaults(handler=_assemble_yolo_details)
+
+    prepare_adults = commands.add_parser(
+        "prepare-yolo-adults",
+        help="Build a private, grouped full-scene adult-presence dataset.",
+    )
+    prepare_adults.add_argument("--source-manifest", type=Path, required=True)
+    prepare_adults.add_argument("--database", type=Path, required=True)
+    prepare_adults.add_argument("--frames-dir", type=Path, required=True)
+    prepare_adults.add_argument("--output-dir", type=Path, required=True)
+    prepare_adults.add_argument("--image-size", type=int, default=320)
+    prepare_adults.add_argument("--seed", type=int, default=20260730)
+    prepare_adults.add_argument(
+        "--max-minority-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Maximum minority-class repetition. The adult default downsamples "
+            "the majority instead of duplicating weak positives."
+        ),
+    )
+    prepare_adults.add_argument("--keep-isolated-labels", action="store_true")
+    prepare_adults.add_argument("--overwrite", action="store_true")
+    prepare_adults.set_defaults(handler=_prepare_yolo_adults)
+
+    train_adults = commands.add_parser(
+        "train-yolo-adults",
+        help="Train the compact full-scene adult-presence classifier.",
+    )
+    train_adults.add_argument("--dataset-dir", type=Path, required=True)
+    train_adults.add_argument("--output-dir", type=Path, required=True)
+    train_adults.add_argument("--base-model", default="yolo26n-cls.pt")
+    train_adults.add_argument("--image-size", type=int, default=320)
+    train_adults.add_argument("--batch-size", type=int, default=16)
+    train_adults.add_argument("--epochs", type=int, default=30)
+    train_adults.add_argument("--patience", type=int, default=6)
+    train_adults.add_argument("--learning-rate", type=float, default=0.001)
+    train_adults.add_argument("--device", default="mps")
+    train_adults.add_argument("--seed", type=int, default=20260730)
+    train_adults.add_argument("--workers", type=int, default=0)
+    train_adults.add_argument("--overwrite", action="store_true")
+    train_adults.set_defaults(handler=_train_yolo_adults)
+
+    evaluate_adults = commands.add_parser(
+        "evaluate-yolo-adults",
+        help="Calibrate and score adult presence on untouched location/day holdouts.",
+    )
+    evaluate_adults.add_argument("--dataset-dir", type=Path, required=True)
+    evaluate_adults.add_argument("--artifact-dir", type=Path, required=True)
+    evaluate_adults.add_argument("--device", default="cpu")
+    evaluate_adults.add_argument("--batch-size", type=int, default=16)
+    evaluate_adults.set_defaults(handler=_evaluate_yolo_adults)
+
+    assemble_adults = commands.add_parser(
+        "assemble-yolo-adults",
+        help="Package a reviewed, gate-passing adult-presence classifier.",
+    )
+    assemble_adults.add_argument("--base-artifact", type=Path, required=True)
+    assemble_adults.add_argument("--adult-artifact", type=Path, required=True)
+    assemble_adults.add_argument("--output-dir", type=Path, required=True)
+    assemble_adults.add_argument("--overwrite", action="store_true")
+    assemble_adults.set_defaults(handler=_assemble_yolo_adults)
     return parser
 
 

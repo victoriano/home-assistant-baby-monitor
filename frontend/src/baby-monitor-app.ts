@@ -241,6 +241,8 @@ const VISION_METADATA_ALIASES: Record<string, string> = {
   bodyPosition: 'body_position',
   clothingItems: 'clothing_items',
   mouthOpen: 'mouth_open',
+  adultPresent: 'adult_present',
+  adultCount: 'adult_count',
 };
 
 function frameVisionMetadata(frame: FrameRecord): Record<string, unknown> {
@@ -260,6 +262,8 @@ function frameVisionMetadata(frame: FrameRecord): Record<string, unknown> {
     clothing_items: label.clothingItems,
     pacifier: label.pacifier,
     mouth_open: label.mouthOpen,
+    adult_present: label.adultPresent,
+    adult_count: label.adultCount,
   };
   Object.entries(label.raw ?? {}).forEach(([key, value]) => {
     metadata[VISION_METADATA_ALIASES[key] ?? key] = value;
@@ -282,6 +286,8 @@ function visionMetadataLabel(key: string, language: Language): string {
     clothing_items: ['Ropa detectada', 'Detected clothing'],
     pacifier: ['Chupete', 'Pacifier'],
     mouth_open: ['Boca abierta', 'Mouth open'],
+    adult_present: ['Adulto presente', 'Adult present'],
+    adult_count: ['Adultos visibles', 'Visible adults'],
   };
   const known = labels[key];
   if (known) return known[language === 'es' ? 0 : 1];

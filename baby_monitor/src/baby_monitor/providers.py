@@ -37,6 +37,11 @@ VISION_PROMPT = (
     "visible details: face visibility, head side, body position, clothing, pacifier use, and whether the "
     "mouth is open. Be conservative: use unknown when the baby is occluded or unclear, never infer sleep "
     "when the baby is absent, and never infer a pacifier from a closed mouth or shadow. When the monitored "
+    "frame clearly shows adults, set adult_present=yes and count only the visible adults. Set "
+    "adult_present=no and adult_count=0 only when no adult is visible. Use adult_present=unknown and "
+    "adult_count=null when presence itself is ambiguous; when an adult is visible but the exact number "
+    "is ambiguous, use adult_present=yes and adult_count=null. Do "
+    "not infer sex, gender, identity, exact age, or other demographic traits from appearance. When the monitored "
     "area is clearly visible without the baby, set baby_present=false, state=uncertain, in_crib=false and "
     "include the tag baby_absent; include empty_crib too when the crib is clearly empty. When the image "
     "itself is blocked, corrupted or unusable, use state=uncertain and include the tag image_unusable "
@@ -76,6 +81,8 @@ VISION_SCHEMA: dict[str, Any] = {
         },
         "pacifier": {"type": "string", "enum": ["yes", "no", "unknown"]},
         "mouth_open": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "adult_present": {"type": "string", "enum": ["yes", "no", "unknown"]},
+        "adult_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 8},
     },
     "required": [
         "baby_present",
@@ -91,6 +98,8 @@ VISION_SCHEMA: dict[str, Any] = {
         "clothing_items",
         "pacifier",
         "mouth_open",
+        "adult_present",
+        "adult_count",
     ],
     "additionalProperties": False,
 }
@@ -377,6 +386,17 @@ class YoloLocalProvider(VisionProvider):
     name = "yolo"
     _UNCERTAIN_MARGIN = 0.08
     _PACIFIER_UNCERTAIN_MARGIN = 0.1
+    _OPTIONAL_TASK_CLASSES = {
+        "head_side": {"back", "left", "right"},
+        "body_position": {"back", "belly", "side"},
+        "mouth_open": {"no", "yes"},
+    }
+    _OPTIONAL_TASK_CROPS = {
+        "head_side": "head",
+        "body_position": "body",
+        "mouth_open": "mouth",
+    }
+    _OPTIONAL_BINARY_TASKS = {"adult_presence"}
 
     def __init__(self, model_dir: str | None) -> None:
         configured = model_dir or os.environ.get("BABY_MONITOR_YOLO_MODEL_DIR")
@@ -427,7 +447,8 @@ class YoloLocalProvider(VisionProvider):
                 raise ProviderError(f"YOLO {task} {label} integrity check failed")
             return model_path
 
-        for task in ("presence", "awake", "pacifier"):
+        binary_tasks = ("presence", "awake", "pacifier")
+        for task in binary_tasks:
             task_metadata = tasks.get(task)
             if not isinstance(task_metadata, dict):
                 raise ProviderError(f"YOLO model metadata is missing {task}")
@@ -440,6 +461,11 @@ class YoloLocalProvider(VisionProvider):
                 or not positive_class
             ):
                 raise ProviderError(f"YOLO model metadata for {task} is invalid")
+            if task == "pacifier" and task_metadata.get("crop", "head") not in {
+                "head",
+                "mouth",
+            }:
+                raise ProviderError("YOLO model metadata for pacifier has an invalid crop")
             validate_model_reference(task, task_metadata, label="model")
             ensemble = task_metadata.get("ensemble")
             aggregation = task_metadata.get("aggregation")
@@ -472,6 +498,81 @@ class YoloLocalProvider(VisionProvider):
                         or not 0 <= float(bounds["negative"]) < float(bounds["positive"]) <= 1
                     ):
                         raise ProviderError(f"YOLO selective thresholds for {task} are invalid")
+        for task in self._OPTIONAL_BINARY_TASKS & set(tasks):
+            task_metadata = tasks[task]
+            if not isinstance(task_metadata, dict):
+                raise ProviderError(f"YOLO model metadata for {task} is invalid")
+            threshold = task_metadata.get("threshold")
+            positive_class = task_metadata.get("positive_class")
+            crop = task_metadata.get("crop")
+            if (
+                not isinstance(threshold, int | float)
+                or not 0 <= float(threshold) <= 1
+                or positive_class != "yes"
+                or crop != "scene"
+            ):
+                raise ProviderError(f"YOLO model metadata for {task} is invalid")
+            validate_model_reference(task, task_metadata, label="model")
+            selective = task_metadata.get("thresholds")
+            if not isinstance(selective, dict) or "overall" not in selective:
+                raise ProviderError(f"YOLO selective thresholds for {task} are invalid")
+            for location, bounds in selective.items():
+                if (
+                    not isinstance(location, str)
+                    or not isinstance(bounds, dict)
+                    or not isinstance(bounds.get("negative"), int | float)
+                    or not isinstance(bounds.get("positive"), int | float)
+                    or not 0
+                    <= float(bounds["negative"])
+                    < float(bounds["positive"])
+                    <= 1
+                ):
+                    raise ProviderError(f"YOLO selective thresholds for {task} are invalid")
+        unknown_tasks = set(tasks) - {
+            "presence",
+            "awake",
+            "pacifier",
+            *self._OPTIONAL_BINARY_TASKS,
+            *self._OPTIONAL_TASK_CLASSES,
+        }
+        if unknown_tasks:
+            raise ProviderError("YOLO model metadata contains unsupported tasks")
+        for task, expected_classes in self._OPTIONAL_TASK_CLASSES.items():
+            task_metadata = tasks.get(task)
+            if task_metadata is None:
+                continue
+            if not isinstance(task_metadata, dict):
+                raise ProviderError(f"YOLO model metadata for {task} is invalid")
+            validate_model_reference(task, task_metadata, label="model")
+            classes = task_metadata.get("classes")
+            crop = task_metadata.get("crop")
+            thresholds = task_metadata.get("thresholds")
+            if (
+                not isinstance(classes, list)
+                or set(classes) != expected_classes
+                or len(classes) != len(expected_classes)
+                or crop != self._OPTIONAL_TASK_CROPS[task]
+                or not isinstance(thresholds, dict)
+                or not isinstance(thresholds.get("overall"), dict)
+            ):
+                raise ProviderError(f"YOLO model metadata for {task} is invalid")
+            for location, rules in thresholds.items():
+                if (
+                    not isinstance(location, str)
+                    or not isinstance(rules, dict)
+                    or set(rules) != expected_classes
+                ):
+                    raise ProviderError(f"YOLO thresholds for {task} are invalid")
+                for rule in rules.values():
+                    if (
+                        not isinstance(rule, dict)
+                        or not isinstance(rule.get("enabled"), bool)
+                        or not isinstance(rule.get("probability"), int | float)
+                        or not isinstance(rule.get("margin"), int | float)
+                        or not 0 <= float(rule["probability"]) <= 1
+                        or not 0 <= float(rule["margin"]) <= 1
+                    ):
+                        raise ProviderError(f"YOLO thresholds for {task} are invalid")
         detail_crop = metadata.get("detail_crop")
         if detail_crop is not None:
             if not isinstance(detail_crop, dict) or detail_crop.get("strategy") != "yolo26_pose_head":
@@ -555,7 +656,21 @@ class YoloLocalProvider(VisionProvider):
             )
             models: dict[str, Any] = {}
             try:
-                for task in ("presence", "awake", "pacifier"):
+                for task in (
+                    "presence",
+                    "awake",
+                    "pacifier",
+                    *(
+                        task
+                        for task in self._OPTIONAL_BINARY_TASKS
+                        if task in self.metadata["tasks"]
+                    ),
+                    *(
+                        task
+                        for task in self._OPTIONAL_TASK_CLASSES
+                        if task in self.metadata["tasks"]
+                    ),
+                ):
                     task_metadata = self.metadata["tasks"][task]
                     references = [task_metadata, *task_metadata.get("ensemble", [])]
                     models[task] = [
@@ -625,6 +740,68 @@ class YoloLocalProvider(VisionProvider):
         except Exception as exc:
             raise ProviderError(f"YOLO {task} inference failed") from exc
 
+    def _class_probabilities(
+        self,
+        task: str,
+        images: list[Any],
+    ) -> list[dict[str, float]]:
+        models = self._ensure_models()
+        try:
+            import numpy as np
+
+            if len(models[task]) != 1:
+                raise ProviderError(f"YOLO {task} must use one multiclass model")
+            sources = [np.asarray(image)[:, :, ::-1].copy() for image in images]
+            results = models[task][0].predict(
+                source=sources,
+                imgsz=int(self.metadata["image_size"]),
+                device=os.environ.get("BABY_MONITOR_YOLO_DEVICE", "cpu"),
+                batch=max(1, len(images)),
+                verbose=False,
+            )
+            probabilities: list[dict[str, float]] = []
+            expected = set(self.metadata["tasks"][task]["classes"])
+            for result in results:
+                if result.probs is None:
+                    raise ProviderError(f"YOLO {task} model returned no probabilities")
+                values = {
+                    str(name): float(result.probs.data[index].detach().cpu())
+                    for index, name in result.names.items()
+                }
+                if set(values) != expected:
+                    raise ProviderError(f"YOLO {task} model returned invalid classes")
+                probabilities.append(values)
+            if len(probabilities) != len(images):
+                raise ProviderError(f"YOLO {task} model returned an invalid result count")
+            return probabilities
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"YOLO {task} inference failed") from exc
+
+    def _multiclass_decision(
+        self,
+        task: str,
+        image: Any | None,
+        location_id: str | None,
+    ) -> str:
+        if image is None or task not in self.metadata["tasks"]:
+            return "unknown"
+        probabilities = self._class_probabilities(task, [image])[0]
+        ordered = sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
+        class_name, probability = ordered[0]
+        margin = probability - ordered[1][1]
+        thresholds = self.metadata["tasks"][task]["thresholds"]
+        rules = thresholds.get(location_id or "", thresholds["overall"])
+        rule = rules[class_name]
+        if (
+            rule["enabled"]
+            and probability >= float(rule["probability"])
+            and margin >= float(rule["margin"])
+        ):
+            return class_name
+        return "unknown"
+
     @staticmethod
     def _crop(image: Any, profile: dict[str, Any], image_size: int) -> Any:
         from PIL import Image, ImageOps
@@ -647,12 +824,24 @@ class YoloLocalProvider(VisionProvider):
             centering=(0.5, 0.5),
         )
 
-    def _detail_crop(self, image: Any, profile: dict[str, Any], image_size: int) -> Any | None:
-        """Return a baby-head crop, or None when pose localization is not decisive."""
+    def _detail_crops(
+        self,
+        image: Any,
+        profile: dict[str, Any],
+        image_size: int,
+    ) -> dict[str, Any | None]:
+        """Return pose-aligned head, lower-face, and baby-body crops."""
 
         detail = self.metadata.get("detail_crop")
         if not isinstance(detail, dict):
-            return self._crop(image, profile, image_size)
+            fallback = self._crop(image, profile, image_size)
+            return {
+                "head": fallback,
+                "body": fallback,
+                "mouth": fallback,
+                "adult_pose_present": False,
+                "adult_count": None,
+            }
         models = self._ensure_models()
         try:
             import numpy as np
@@ -667,7 +856,13 @@ class YoloLocalProvider(VisionProvider):
                 verbose=False,
             )[0]
             if result.boxes is None or result.keypoints is None or result.keypoints.conf is None:
-                return None
+                return {
+                    "head": None,
+                    "body": None,
+                    "mouth": None,
+                    "adult_pose_present": False,
+                    "adult_count": None,
+                }
             boxes = result.boxes.xyxyn.detach().cpu().tolist()
             box_confidences = result.boxes.conf.detach().cpu().tolist()
             keypoints = result.keypoints.xyn.detach().cpu().tolist()
@@ -675,13 +870,17 @@ class YoloLocalProvider(VisionProvider):
             x0, y0, x1, y1 = (float(value) for value in profile["rect"])
             minimum_detection = float(detail.get("detection_confidence", 0.2))
             minimum_nose = float(detail.get("nose_confidence", 0.45))
-            candidates: list[tuple[float, list[float], list[list[float]], list[float]]] = []
-            for box, confidence, points, point_confidences in zip(
-                boxes,
-                box_confidences,
-                keypoints,
-                keypoint_confidences,
-                strict=True,
+            candidates: list[
+                tuple[int, float, list[float], list[list[float]], list[float]]
+            ] = []
+            for index, (box, confidence, points, point_confidences) in enumerate(
+                zip(
+                    boxes,
+                    box_confidences,
+                    keypoints,
+                    keypoint_confidences,
+                    strict=True,
+                )
             ):
                 nose_x, nose_y = points[0]
                 nose_confidence = point_confidences[0]
@@ -693,11 +892,63 @@ class YoloLocalProvider(VisionProvider):
                     continue
                 area = max((box[2] - box[0]) * (box[3] - box[1]), 1e-5)
                 baby_preference = confidence * nose_confidence / math.sqrt(area)
-                candidates.append((baby_preference, box, points, point_confidences))
+                candidates.append(
+                    (
+                        index,
+                        baby_preference,
+                        box,
+                        points,
+                        point_confidences,
+                    )
+                )
             if not candidates:
-                return None
-            _, box, points, point_confidences = max(candidates, key=lambda item: item[0])
+                adult_pose_present, adult_count = self._adult_evidence_without_baby(
+                    boxes,
+                    box_confidences,
+                    roi=(x0, y0, x1, y1),
+                    minimum_confidence=max(0.25, minimum_detection),
+                )
+                return {
+                    "head": None,
+                    "body": None,
+                    "mouth": None,
+                    "adult_pose_present": adult_pose_present,
+                    "adult_count": adult_count,
+                }
+            baby_index, _, box, points, point_confidences = max(
+                candidates,
+                key=lambda item: item[1],
+            )
+            adult_pose_present, adult_count = self._conservative_adult_evidence(
+                boxes,
+                box_confidences,
+                baby_index=baby_index,
+                minimum_confidence=max(0.25, minimum_detection),
+            )
             width, height = image.size
+            body_width = box[2] - box[0]
+            body_height = box[3] - box[1]
+            body_rect = (
+                max(x0, box[0] - 0.12 * body_width),
+                max(y0, box[1] - 0.12 * body_height),
+                min(x1, box[2] + 0.12 * body_width),
+                min(y1, box[3] + 0.12 * body_height),
+            )
+            body_crop = image.crop(
+                (
+                    round(body_rect[0] * width),
+                    round(body_rect[1] * height),
+                    round(body_rect[2] * width),
+                    round(body_rect[3] * height),
+                )
+            )
+            body = ImageOps.pad(
+                body_crop,
+                (image_size, image_size),
+                method=Image.Resampling.LANCZOS,
+                color=(114, 114, 114),
+            )
+
             minimum_head = float(detail.get("head_keypoint_confidence", 0.3))
             visible_head = [
                 point
@@ -709,19 +960,25 @@ class YoloLocalProvider(VisionProvider):
                 if confidence >= minimum_head
             ]
             if not visible_head:
-                return None
+                return {
+                    "head": None,
+                    "body": body,
+                    "mouth": None,
+                    "adult_pose_present": adult_pose_present,
+                    "adult_count": adult_count,
+                }
             head_x = [point[0] * width for point in visible_head]
             head_y = [point[1] * height for point in visible_head]
             span = max(max(head_x) - min(head_x), max(head_y) - min(head_y))
-            box_width = (box[2] - box[0]) * width
-            box_height = (box[3] - box[1]) * height
+            box_width = body_width * width
+            box_height = body_height * height
             side = max(2.2 * span, 0.22 * box_width, 0.16 * box_height, 96)
             side = min(side, 0.5 * min(width, height))
             nose_x = points[0][0] * width
             nose_y = points[0][1] * height
             left = max(0.0, min(width - side, nose_x - side / 2))
             top = max(0.0, min(height - side, nose_y + 0.12 * side - side / 2))
-            cropped = image.crop(
+            head_crop = image.crop(
                 (
                     round(left),
                     round(top),
@@ -729,13 +986,167 @@ class YoloLocalProvider(VisionProvider):
                     round(top + side),
                 )
             )
-            return ImageOps.fit(
-                cropped,
+            head = ImageOps.fit(
+                head_crop,
                 (image_size, image_size),
                 method=Image.Resampling.LANCZOS,
             )
+            mouth_crop = image.crop(
+                (
+                    round(left + 0.12 * side),
+                    round(top + 0.28 * side),
+                    round(left + 0.88 * side),
+                    round(top + 0.94 * side),
+                )
+            )
+            mouth = ImageOps.fit(
+                mouth_crop,
+                (image_size, image_size),
+                method=Image.Resampling.LANCZOS,
+            )
+            return {
+                "head": head,
+                "body": body,
+                "mouth": mouth,
+                "adult_pose_present": adult_pose_present,
+                "adult_count": adult_count,
+            }
         except Exception as exc:
             raise ProviderError("YOLO pose localization failed") from exc
+
+    @staticmethod
+    def _conservative_adult_count(
+        boxes: list[list[float]],
+        confidences: list[float],
+        *,
+        baby_index: int,
+        minimum_confidence: float,
+    ) -> int | None:
+        """Return an exact adult count only when pose evidence is unambiguous."""
+
+        return YoloLocalProvider._conservative_adult_evidence(
+            boxes,
+            confidences,
+            baby_index=baby_index,
+            minimum_confidence=minimum_confidence,
+        )[1]
+
+    @staticmethod
+    def _conservative_adult_evidence(
+        boxes: list[list[float]],
+        confidences: list[float],
+        *,
+        baby_index: int,
+        minimum_confidence: float,
+    ) -> tuple[bool, int | None]:
+        """Find people decisively larger than the selected baby pose.
+
+        COCO pose predicts people, not age. Relative geometry is therefore
+        used only for the conservative household contract "visible adult".
+        Confirmed large poses prove presence. An exact count is returned only
+        for one confirmed adult with no competing ambiguous pose because
+        duplicate and multi-person counts have not passed held-out validation.
+        """
+
+        baby = boxes[baby_index]
+        baby_width = max(baby[2] - baby[0], 1e-5)
+        baby_height = max(baby[3] - baby[1], 1e-5)
+        baby_area = baby_width * baby_height
+        confirmed = 0
+        ambiguous = False
+        for index, (box, confidence) in enumerate(
+            zip(boxes, confidences, strict=True)
+        ):
+            if index == baby_index or confidence < minimum_confidence:
+                continue
+            width = max(box[2] - box[0], 0.0)
+            height = max(box[3] - box[1], 0.0)
+            area = width * height
+            clearly_larger = (
+                area >= 1.8 * baby_area
+                or width >= 1.7 * baby_width
+                or height >= 1.5 * baby_height
+            )
+            if clearly_larger:
+                confirmed += 1
+            elif area >= 0.45 * baby_area:
+                ambiguous = True
+        present = confirmed > 0
+        exact_count = 1 if confirmed == 1 and not ambiguous else None
+        return present, exact_count
+
+    @staticmethod
+    def _adult_count_without_baby(
+        boxes: list[list[float]],
+        confidences: list[float],
+        *,
+        roi: tuple[float, float, float, float],
+        minimum_confidence: float,
+    ) -> int | None:
+        """Return an exact count for one clear adult outside a baby ROI."""
+
+        return YoloLocalProvider._adult_evidence_without_baby(
+            boxes,
+            confidences,
+            roi=roi,
+            minimum_confidence=minimum_confidence,
+        )[1]
+
+    @staticmethod
+    def _adult_evidence_without_baby(
+        boxes: list[list[float]],
+        confidences: list[float],
+        *,
+        roi: tuple[float, float, float, float],
+        minimum_confidence: float,
+    ) -> tuple[bool, int | None]:
+        """Find unmistakably large people outside a known baby ROI."""
+
+        roi_x0, roi_y0, roi_x1, roi_y1 = roi
+        confirmed = 0
+        ambiguous = False
+        considered = False
+        for box, confidence in zip(boxes, confidences, strict=True):
+            if confidence < minimum_confidence:
+                continue
+            considered = True
+            width = max(box[2] - box[0], 0.0)
+            height = max(box[3] - box[1], 0.0)
+            area = width * height
+            center_x = (box[0] + box[2]) / 2
+            center_y = (box[1] + box[3]) / 2
+            center_in_baby_roi = (
+                roi_x0 <= center_x <= roi_x1 and roi_y0 <= center_y <= roi_y1
+            )
+            overlap_width = max(
+                0.0,
+                min(box[2], roi_x1) - max(box[0], roi_x0),
+            )
+            overlap_height = max(
+                0.0,
+                min(box[3], roi_y1) - max(box[1], roi_y0),
+            )
+            fraction_inside_baby_roi = (
+                overlap_width * overlap_height / area if area else 0.0
+            )
+            belongs_to_baby_area = (
+                center_in_baby_roi or fraction_inside_baby_roi >= 0.2
+            )
+            clearly_adult_sized = area >= 0.12 or width >= 0.4 or height >= 0.5
+            if clearly_adult_sized and not belongs_to_baby_area:
+                confirmed += 1
+            elif not belongs_to_baby_area and area >= 0.025:
+                ambiguous = True
+        if not considered:
+            return False, None
+        present = confirmed > 0
+        exact_count = 1 if confirmed == 1 and not ambiguous else None
+        return present, exact_count
+
+    def _detail_crop(self, image: Any, profile: dict[str, Any], image_size: int) -> Any | None:
+        """Compatibility wrapper for callers that only need the baby head."""
+
+        return self._detail_crops(image, profile, image_size)["head"]
 
     def _build_label(
         self,
@@ -744,6 +1155,7 @@ class YoloLocalProvider(VisionProvider):
         awake_score: float | None,
         pacifier_score: float | None,
         location_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> VisionLabel:
         winner = max(range(len(profiles)), key=presence_scores.__getitem__)
         profile = profiles[winner]
@@ -751,16 +1163,46 @@ class YoloLocalProvider(VisionProvider):
         presence_negative, presence_positive = self._threshold_bounds("presence", location_id)
         baby_present = presence_score >= presence_positive
         tags = ["local_yolo"]
+        details = details or {}
+        adult_present = details.get("adult_present", "unknown")
+        if adult_present not in {"yes", "no", "unknown"}:
+            adult_present = "unknown"
+        adult_count = details.get("adult_count")
+        if type(adult_count) is not int:
+            adult_count = None
+        if adult_count is not None and adult_count > 0:
+            adult_present = "yes"
+        elif adult_present == "yes":
+            # A full-scene classifier can establish presence even when pose
+            # cannot recover an exact count.
+            adult_count = None
+        elif adult_present == "no":
+            adult_count = 0
+        else:
+            # Pose returning zero is not evidence of absence when the adult
+            # classifier abstains or is not installed.
+            adult_count = None
+        adult_tags = (
+            ["adult_present", *([f"adult_count_{adult_count}"] if adult_count else [])]
+            if adult_present == "yes"
+            else []
+        )
 
         if not baby_present and presence_score > presence_negative:
             return VisionLabel(
                 baby_present=False,
                 state="uncertain",
                 confidence=0.6,
-                description="Local YOLO could not make a decisive occupancy classification.",
-                tags=[*tags, "image_uncertain"],
+                description=(
+                    "Local YOLO could not make a decisive occupancy classification; "
+                    f"adult_present={adult_present}; adults="
+                    f"{adult_count if adult_count is not None else 'unknown'}."
+                ),
+                tags=[*tags, "image_uncertain", *adult_tags],
                 in_crib=None,
                 sleep_surface="unknown",
+                adult_present=adult_present,
+                adult_count=adult_count,
             )
         if not baby_present:
             tags.append("baby_absent")
@@ -770,10 +1212,16 @@ class YoloLocalProvider(VisionProvider):
                 baby_present=False,
                 state="uncertain",
                 confidence=max(0.65, min(0.99, 1 - presence_score)),
-                description="Local YOLO found no baby in the monitored sleep areas.",
-                tags=tags,
+                description=(
+                    "Local YOLO found no baby in the monitored sleep areas; "
+                    f"adult_present={adult_present}; adults="
+                    f"{adult_count if adult_count is not None else 'unknown'}."
+                ),
+                tags=[*tags, *adult_tags],
                 in_crib=False,
                 sleep_surface="unknown",
+                adult_present=adult_present,
+                adult_count=adult_count,
             )
 
         surface = str(profile["surface"])
@@ -799,9 +1247,26 @@ class YoloLocalProvider(VisionProvider):
         if awake_score is None and pacifier_score is None:
             tags.append("detail_unavailable")
 
+        face_visible = details.get("face_visible", "unknown")
+        head_side = details.get("head_side", "unknown")
+        body_position = details.get("body_position", "unknown")
+        mouth_open = details.get("mouth_open", "unknown") if pacifier == "no" else "unknown"
+        if head_side != "unknown":
+            tags.append(f"head_{head_side}")
+        if body_position != "unknown":
+            tags.append(f"body_{body_position}")
+        if mouth_open == "yes":
+            tags.append("mouth_open")
+        tags.extend(adult_tags)
+
         in_crib = True if surface == "crib" else False if surface in {"family_bed", "other"} else None
         confidence = min(max(0.65, min(0.99, presence_score)), state_confidence)
-        description = f"Local YOLO detected the baby on {surface}; state={state}; pacifier={pacifier}."
+        description = (
+            f"Local YOLO detected the baby on {surface}; state={state}; "
+            f"pacifier={pacifier}; head={head_side}; body={body_position}; "
+            f"mouth_open={mouth_open}; adult_present={adult_present}; adults="
+            f"{adult_count if adult_count is not None else 'unknown'}."
+        )
         return VisionLabel(
             baby_present=True,
             state=state,
@@ -810,7 +1275,13 @@ class YoloLocalProvider(VisionProvider):
             tags=tags,
             in_crib=in_crib,
             sleep_surface=surface,
+            face_visible=face_visible,
+            head_side=head_side,
+            body_position=body_position,
             pacifier=pacifier,
+            mouth_open=mouth_open,
+            adult_present=adult_present,
+            adult_count=adult_count,
         )
 
     def _threshold_bounds(
@@ -844,16 +1315,85 @@ class YoloLocalProvider(VisionProvider):
             winner = max(range(len(crops)), key=presence_scores.__getitem__)
             _, presence_positive = self._threshold_bounds("presence", location_id)
             decisive_present = presence_scores[winner] >= presence_positive
-            detail_crop = self._detail_crop(decoded, profiles[winner], image_size) if decisive_present else None
-            awake_score = self._scores("awake", [detail_crop])[0] if detail_crop is not None else None
-            pacifier_score = self._scores("pacifier", [detail_crop])[0] if detail_crop is not None else None
+            detail_crops = (
+                self._detail_crops(decoded, profiles[winner], image_size)
+                if decisive_present
+                else {
+                    "head": None,
+                    "body": None,
+                    "mouth": None,
+                    "adult_pose_present": False,
+                    "adult_count": None,
+                }
+            )
+            head_crop = detail_crops["head"]
+            awake_score = self._scores("awake", [head_crop])[0] if head_crop is not None else None
+            pacifier_crop = detail_crops[
+                self.metadata["tasks"]["pacifier"].get("crop", "head")
+            ]
+            pacifier_score = (
+                self._scores("pacifier", [pacifier_crop])[0]
+                if pacifier_crop is not None
+                else None
+            )
+            details = {
+                "face_visible": "yes" if head_crop is not None else "unknown",
+                "adult_count": detail_crops["adult_count"],
+                "adult_present": (
+                    "yes"
+                    if detail_crops["adult_pose_present"]
+                    else self._adult_presence_decision(
+                        decoded,
+                        detail_crops["adult_count"],
+                        location_id,
+                    )
+                ),
+                **{
+                    task: self._multiclass_decision(
+                        task,
+                        detail_crops[crop_name],
+                        location_id,
+                    )
+                    for task, crop_name in self._OPTIONAL_TASK_CROPS.items()
+                },
+            }
         return self._build_label(
             profiles,
             presence_scores,
             awake_score,
             pacifier_score,
             location_id,
+            details,
         )
+
+    def _adult_presence_decision(
+        self,
+        image: Any,
+        pose_count: int | None,
+        location_id: str | None,
+    ) -> str:
+        """Combine exact pose evidence with an optional full-scene classifier."""
+
+        if pose_count is not None and pose_count > 0:
+            return "yes"
+        if "adult_presence" not in self.metadata["tasks"]:
+            return "unknown"
+        from PIL import Image, ImageOps
+
+        image_size = int(self.metadata["image_size"])
+        scene = ImageOps.pad(
+            image,
+            (image_size, image_size),
+            method=Image.Resampling.LANCZOS,
+            color=(114, 114, 114),
+        )
+        score = self._scores("adult_presence", [scene])[0]
+        negative, positive = self._threshold_bounds("adult_presence", location_id)
+        if score >= positive:
+            return "yes"
+        if score <= negative:
+            return "no"
+        return "unknown"
 
     async def label(
         self,
@@ -873,6 +1413,12 @@ class YoloLocalProvider(VisionProvider):
         blank = Image.new("RGB", (image_size, image_size), color=(114, 114, 114))
         for task in ("presence", "awake", "pacifier"):
             self._scores(task, [blank])
+        for task in self._OPTIONAL_BINARY_TASKS:
+            if task in self.metadata["tasks"]:
+                self._scores(task, [blank])
+        for task in self._OPTIONAL_TASK_CLASSES:
+            if task in self.metadata["tasks"]:
+                self._class_probabilities(task, [blank])
 
     async def probe(self) -> None:
         await asyncio.to_thread(self._probe_sync)

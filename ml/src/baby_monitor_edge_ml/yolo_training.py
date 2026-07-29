@@ -206,6 +206,38 @@ def _select_pose_head_rect(
 ) -> tuple[float, float, float, float] | None:
     """Select a small likely-baby pose inside an ROI and return a square head crop."""
 
+    candidate = _select_pose_candidate(
+        boxes=boxes,
+        box_confidences=box_confidences,
+        keypoints=keypoints,
+        keypoint_confidences=keypoint_confidences,
+        roi=roi,
+        config=config,
+    )
+    if candidate is None:
+        return None
+    box, points, point_confidences = candidate
+    return _pose_head_rect(
+        box=box,
+        points=points,
+        point_confidences=point_confidences,
+        width=width,
+        height=height,
+        config=config,
+    )
+
+
+def _select_pose_candidate(
+    *,
+    boxes: list[list[float]],
+    box_confidences: list[float],
+    keypoints: list[list[list[float]]],
+    keypoint_confidences: list[list[float]],
+    roi: tuple[float, float, float, float],
+    config: PoseHeadConfig,
+) -> tuple[list[float], list[list[float]], list[float]] | None:
+    """Return the most likely baby pose inside a monitored ROI."""
+
     x0, y0, x1, y1 = roi
     candidates: list[tuple[float, list[float], list[list[float]], list[float]]] = []
     for box, confidence, points, point_confidences in zip(
@@ -229,6 +261,20 @@ def _select_pose_head_rect(
     if not candidates:
         return None
     _, box, points, point_confidences = max(candidates, key=lambda item: item[0])
+    return box, points, point_confidences
+
+
+def _pose_head_rect(
+    *,
+    box: list[float],
+    points: list[list[float]],
+    point_confidences: list[float],
+    width: int,
+    height: int,
+    config: PoseHeadConfig,
+) -> tuple[float, float, float, float] | None:
+    """Derive the square head crop for a previously selected pose."""
+
     visible_head = [
         point
         for point, confidence in zip(
@@ -252,6 +298,42 @@ def _select_pose_head_rect(
     left = max(0.0, min(width - side, nose_x - side / 2))
     top = max(0.0, min(height - side, nose_y + 0.12 * side - side / 2))
     return (left / width, top / height, (left + side) / width, (top + side) / height)
+
+
+def _pose_body_rect(
+    *,
+    box: list[float],
+    roi: tuple[float, float, float, float],
+    margin: float = 0.12,
+) -> tuple[float, float, float, float]:
+    """Expand a selected person box while keeping it inside the monitored ROI."""
+
+    x0, y0, x1, y1 = box
+    width = x1 - x0
+    height = y1 - y0
+    roi_x0, roi_y0, roi_x1, roi_y1 = roi
+    return (
+        max(roi_x0, x0 - margin * width),
+        max(roi_y0, y0 - margin * height),
+        min(roi_x1, x1 + margin * width),
+        min(roi_y1, y1 + margin * height),
+    )
+
+
+def _mouth_rect(
+    head_rect: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Crop the lower central face while retaining side-view mouths."""
+
+    x0, y0, x1, y1 = head_rect
+    width = x1 - x0
+    height = y1 - y0
+    return (
+        x0 + 0.12 * width,
+        y0 + 0.28 * height,
+        x1 - 0.12 * width,
+        y0 + 0.94 * height,
+    )
 
 
 def _locate_pose_heads(

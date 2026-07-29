@@ -82,6 +82,8 @@ const firstFrame: FrameRecord = {
     clothingItems: ['sleep_sack'],
     pacifier: 'yes',
     mouthOpen: 'no',
+    adultPresent: 'unknown',
+    adultCount: null,
   },
 };
 
