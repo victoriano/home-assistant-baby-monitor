@@ -102,6 +102,22 @@ cards.innerHTML=rows.map(x=>`<article class="${x.outcome}"><img loading="lazy" s
 """
 
 
+def _dataset_source(frames_root: Path, row: dict[str, str]) -> Path:
+    for value in (row.get("crop_path"), row.get("relative_path")):
+        if not value:
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        source = frames_root / relative
+        if source.is_file():
+            return source
+    raise ValueError(
+        "missing safe frame or crop path: "
+        f"{row.get('relative_path') or row.get('crop_path')}",
+    )
+
+
 def build_gallery(
     artifact_dir: Path,
     frames_dir: Path,
@@ -131,9 +147,7 @@ def build_gallery(
     image_dir.mkdir()
     frames: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
-        source = (frames_root / row["relative_path"]).resolve()
-        if not source.is_relative_to(frames_root) or not source.is_file():
-            raise ValueError(f"unsafe or missing frame: {row['relative_path']}")
+        source = _dataset_source(frames_root, row)
         image_name = f"{index:05d}-{row['frame_id']}.webp"
         with Image.open(source) as raw:
             image = ImageOps.exif_transpose(raw).convert("RGB")

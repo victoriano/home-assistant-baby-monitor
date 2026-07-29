@@ -253,6 +253,170 @@ Exact counts above one remain unvalidated: only one historical two-adult scene
 was found, and pose abstained on it. The runtime therefore keeps the count
 unknown for multiple or ambiguous person geometry.
 
+## Paid Gemini 3.1 Pro teacher escalation
+
+The weak-label diagnosis justified testing a stronger teacher before buying a
+full relabeling campaign. The paid pilot compared:
+
+- `gemini-3.1-pro-preview`, selected as the primary high-capability multimodal
+  teacher; and
+- `gemini-3.6-flash`, used as an independent comparator rather than assuming
+  that the more expensive model is always correct.
+
+Each request contained one 1024 by 1024 evidence board with the complete scene,
+localized body, enlarged head, and enlarged lower face. The request used high
+media resolution, high thinking, temperature zero, and a closed JSON schema.
+The entire board was then regenerated horizontally mirrored. Left/right
+answers were swapped back before comparison; all other observable labels were
+expected to remain invariant.
+
+The rubric also added a target-correspondence gate. If the body/head/mouth
+panels did not clearly depict the infant in the scene, all four detail outputs
+had to be `unknown`. Adult presence and count were always judged from the full
+scene. Sex, gender, identity, ethnicity, and other demographic attributes were
+explicitly forbidden.
+
+The stratified pilot contained 60 frames, 30 from each home, including every
+historically rare body or mouth label that existed among the complete
+four-crop groups. It made 240 successful model/view requests. Estimated
+standard synchronous cost was USD 3.78; median teacher latency was roughly
+8.5-9.0 seconds per request. This is offline labeling latency and does not
+change the accepted local YOLO runtime.
+
+Original-view Pro/Flash agreement was:
+
+| Feature | Agreement |
+| --- | ---: |
+| Head orientation | 47/60 (78.3%) |
+| Body position | 56/60 (93.3%) |
+| Mouth state | 48/60 (80.0%) |
+| Pacifier | 56/60 (93.3%) |
+| Adult presence | 57/60 (95.0%) |
+| Adult count | 55/60 (91.7%) |
+
+Head direction was the least stable under the mirror test: each teacher was
+consistent on only 46 of 60 frames. The strict gate required both teachers,
+both mirror-normalized views, and all relevant confidence/correspondence
+checks to agree. It retained:
+
+| Feature | Strict candidates | Candidate values |
+| --- | ---: | --- |
+| Head orientation | 33 | 15 image-left, 8 image-right, 10 toward-camera |
+| Body position | 51 | 50 supine, 1 prone |
+| Mouth state | 23 | 13 open, 10 closed |
+| Pacifier | 50 | 50 absent |
+| Adult presence | 55 | 29 yes, 26 no |
+| Adult count | 53 | 27 one, 26 zero |
+
+The stronger rubric fixed several concrete failures. It rejected detail panels
+that actually showed a nearby adult, changed weak historical `belly` labels to
+the visibly supine torso in several frames, and recovered clearly open mouths
+that Flash alone called closed. It also showed that Pro is not uniformly
+better: Flash was correct on some directional and prone examples where Pro was
+wrong.
+
+Most importantly, consensus was not treated as truth. One historical posture
+case remained unanimously `prone` across both models and both views even
+though visual inspection showed the front of the shirt and a supine torso.
+The source selection also contained no true pacifier-positive frame. Therefore:
+
+- consensus labels are training candidates only;
+- rare body, open-mouth, pacifier-positive, and directional labels receive
+  manual-review priority;
+- validation and test truth must be manually adjudicated by class and home;
+- a missing positive class triggers targeted collection, not synthetic
+  oversampling; and
+- no model trained only against this teacher consensus can be assembled into
+  the production artifact.
+
+The reusable implementation stores an append-only, resumable JSONL ledger with
+request hashes, prompt version, thinking level, latency, token use, estimated
+cost, labels, and errors. During the pilot it exposed and fixed a resume defect
+that had incorrectly considered an error record complete. A deterministic
+normalization also maps `adult_presence=no, adult_count=null` to the logically
+equivalent exact count zero instead of paying for repeated identical retries.
+
+### Full paid-teacher campaign and diagnostic YOLO result
+
+The pilot did not satisfy the normal production-campaign gate because it lacked
+true pacifier positives and contained a visibly wrong rare posture. Under the
+explicit authorization to spend on a stronger API, the same two-teacher,
+two-view protocol was nevertheless run as a bounded diagnostic on every frame
+for which scene, body, head, and mouth evidence was available. The source
+contained 514 such frames. Two frames were excluded from consensus analysis
+after repeated Pro timeouts left one of the four required responses missing;
+the remaining 512 complete records were analyzed without weakening the gate.
+
+The append-only ledger contains 2,054 successful responses. Their estimated
+standard synchronous cost was USD 31.03. Median response time was 7.2-7.4
+seconds for Pro and 8.7-8.9 seconds for Flash; p95 was 12.4-12.9 seconds for Pro
+and 15.3-15.5 seconds for Flash. This estimate counts valid recorded responses,
+not any request that the service may have billed despite a client-side timeout,
+so the provider invoice can be slightly higher.
+
+Original-view agreement improved with the larger sample, but mouth state and
+head direction remained materially less stable than the easy majority fields:
+
+| Feature | Pro/Flash agreement |
+| --- | ---: |
+| Head orientation | 433/512 (84.6%) |
+| Body position | 505/512 (98.6%) |
+| Mouth state | 378/512 (73.8%) |
+| Pacifier | 503/512 (98.2%) |
+| Adult presence | 474/512 (92.6%) |
+| Adult count | 467/512 (91.2%) |
+
+The mirror test still rejected many confident answers. Head consistency was
+87.9% for Pro and 83.0% for Flash; mouth consistency was 81.6% and 85.4%.
+After intersecting both teachers, both views, confidence, and infant-panel
+correspondence, the retained candidates were:
+
+| Feature | Strict candidates | Candidate values |
+| --- | ---: | --- |
+| Head orientation | 357 | 126 image-left, 172 image-right, 59 toward-camera |
+| Body position | 475 | 474 supine, 1 prone |
+| Mouth state | 210 | 160 closed, 50 open |
+| Pacifier | 477 | 476 absent, 1 present |
+| Adult presence | 433 | 287 no, 146 yes |
+| Adult count | 423 | 287 zero, 136 one |
+
+The full campaign exposed a selection mistake that a total candidate count
+would hide. Requiring all four detail crops created an intersection dataset
+with 381 train frames, but only 6 were from Granada; validation contained 20
+Granada frames and test contained 68. Consequently, strict head training had
+only 3 Granada examples and strict mouth training had only 1, while their tests
+were dominated by Granada. The task-specific source dataset already contains
+609 localized Granada head crops and 435 localized Granada mouth crops in
+train. A future campaign must label each task's eligible crop set independently
+instead of paying only for the complete four-panel intersection.
+
+Diagnostic YOLO26n classifiers were nevertheless trained to measure whether
+the pseudo-labels transferred. They were explicitly marked
+`gemini_consensus_candidates_not_ground_truth`; evaluation made them
+deployment-ineligible and artifact assembly refuses them.
+
+| Diagnostic task | Test coverage | Selective accuracy against Gemini consensus | Result |
+| --- | ---: | ---: | --- |
+| Head orientation | 66.7% (24/36) | 66.7% | failed |
+| Mouth open | 59.1% (13/22) | 84.6% | failed |
+| Adult presence, global threshold | 97.2% (70/72) | 81.4% | failed |
+
+Head image-right precision was only 14.3% in test. Mouth-open precision was
+75.0%. The adult classifier looked perfect when calibrated separately by
+location: 46/46 Granada decisions and 6/6 Madrid decisions were correct, with
+20 Granada abstentions. That is not a production result because the Madrid
+test contained zero adult-positive examples, and a single global threshold
+produced 13 false negatives. The location-specific review gallery therefore
+contains 52 correct decisions and 20 abstentions but cannot establish
+cross-domain positive recall.
+
+Body and pacifier training were skipped rather than manufactured: each had
+only one strict rare-class example, both in Madrid train, and no held-out
+rare-class example. The correct next step is targeted collection plus human
+adjudication of validation and test, followed by a task-specific teacher
+campaign. No paid-teacher diagnostic model was added to the production
+artifact.
+
 ### Pacifier hard-positive experiment
 
 The screenshot that motivated this extension contained a visible pacifier but
@@ -327,14 +491,19 @@ required by the accepted detail pipeline.
 
 The extension work improved the pipeline and made previously hidden label
 problems measurable. It did not turn weak rare labels into reliable
-ground truth. Body `back` and mouth `no` are high-precision partial signals,
+ground truth. The stronger paid teachers created substantially better training
+candidates, but the diagnostic transfer failed the production gates and
+revealed a severe train/test domain imbalance. Body `back` and mouth `no` are
+high-precision partial signals in the earlier manually reviewed experiment,
 but the complete body, mouth, and head tasks remain rejected until manually
-adjudicated rare-class data exists.
+adjudicated, task-specific, rare-class data exists.
 
 Conservative affirmative adult presence is accepted from pose, including a
 validated count of one when geometry is unambiguous. Adult absence, counts
 above one, head orientation, full body position, mouth state, and the pacifier
-hard-positive candidate remain rejected or unknown.
+hard-positive candidate remain rejected or unknown. The new Gemini-supervised
+adult classifier is also diagnostic-only; it did not replace the accepted pose
+rule.
 
 The paid model should not be cancelled for these new fields solely from this
 study. Cancellation is justified only for the subset of outputs that passes

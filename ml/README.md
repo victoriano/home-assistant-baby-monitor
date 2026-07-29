@@ -18,6 +18,160 @@ The follow-up investigation of head orientation, body position, mouth state,
 pacifier hard cases, and adult presence/count is recorded in
 [`SECONDARY_FEATURE_MODEL_REPORT.md`](SECONDARY_FEATURE_MODEL_REPORT.md).
 
+## Paid Gemini teacher workflow
+
+Use a stronger cloud model to create auditable pseudo-label candidates, not as
+automatic ground truth. The current workflow compares
+`gemini-3.1-pro-preview` with `gemini-3.6-flash`, sends a four-panel evidence
+board at high media resolution, requests strict structured JSON, and repeats
+the same board horizontally mirrored. A label becomes a candidate only when
+both teachers and both mirror-normalized views agree with high confidence.
+
+The prompt deliberately:
+
+- defines head direction in image coordinates;
+- distinguishes torso posture from a turned head;
+- requires a visible lip gap for `mouth_open`;
+- treats pacifier as present only when visibly inserted;
+- counts adults from the complete scene, not the infant crop;
+- rejects head/body/mouth/pacifier output when the detail panels do not clearly
+  correspond to the infant; and
+- forbids sex, gender, identity, ethnicity, and other demographic inference.
+
+Install the optional client, prepare an ordinary and mirrored pilot from the
+same immutable split, and run both teachers:
+
+```bash
+cd ml
+uv sync --extra dev --extra yolo --extra gemini
+
+uv run baby-monitor-edge prepare-gemini-pilot \
+  --source-manifest datasets/yolo-source/manifest.csv \
+  --frames-dir /private/path/frames \
+  --detail-dataset-dir datasets/yolo-details-current \
+  --output-dir datasets/gemini-teacher-pilot
+
+uv run baby-monitor-edge prepare-gemini-pilot \
+  --source-manifest datasets/yolo-source/manifest.csv \
+  --frames-dir /private/path/frames \
+  --detail-dataset-dir datasets/yolo-details-current \
+  --output-dir datasets/gemini-teacher-pilot-flipped \
+  --horizontal-flip
+
+# Inject GEMINI_API_KEY from the existing secret manager into this process.
+# Never paste it into a script, shell history, dataset, or Git-tracked file.
+uv run baby-monitor-edge run-gemini-pilot \
+  --pilot-dir datasets/gemini-teacher-pilot
+uv run baby-monitor-edge run-gemini-pilot \
+  --pilot-dir datasets/gemini-teacher-pilot-flipped
+
+uv run baby-monitor-edge analyze-gemini-pilot \
+  --original-pilot-dir datasets/gemini-teacher-pilot \
+  --flipped-pilot-dir datasets/gemini-teacher-pilot-flipped \
+  --output-dir datasets/gemini-teacher-analysis
+
+uv run baby-monitor-edge prepare-gemini-details \
+  --analysis-dir datasets/gemini-teacher-analysis \
+  --source-detail-dataset-dir datasets/yolo-details-current \
+  --output-dir datasets/yolo-details-gemini-candidate \
+  --task head_side \
+  --task mouth_open
+
+uv run baby-monitor-edge prepare-gemini-adults \
+  --analysis-dir datasets/gemini-teacher-analysis \
+  --source-manifest datasets/yolo-source/manifest.csv \
+  --frames-dir /private/path/frames \
+  --output-dir datasets/yolo-adults-gemini-candidate
+```
+
+`run-gemini-pilot` is append-only and resumable. Failed model/frame pairs stay
+retryable, while successful pairs are not purchased twice. The output ledger
+records prompt version, thinking level, hashes, latency, token use, and an
+estimated standard API cost. The API key is read from the environment and is
+never written to the dataset.
+
+Use `--all-available` during preparation only after the pilot has established
+useful class coverage and an acceptable budget. For large asynchronous jobs,
+Google's official Batch API is cheaper, but this repository's current command
+uses synchronous requests so that every retry and response is immediately
+auditable.
+
+From the repository root, build the private browser review:
+
+```bash
+.venv/bin/python tools/gemini_teacher_review_gallery.py \
+  --pilot-dir ml/datasets/gemini-teacher-pilot \
+  --analysis-dir ml/datasets/gemini-teacher-analysis \
+  --output-dir ml/review/gemini-teacher-pilot
+```
+
+Open `ml/review/gemini-teacher-pilot/index.html`. It filters disagreements,
+rare historical labels, camera location, and split; manual decisions persist
+locally and can be exported as JSON. Frames, boards, responses, and review
+files remain ignored private data.
+
+The first 60-frame paid pilot cost about USD 3.78 for 240 high-thinking calls.
+Its strict four-way gate retained 33 head, 51 body, 23 mouth, 50 pacifier, 55
+adult-presence, and 53 adult-count candidates. This is a precision filter, not
+a quality certificate: the rare body class still contained a visually wrong
+unanimous answer, and the sampled source contained no pacifier-positive frame.
+Rare-class candidates and every held-out test label therefore still require
+human adjudication.
+
+The subsequent all-available campaign analyzed 512 complete frames after two
+frames were excluded for a missing Pro response. Its 2,054 successful
+responses had an estimated recorded cost of USD 31.03. The strict gate retained
+357 head, 475 body, 210 mouth, 477 pacifier, 433 adult-presence, and 423
+adult-count candidates. Coverage alone was misleading: body had only one
+`prone` candidate and pacifier only one `present` candidate, with neither rare
+class represented in held-out data.
+
+The complete-board selection also created a severe domain imbalance. Only 6 of
+381 source training frames were from Granada, although Granada supplied 68 of
+79 test frames. Diagnostic YOLO models trained for head, mouth, and adult
+presence therefore failed the deployment gates: test selective accuracy
+against Gemini consensus was 66.7%, 84.6%, and 81.4%, respectively. Body and
+pacifier models were not trained from a single rare example. The next campaign
+must select frames independently for each task; requiring every crop discards
+hundreds of otherwise valid Granada training examples.
+
+`prepare-gemini-details` intentionally marks its output as
+`gemini_consensus_candidates_not_ground_truth`. Models may be trained from it
+for diagnosis, but evaluation refuses to make the artifact deployment-eligible
+and assembly refuses to package it. Replace the validation/test labels with an
+explicit manual adjudication record before treating any resulting metric as a
+production gate.
+
+The diagnostic HTML galleries use only ignored private files:
+
+```bash
+.venv/bin/python tools/yolo_detail_review_gallery.py \
+  --dataset-dir ml/datasets/yolo-details-gemini-candidate \
+  --artifact-dir ml/artifacts/yolo-details-gemini-candidate \
+  --output-dir ml/review/yolo-details-gemini-candidate
+
+.venv/bin/python tools/yolo_adult_review_gallery.py \
+  --frames-dir ml/datasets/yolo-adults-gemini-candidate \
+  --artifact-dir ml/artifacts/yolo-adults-gemini-candidate \
+  --output-dir ml/review/yolo-adults-gemini-candidate \
+  --split test
+```
+
+Open each generated `index.html` directly. The detail gallery ranks incorrect
+and abstained head/mouth crops; the adult gallery shows the location-specific
+decision, reference candidate, score, and abstentions. These galleries compare
+YOLO with teacher consensus and are designed to support human correction, not
+to rename consensus as truth.
+
+Model capabilities, pricing, structured output, high image resolution, and
+thinking behavior can change. Recheck the official
+[Gemini models](https://ai.google.dev/gemini-api/docs/models),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing),
+[structured output](https://ai.google.dev/gemini-api/docs/structured-output),
+[media resolution](https://ai.google.dev/gemini-api/docs/generate-content/media-resolution),
+and [thinking](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+documentation before a new campaign.
+
 ## Host-side YOLO workflow
 
 Install the optional training dependencies and build the source manifest:

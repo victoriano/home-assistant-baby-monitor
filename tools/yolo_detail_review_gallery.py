@@ -105,6 +105,16 @@ cards.innerHTML=rows.map(x=>`<article class="${x.outcome}"><img loading="lazy" s
 """
 
 
+def _dataset_source(dataset: Path, relative_path: str) -> Path:
+    relative = Path(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"unsafe detail crop path: {relative_path}")
+    source = dataset / relative
+    if not source.is_file():
+        raise ValueError(f"missing detail crop: {relative_path}")
+    return source
+
+
 def build_gallery(
     dataset_dir: Path,
     artifact_dir: Path,
@@ -123,9 +133,7 @@ def build_gallery(
     images = output / "images"
     images.mkdir()
     for index, row in enumerate(rows):
-        source = (dataset / row["crop_path"]).resolve()
-        if not source.is_relative_to(dataset) or not source.is_file():
-            raise ValueError(f"unsafe or missing detail crop: {row['crop_path']}")
+        source = _dataset_source(dataset, row["crop_path"])
         image_name = f"{index:05d}-{row['task']}.webp"
         with Image.open(source) as raw:
             raw.convert("RGB").save(images / image_name, format="WEBP", quality=quality)

@@ -936,10 +936,15 @@ def train_detail_classifiers(
             json.dumps(plan, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+    task_names = tuple(
+        task for task in DETAIL_TASK_CLASSES if task in plan["dataset_summary"]["tasks"]
+    )
+    if not task_names or set(task_names) != set(plan["dataset_summary"]["tasks"]):
+        raise ValueError("detail dataset summary contains no tasks or unsupported tasks")
     models_dir = output / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     trained: dict[str, Any] = {}
-    for task in DETAIL_TASK_CLASSES:
+    for task in task_names:
         target = models_dir / f"{task}.pt"
         interrupted_best = output / "runs" / task / "weights" / "best.pt"
         if resume and target.is_file():
@@ -1235,7 +1240,7 @@ def _detail_markdown(report: dict[str, Any]) -> str:
         "| Task | Test accuracy | Runtime coverage | Gate |",
         "| --- | ---: | ---: | --- |",
     ]
-    for task in DETAIL_TASK_CLASSES:
+    for task in report["tasks"]:
         metrics = report["tasks"][task]["test"]["overall"]
         accuracy = metrics["selective_accuracy"]
         lines.append(
@@ -1275,11 +1280,18 @@ def evaluate_detail_classifiers(
     report: dict[str, Any] = {
         "created_at": datetime.now(UTC).isoformat(),
         "split": "task/location/day grouped and rare-label stratified",
+        "label_status": summary.get("label_status", "historical_weak_supervision"),
         "tasks": {},
     }
     metadata_tasks: dict[str, Any] = {}
 
-    for task, classes in DETAIL_TASK_CLASSES.items():
+    task_names = tuple(
+        task for task in DETAIL_TASK_CLASSES if task in summary["tasks"]
+    )
+    if set(task_names) != set(training["models"]):
+        raise ValueError("trained models and detail dataset tasks disagree")
+    for task in task_names:
+        classes = DETAIL_TASK_CLASSES[task]
         task_rows = [
             row
             for row in index
@@ -1340,11 +1352,17 @@ def evaluate_detail_classifiers(
     report["automated_gate_passed"] = all(
         task["gate"]["passed"] for task in report["tasks"].values()
     )
-    report["decision"] = (
-        "awaiting_manual_review"
-        if report["automated_gate_passed"]
-        else "not_accepted"
+    report["deployment_eligible"] = (
+        report["label_status"] != "gemini_consensus_candidates_not_ground_truth"
     )
+    if not report["deployment_eligible"]:
+        report["decision"] = "diagnostic_only_requires_manual_ground_truth"
+    else:
+        report["decision"] = (
+            "awaiting_manual_review"
+            if report["automated_gate_passed"]
+            else "not_accepted"
+        )
     serializable_rows: list[dict[str, Any]] = []
     for row in prediction_rows:
         serializable_rows.append(
@@ -1406,6 +1424,10 @@ def assemble_reviewed_detail_artifact(
         raise ValueError(
             "refusing to assemble tasks that failed the automated gate: "
             + ", ".join(sorted(failed))
+        )
+    if report.get("deployment_eligible") is False:
+        raise ValueError(
+            "refusing to assemble a model evaluated only against Gemini consensus candidates"
         )
 
     output = _safe_generated_directory(

@@ -653,6 +653,10 @@ def evaluate_adult_classifier(
     thresholds, validation_metrics = _calibrate_by_location(validation)
     test_metrics = _metrics_by_location(test_rows, thresholds)
     gate = _adult_gate(test_metrics)
+    label_status = training["dataset_summary"].get(
+        "label_status",
+        "historical_weak_supervision",
+    )
     for row in scored:
         selected = thresholds.get(row["location_id"], thresholds["overall"])
         row["decision"] = (
@@ -664,12 +668,21 @@ def evaluate_adult_classifier(
         )
     report = {
         "created_at": datetime.now(UTC).isoformat(),
+        "label_status": label_status,
         "validation": validation_metrics,
         "test": test_metrics,
         "thresholds": thresholds,
         "gate": gate,
-        "decision": "awaiting_manual_review" if gate["passed"] else "not_accepted",
+        "deployment_eligible": (
+            label_status != "gemini_consensus_candidates_not_ground_truth"
+        ),
     }
+    if not report["deployment_eligible"]:
+        report["decision"] = "diagnostic_only_requires_manual_ground_truth"
+    else:
+        report["decision"] = (
+            "awaiting_manual_review" if gate["passed"] else "not_accepted"
+        )
     with (artifacts / "predictions.csv").open("w", newline="", encoding="utf-8") as handle:
         fields = [*ADULT_INDEX_FIELDS, "score", "decision"]
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -745,6 +758,10 @@ def assemble_reviewed_adult_artifact(
     report = json.loads((adult / "report.json").read_text(encoding="utf-8"))
     if not report["gate"]["passed"]:
         raise ValueError("refusing to assemble an adult classifier that failed its gate")
+    if report.get("deployment_eligible") is False:
+        raise ValueError(
+            "refusing to assemble an adult model evaluated only against Gemini consensus"
+        )
     fragment = json.loads(
         (adult / "metadata-fragment.json").read_text(encoding="utf-8")
     )

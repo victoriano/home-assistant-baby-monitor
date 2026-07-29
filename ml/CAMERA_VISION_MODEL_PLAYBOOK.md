@@ -244,6 +244,89 @@ The preparation pipeline therefore:
 Validation and test images were never duplicated to make their class balance
 look better.
 
+### Escalating from a weak teacher to paid multimodal labeling
+
+A more capable teacher is useful when the historical labels are the limiting
+factor, but a model name is not a ground-truth strategy. Follow this escalation
+ladder before purchasing a full labeling campaign:
+
+1. Freeze the observable rubric and include `unknown`.
+2. Build one evidence board containing the complete scene plus the smallest
+   body, head, and mouth crops that answer the requested questions.
+3. Ask for strict structured output and deterministic settings.
+4. Compare at least two materially different teacher models.
+5. Run a metamorphic test: mirror every visual panel, then swap only the
+   expected left/right answer before comparing.
+6. Require high confidence, teacher agreement, mirror consistency, and crop-to-
+   target correspondence before emitting a pseudo-label candidate.
+7. Review disagreements and rare unanimous labels visually.
+8. Run the paid full campaign only if the pilot contains enough true examples
+   of every class needed by the product.
+9. Use pseudo-labels for training, never as the independent held-out test.
+10. Manually adjudicate validation/test frames by camera domain and class.
+
+The Baby Monitor pilot used `gemini-3.1-pro-preview` as the strongest teacher
+and `gemini-3.6-flash` as an independent comparator. Each 1024-pixel board was
+sent at high media resolution with high thinking and a closed JSON schema. The
+60-frame, two-view pilot made 240 requests and cost approximately USD 3.78 at
+standard synchronous pricing.
+
+The mirror test exposed an important distinction between confidence and
+invariance. On the original boards, Pro and Flash agreed on 78.3% of head
+labels and 80.0% of mouth labels. Each model was mirror-consistent on only
+76.7% of head labels. The strict four-way intersection retained:
+
+| Feature | Candidates | Retained values |
+| --- | ---: | --- |
+| Head orientation | 33/60 | 15 image-left, 8 image-right, 10 toward-camera |
+| Body position | 51/60 | 50 supine, 1 prone |
+| Mouth state | 23/60 | 13 open, 10 closed |
+| Pacifier | 50/60 | 50 absent, 0 present |
+| Adult presence | 55/60 | 29 yes, 26 no |
+| Adult count | 53/60 | 27 one, 26 zero |
+
+This filter recovered useful mouth and adult candidates and correctly rejected
+several crops that actually depicted a nearby adult. It also proved why
+unanimity is insufficient: one rare posture remained unanimously wrong on
+visual inspection. The pilot contained no real pacifier-positive source frame,
+so it supplied no evidence for that class. Spending more on the same
+distribution cannot manufacture the missing class.
+
+The reusable decision is:
+
+```text
+teacher consensus -> training candidate
+manual domain/class adjudication -> validation or test truth
+missing rare class -> collect/target data, do not oversample a fiction
+```
+
+The code records request hashes, prompt version, thinking level, token usage,
+estimated cost, latency, errors, and retries in append-only JSONL. A failed pair
+remains retryable. This matters operationally: the pilot found and fixed a
+resume bug that had treated an error record as completed.
+
+The full 514-frame campaign was run as an explicitly authorized diagnostic
+exception even though the pilot had not met step 8. It demonstrated why that
+gate exists and why sampling must be task-specific. Two incomplete Pro pairs
+were excluded and 512 frames were analyzed. The valid-response ledger estimated
+USD 31.03 for 2,054 successful calls. Strict consensus retained hundreds of
+head, mouth, and adult labels, but only one prone and one pacifier-present
+example. More importantly, the requirement that every frame have scene, body,
+head, and mouth crops left only 6 Granada frames in train versus 68 in test.
+
+Diagnostic YOLO transfer made the failure concrete. Head orientation reached
+66.7% selective accuracy, mouth state 84.6%, and adult presence 81.4% with a
+global threshold, all against teacher consensus rather than manual truth. They
+were not packaged. The task-specific source already had 609 Granada head and
+435 Granada mouth train crops that the complete-board intersection discarded.
+The reusable rule is therefore:
+
+```text
+build a shared scene context once
+select and label each task on its own observable population
+join tasks only for auditing, never as a prerequisite for dataset eligibility
+```
+
 ## 5. Split by correlated capture groups, not by rows
 
 Random frame splitting was rejected. Adjacent camera frames are often nearly
@@ -682,7 +765,7 @@ The 2026-07-29 extension tested head orientation, body position, mouth state,
 adult presence/count, and a pacifier hard positive. Its detailed evidence is in
 [`SECONDARY_FEATURE_MODEL_REPORT.md`](SECONDARY_FEATURE_MODEL_REPORT.md).
 
-The extension added six transferable lessons:
+The extension added seven transferable lessons:
 
 1. **Balance checkpoint selection as well as training.** Ultralytics chooses
    `best.pt` from its validation folder. A natural body-position validation set
@@ -714,6 +797,12 @@ The extension added six transferable lessons:
    still associated many positives with one room and negatives with the other.
    Per-location class balancing removed camera identity as an easy label
    shortcut; natural validation and test prevalence remained untouched.
+7. **Do not intersect unrelated task eligibility.** Requiring scene, body,
+   head, and mouth crops for every paid-teacher request reduced the Granada
+   training population to six frames even though hundreds of valid
+   task-specific crops existed. Share context in the evidence board when it is
+   available, but select, budget, and evaluate each task on its own observable
+   population.
 
 The extension also explicitly rejected adult sex/gender inference. It is not
 an observable requirement of the monitor and is unreliable from these
@@ -747,6 +836,9 @@ use an explicit consented identity contract and its own evaluation.
 | Conservative adult pose evidence | Can an existing pose prove presence and sometimes exact count? | Two disjoint frame audits: 43/43 and 47/47 presences; all retained exact-one counts correct | Accept affirmative-only signal; abstain on absence and multi-count |
 | Baby-conditioned adult dataset | Is baby-positive eligibility valid for adult presence? | Omitted adult-only scenes | Reject; condition each task independently |
 | Globally balanced multi-camera adult data | Does aggregate class balance remove room shortcuts? | Retained a class/location correlation | Reject; balance inside each domain |
+| Two-teacher mirrored paid pilot | Can a stronger teacher repair weak labels safely? | Useful candidates plus confident unanimous errors | Keep the audit protocol; consensus is not truth |
+| Complete-board full teacher campaign | Does paying for every four-crop frame create a deployable dataset? | Rare classes still absent and Granada train collapsed to six frames | Reject intersection sampling; label each task independently |
+| Gemini-consensus YOLO transfer | Do strict pseudo-labels generalize without human truth? | Head 66.7%, mouth 84.6%, adult 81.4% selective accuracy on test; all gates failed | Keep only as diagnostic evidence |
 
 ## Things deliberately not done
 
@@ -969,6 +1061,11 @@ prevented one weak output from invalidating or disguising another.
 - Randomly splitting adjacent frames.
 - Reporting aggregate accuracy without per-domain results.
 - Treating a cloud model's historical output as ground truth.
+- Replacing one weak teacher with one stronger teacher and calling its
+  confidence ground truth.
+- Paying for a full labeling campaign before a small two-teacher, mirrored
+  pilot proves rare-class coverage.
+- Training on a unanimous rare label without visually auditing it.
 - Labeling unobservable cases as negative.
 - Enlarging the backbone before checking target pixel scale.
 - Training detail classifiers on a full scene containing shortcut cues.
@@ -1035,6 +1132,9 @@ The reusable implementation is primarily in:
 - [`src/baby_monitor_edge_ml/adult_training.py`](src/baby_monitor_edge_ml/adult_training.py):
   adult weak-label repair, full-scene training, selective evaluation, and
   packaging;
+- [`src/baby_monitor_edge_ml/gemini_labeling.py`](src/baby_monitor_edge_ml/gemini_labeling.py):
+  paid teacher evidence boards, structured labeling, resumable ledgers,
+  mirror-consistency analysis, and conservative pseudo-label candidates;
 - [`src/baby_monitor_edge_ml/metrics.py`](src/baby_monitor_edge_ml/metrics.py):
   ordinary and dual-threshold selection;
 - [`../baby_monitor/src/baby_monitor/providers.py`](../baby_monitor/src/baby_monitor/providers.py):
@@ -1044,6 +1144,8 @@ The reusable implementation is primarily in:
   regression tests;
 - [`../tools/yolo_adult_review_gallery.py`](../tools/yolo_adult_review_gallery.py):
   private, filterable full-frame review of adult-presence holdouts; and
+- [`../tools/gemini_teacher_review_gallery.py`](../tools/gemini_teacher_review_gallery.py):
+  private comparison and manual adjudication UI for paid teachers; and
 - [`README.md`](README.md): current commands for reproducing the private
   pipeline.
 

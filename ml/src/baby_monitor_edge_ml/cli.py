@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,14 @@ from .detail_training import (
     prepare_detail_dataset,
     rebalance_detail_validation,
     train_detail_classifiers,
+)
+from .gemini_labeling import (
+    GEMINI_DEFAULT_MODELS,
+    analyze_gemini_teacher_pilots,
+    prepare_gemini_adult_dataset,
+    prepare_gemini_detail_dataset,
+    prepare_gemini_label_pilot,
+    run_gemini_label_pilot,
 )
 from .training import TrainingConfig, train_and_export
 from .yolo_training import (
@@ -233,6 +242,71 @@ def _assemble_yolo_adults(args: argparse.Namespace) -> dict[str, Any]:
         args.base_artifact,
         args.adult_artifact,
         args.output_dir,
+        overwrite=args.overwrite,
+    )
+
+
+def _prepare_gemini_pilot(args: argparse.Namespace) -> dict[str, Any]:
+    return prepare_gemini_label_pilot(
+        args.source_manifest,
+        args.frames_dir,
+        args.detail_dataset_dir,
+        args.output_dir,
+        samples_per_location=None if args.all_available else args.samples_per_location,
+        seed=args.seed,
+        board_size=args.board_size,
+        horizontal_flip=args.horizontal_flip,
+        overwrite=args.overwrite,
+    )
+
+
+def _run_gemini_pilot(args: argparse.Namespace) -> dict[str, Any]:
+    api_key = os.environ.get(args.api_key_env, "")
+    if not api_key:
+        raise ValueError(f"environment variable {args.api_key_env} is not configured")
+    return run_gemini_label_pilot(
+        args.pilot_dir,
+        api_key=api_key,
+        models=tuple(args.model),
+        max_workers=args.max_workers,
+        timeout_seconds=args.timeout_seconds,
+        retries=args.retries,
+        limit=args.limit,
+    )
+
+
+def _analyze_gemini_pilot(args: argparse.Namespace) -> dict[str, Any]:
+    return analyze_gemini_teacher_pilots(
+        args.original_pilot_dir,
+        args.flipped_pilot_dir,
+        args.output_dir,
+        models=tuple(args.model),
+        allow_incomplete=args.allow_incomplete,
+        overwrite=args.overwrite,
+    )
+
+
+def _prepare_gemini_details(args: argparse.Namespace) -> dict[str, Any]:
+    return prepare_gemini_detail_dataset(
+        args.analysis_dir,
+        args.source_detail_dataset_dir,
+        args.output_dir,
+        tasks=tuple(args.task),
+        seed=args.seed,
+        max_minority_repeats=args.max_minority_repeats,
+        overwrite=args.overwrite,
+    )
+
+
+def _prepare_gemini_adults(args: argparse.Namespace) -> dict[str, Any]:
+    return prepare_gemini_adult_dataset(
+        args.analysis_dir,
+        args.source_manifest,
+        args.frames_dir,
+        args.output_dir,
+        image_size=args.image_size,
+        seed=args.seed,
+        max_minority_repeats=args.max_minority_repeats,
         overwrite=args.overwrite,
     )
 
@@ -473,10 +547,111 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_adults.add_argument("--output-dir", type=Path, required=True)
     assemble_adults.add_argument("--overwrite", action="store_true")
     assemble_adults.set_defaults(handler=_assemble_yolo_adults)
+
+    prepare_gemini = commands.add_parser(
+        "prepare-gemini-pilot",
+        help="Create private full-scene/body/head/mouth evidence boards for teacher comparison.",
+    )
+    prepare_gemini.add_argument("--source-manifest", type=Path, required=True)
+    prepare_gemini.add_argument("--frames-dir", type=Path, required=True)
+    prepare_gemini.add_argument("--detail-dataset-dir", type=Path, required=True)
+    prepare_gemini.add_argument("--output-dir", type=Path, required=True)
+    gemini_selection = prepare_gemini.add_mutually_exclusive_group()
+    gemini_selection.add_argument("--samples-per-location", type=int, default=30)
+    gemini_selection.add_argument(
+        "--all-available",
+        action="store_true",
+        help="Use every frame with complete scene/body/head/mouth evidence.",
+    )
+    prepare_gemini.add_argument("--board-size", type=int, default=1024)
+    prepare_gemini.add_argument(
+        "--horizontal-flip",
+        action="store_true",
+        help="Mirror every visual panel while keeping panel captions readable.",
+    )
+    prepare_gemini.add_argument("--seed", type=int, default=20260730)
+    prepare_gemini.add_argument("--overwrite", action="store_true")
+    prepare_gemini.set_defaults(handler=_prepare_gemini_pilot)
+
+    run_gemini = commands.add_parser(
+        "run-gemini-pilot",
+        help="Compare paid Gemini teachers on a resumable private evidence-board pilot.",
+    )
+    run_gemini.add_argument("--pilot-dir", type=Path, required=True)
+    run_gemini.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        help=(
+            "Gemini model ID; repeat to compare models. Defaults to "
+            + " and ".join(GEMINI_DEFAULT_MODELS)
+            + "."
+        ),
+    )
+    run_gemini.add_argument("--api-key-env", default="GEMINI_API_KEY")
+    run_gemini.add_argument("--max-workers", type=int, default=2)
+    run_gemini.add_argument("--timeout-seconds", type=float, default=120)
+    run_gemini.add_argument("--retries", type=int, default=3)
+    run_gemini.add_argument("--limit", type=int)
+    run_gemini.set_defaults(handler=_run_gemini_pilot)
+
+    analyze_gemini = commands.add_parser(
+        "analyze-gemini-pilot",
+        help="Gate two teachers through horizontal-mirror consistency.",
+    )
+    analyze_gemini.add_argument("--original-pilot-dir", type=Path, required=True)
+    analyze_gemini.add_argument("--flipped-pilot-dir", type=Path, required=True)
+    analyze_gemini.add_argument("--output-dir", type=Path, required=True)
+    analyze_gemini.add_argument("--model", action="append", default=None)
+    analyze_gemini.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Exclude frames missing any successful teacher/view pair and record them.",
+    )
+    analyze_gemini.add_argument("--overwrite", action="store_true")
+    analyze_gemini.set_defaults(handler=_analyze_gemini_pilot)
+
+    prepare_gemini_details = commands.add_parser(
+        "prepare-gemini-details",
+        help="Materialize selected consensus candidates for diagnostic YOLO training.",
+    )
+    prepare_gemini_details.add_argument("--analysis-dir", type=Path, required=True)
+    prepare_gemini_details.add_argument(
+        "--source-detail-dataset-dir",
+        type=Path,
+        required=True,
+    )
+    prepare_gemini_details.add_argument("--output-dir", type=Path, required=True)
+    prepare_gemini_details.add_argument(
+        "--task",
+        action="append",
+        required=True,
+        choices=("head_side", "body_position", "mouth_open"),
+    )
+    prepare_gemini_details.add_argument("--seed", type=int, default=20260730)
+    prepare_gemini_details.add_argument("--max-minority-repeats", type=int, default=8)
+    prepare_gemini_details.add_argument("--overwrite", action="store_true")
+    prepare_gemini_details.set_defaults(handler=_prepare_gemini_details)
+
+    prepare_gemini_adults = commands.add_parser(
+        "prepare-gemini-adults",
+        help="Materialize strict full-scene adult candidates for diagnostic YOLO training.",
+    )
+    prepare_gemini_adults.add_argument("--analysis-dir", type=Path, required=True)
+    prepare_gemini_adults.add_argument("--source-manifest", type=Path, required=True)
+    prepare_gemini_adults.add_argument("--frames-dir", type=Path, required=True)
+    prepare_gemini_adults.add_argument("--output-dir", type=Path, required=True)
+    prepare_gemini_adults.add_argument("--image-size", type=int, default=320)
+    prepare_gemini_adults.add_argument("--seed", type=int, default=20260730)
+    prepare_gemini_adults.add_argument("--max-minority-repeats", type=int, default=1)
+    prepare_gemini_adults.add_argument("--overwrite", action="store_true")
+    prepare_gemini_adults.set_defaults(handler=_prepare_gemini_adults)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.command in {"run-gemini-pilot", "analyze-gemini-pilot"} and args.model is None:
+        args.model = list(GEMINI_DEFAULT_MODELS)
     result = args.handler(args)
     print(json.dumps(result, indent=2, sort_keys=True))

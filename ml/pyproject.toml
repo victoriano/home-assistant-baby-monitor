@@ -21,6 +21,9 @@ dev = [
 yolo = [
   "ultralytics==8.4.109",
 ]
+gemini = [
+  "httpx>=0.28,<1",
+]
 
 [project.scripts]
 baby-monitor-edge = "baby_monitor_edge_ml.cli:main"
