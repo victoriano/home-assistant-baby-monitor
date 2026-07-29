@@ -315,14 +315,21 @@ class Database:
         start: datetime,
         end: datetime,
         *,
+        location_id: str | None = None,
         limit: int = 250_000,
     ) -> list[tuple[datetime, VisionLabel]]:
+        clauses = ["captured_at >= ?", "captured_at <= ?", "label_json IS NOT NULL"]
+        parameters: list[str | int] = [_iso(start), _iso(end)]
+        if location_id is not None:
+            clauses.append("location_id = ?")
+            parameters.append(location_id)
+        where = " AND ".join(clauses)
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT captured_at, label_json FROM frames
-                   WHERE captured_at >= ? AND captured_at <= ? AND label_json IS NOT NULL
-                   ORDER BY captured_at ASC LIMIT ?""",
-                (_iso(start), _iso(end), limit),
+                f"""SELECT captured_at, label_json FROM frames
+                   WHERE {where}
+                   ORDER BY captured_at ASC LIMIT ?""",  # noqa: S608 - clauses are static
+                [*parameters, limit],
             ).fetchall()
         return [(_dt(row["captured_at"]), VisionLabel.model_validate_json(row["label_json"])) for row in rows]
 

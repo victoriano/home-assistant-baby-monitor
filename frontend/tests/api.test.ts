@@ -65,6 +65,19 @@ describe('settings contract', () => {
     expect(payload.ai.base_url).toBe('http://ollama.local:11434/v1');
   });
 
+  it('preserves the private YOLO provider without a server endpoint or consent', () => {
+    const settings = cloneDefaultSettings();
+    settings.ai.provider = 'yolo';
+    settings.ai.model = '/data/models/baby-monitor-yolo';
+
+    const payload = settingsToPayload(settings);
+
+    expect(payload.ai.provider).toBe('yolo');
+    expect(payload.ai.model).toBe('/data/models/baby-monitor-yolo');
+    expect(payload.ai.base_url).toBeNull();
+    expect(payload.ai.cloud_image_consent).toBe(false);
+  });
+
   it('keeps standalone credentials write-only and never sends a cloud AI base URL', () => {
     const settings = cloneDefaultSettings();
     settings.homeAssistant.mode = 'standalone';

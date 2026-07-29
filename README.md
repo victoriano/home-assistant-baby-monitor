@@ -52,15 +52,17 @@ credentials are included.
 - Tags frames, sleep sessions, and cries with a configurable home/location so
   one history can distinguish records captured in different houses.
 - Detects crying from a Home Assistant `binary_sensor` or an optional audio
-  stream, then activates one or more selected Home Assistant lights.
+  stream, then activates one or more selected Home Assistant lights only when
+  the baby was visible in a frame during the previous five minutes.
 - Restores every light to its previous state after the alert.
 - Lets each Home Assistant person opt into a separate set of caregiver alerts:
   crying, sleep start/end, an approaching predicted sleep window, the expected
   end of an active sleep, and a stale camera. Lead time and language are
   configurable per household/person, and alerts are deduplicated across
   restarts.
-- Labels camera frames with Gemini, OpenAI, or a local OpenAI-compatible server
-  such as Ollama. AI is optional and disabled by default.
+- Labels camera frames with Gemini, OpenAI, a local OpenAI-compatible server
+  such as Ollama, or a locally fine-tuned YOLO model that never uploads the
+  snapshot. AI is optional and disabled by default.
 - Stores settings, events, and frames under `/data`; no public Home Assistant
   `/local` directory is used.
 - Exports a portable ZIP with CSV tables and images grouped by location and
@@ -165,6 +167,22 @@ pytest
 ruff check .
 cd frontend && npm test && npm run build
 ```
+
+### Train a private local vision model
+
+The optional [vision training pipeline](ml/README.md) reads the existing
+AI-labelled frames locally and creates chronological, per-home
+train/validation/test splits. It supports two targets:
+
+- a host-side YOLO26 pose localizer plus classification ensemble for local
+  replacement of a cloud image-label provider, with per-home high-confidence
+  abstention, model-integrity hashes, and no automatic cloud fallback; and
+- a full-int8 TinyML model plus an
+  [ESP-IDF runtime](firmware/esp32-tflm/README.md) for later constrained-device
+  deployment.
+
+Private images, manifests, checkpoints, and generated model arrays are ignored
+by Git.
 
 ## Import data from the legacy private schema
 

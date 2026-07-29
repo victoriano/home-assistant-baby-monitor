@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Local YOLO review</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__inner">
+        <p class="eyebrow">PRIVATE · OFFLINE · PRODUCTION RUNTIME</p>
+        <h1>See what the model sees.</h1>
+        <p class="lede">
+          Every reserved test frame, its selected sleeping-area crop, the pose-localized
+          head, raw scores, abstention thresholds, and historical teacher label.
+        </p>
+        <div class="meta-line" id="meta-line"></div>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary" id="summary" aria-label="Review summary"></section>
+
+      <section class="notice">
+        <span class="notice__icon">i</span>
+        <div>
+          <strong>Agreement is not ground truth.</strong>
+          <span id="reference-note"></span>
+        </div>
+      </section>
+
+      <section class="task-table-wrap">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SELECTIVE EVALUATION</p>
+            <h2>Decision quality by feature</h2>
+          </div>
+          <p>Coverage counts only scores outside the grey abstention band.</p>
+        </div>
+        <div id="task-table"></div>
+      </section>
+
+      <section class="controls" aria-label="Gallery filters">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">FRAME EXPLORER</p>
+            <h2>Inspect the reserved test frames</h2>
+          </div>
+          <button class="quiet-button" id="reset-filters" type="button">Reset filters</button>
+        </div>
+        <div class="filter-grid">
+          <label>
+            <span>Location</span>
+            <select id="location-filter"><option value="all">All locations</option></select>
+          </label>
+          <label>
+            <span>Review result</span>
+            <select id="outcome-filter">
+              <option value="all">Everything</option>
+              <option value="mismatch">Mismatch first</option>
+              <option value="abstain">Abstentions</option>
+              <option value="match">Matches</option>
+            </select>
+          </label>
+          <label>
+            <span>Presence</span>
+            <select id="presence-filter">
+              <option value="all">Any decision</option>
+              <option value="present">Present</option>
+              <option value="absent">Absent</option>
+              <option value="unknown">Abstained</option>
+            </select>
+          </label>
+          <label>
+            <span>Awake state</span>
+            <select id="awake-filter">
+              <option value="all">Any decision</option>
+              <option value="awake">Awake</option>
+              <option value="asleep">Asleep</option>
+              <option value="unknown">Abstained</option>
+              <option value="not_run">Head not found</option>
+            </select>
+          </label>
+          <label>
+            <span>Pacifier</span>
+            <select id="pacifier-filter">
+              <option value="all">Any decision</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+              <option value="unknown">Abstained</option>
+              <option value="not_run">Head not found</option>
+            </select>
+          </label>
+          <label>
+            <span>Sort</span>
+            <select id="sort-filter">
+              <option value="review">Needs review first</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="confidence">Lowest confidence first</option>
+            </select>
+          </label>
+          <label class="search-field">
+            <span>Find a frame</span>
+            <input id="search-filter" type="search" placeholder="Time, UUID, ROI…" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+      <div class="result-line">
+        <p id="result-count" aria-live="polite"></p>
+        <p><span class="legend legend--winner"></span>Selected ROI <span class="legend legend--other"></span>Other ROI</p>
+      </div>
+      <section class="gallery" id="gallery" aria-label="Frame review gallery"></section>
+      <nav class="pagination" id="pagination" aria-label="Gallery pages"></nav>
+    </main>
+
+    <dialog id="lightbox">
+      <button class="lightbox__close" id="lightbox-close" type="button" aria-label="Close">×</button>
+      <img id="lightbox-image" alt="" />
+      <div class="lightbox__caption" id="lightbox-caption"></div>
+    </dialog>
+
+    <footer>
+      <p>Generated locally. Images never leave this machine.</p>
+      <p><a href="predictions.csv">Download the flat CSV</a> · <a href="report.json">Open raw JSON</a></p>
+    </footer>
+
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

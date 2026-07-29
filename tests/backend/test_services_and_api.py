@@ -133,11 +133,94 @@ async def test_cry_notification_is_not_blocked_by_slow_lights(tmp_path: Path) ->
 
     fake.call_service = call_service  # type: ignore[method-assign]
     service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
-    task = asyncio.create_task(service.set_state("on", observed_at=utc_now(), source="audio"))
+    observed_at = utc_now()
+    app.state.database.add_frame(
+        b"baby",
+        "image/jpeg",
+        observed_at - timedelta(minutes=1),
+        label=VisionLabel(
+            baby_present=True,
+            state="awake",
+            confidence=0.9,
+            description="Baby visible",
+        ),
+    )
+    task = asyncio.create_task(service.set_state("on", observed_at=observed_at, source="audio"))
     await asyncio.wait_for(light_started.wait(), 0.5)
     await asyncio.wait_for(notification_sent.wait(), 0.5)
     release_light.set()
     await task
+    await service.close()
+
+
+async def test_automatic_cry_requires_baby_in_a_frame_during_previous_five_minutes(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    fake = FakeHomeAssistant()
+    service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
+    observed_at = utc_now()
+    baby_present = VisionLabel(
+        baby_present=True,
+        state="awake",
+        confidence=0.9,
+        description="Baby visible",
+    )
+    app.state.database.add_frame(
+        b"baby",
+        "image/jpeg",
+        observed_at - timedelta(minutes=5),
+        label=baby_present,
+    )
+
+    event = await service.set_state("on", observed_at=observed_at, source="audio")
+
+    assert event is not None
+    assert app.state.database.list_cry_events()[1] == 1
+    await service.close()
+
+
+async def test_automatic_cry_ignores_noise_without_recent_visible_baby(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    fake = FakeHomeAssistant()
+    service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
+    observed_at = utc_now()
+    baby_present = VisionLabel(
+        baby_present=True,
+        state="awake",
+        confidence=0.9,
+        description="Baby visible too long ago",
+    )
+    baby_absent = VisionLabel(
+        baby_present=False,
+        state="uncertain",
+        confidence=0.9,
+        description="Empty room",
+    )
+    app.state.database.add_frame(
+        b"old-baby",
+        "image/jpeg",
+        observed_at - timedelta(minutes=5, microseconds=1),
+        label=baby_present,
+    )
+    app.state.database.add_frame(
+        b"empty",
+        "image/jpeg",
+        observed_at - timedelta(minutes=1),
+        label=baby_absent,
+    )
+    app.state.database.add_frame(
+        b"baby-other-location",
+        "image/jpeg",
+        observed_at - timedelta(seconds=30),
+        location_id="madrid",
+        label=baby_present,
+    )
+
+    event = await service.set_state("on", observed_at=observed_at, source="binary_sensor")
+
+    assert event is None
+    assert service.active is False
+    assert app.state.database.list_cry_events()[1] == 0
+    assert fake.calls == []
     await service.close()
 
 
@@ -169,7 +252,19 @@ async def test_cry_alert_uses_xy_for_hue_style_lights(tmp_path: Path) -> None:
 
     fake.get_state = get_state  # type: ignore[method-assign]
     service = CryAlertService(app.state.database, app.state.settings, fake)  # type: ignore[arg-type]
-    await service.set_state("on", observed_at=utc_now(), source="audio")
+    observed_at = utc_now()
+    app.state.database.add_frame(
+        b"baby",
+        "image/jpeg",
+        observed_at - timedelta(minutes=1),
+        label=VisionLabel(
+            baby_present=True,
+            state="awake",
+            confidence=0.9,
+            description="Baby visible",
+        ),
+    )
+    await service.set_state("on", observed_at=observed_at, source="audio")
 
     alert = next(call for call in fake.calls if call[0:2] == ("light", "turn_on"))
     assert alert[2]["entity_id"] == "light.hue_strip"

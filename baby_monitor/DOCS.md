@@ -108,6 +108,10 @@ Choose one source:
 - **Audio stream**: provide a private stream URL and adjust the confirmation
   windows. This mode depends on audio quality and may need tuning.
 
+An automatic cry is recorded and alerted only if the baby was detected in a
+camera frame from the active location during the previous five minutes. Noise
+without that recent visual confirmation is ignored.
+
 Use the built-in test before relying on an automatic alert.
 
 ### Lights
@@ -155,11 +159,14 @@ Supported providers:
 - Google Gemini
 - OpenAI
 - A local OpenAI-compatible endpoint, including suitable Ollama setups
+- A private, locally fine-tuned YOLO artifact directory
 
-Cloud providers require an API key. Every provider requires explicit consent
-before frames are sent to its endpoint. The API key is encrypted at rest and
-never returned to the browser. Disabling AI does not disable camera capture or
-sleep tracking.
+Cloud providers require an API key. Every HTTP provider requires explicit
+consent before frames are sent to its endpoint. The YOLO provider runs in the
+Baby Monitor process, does not send the frame to an endpoint, and therefore
+needs neither an API key nor image-sharing consent. Its model field is the
+directory containing `metadata.json` and the calibrated classifier files.
+Disabling AI does not disable camera capture or sleep tracking.
 
 Every AI endpoint, including an OpenAI-compatible one you host yourself,
 requires explicit image-sharing consent because the configured server receives

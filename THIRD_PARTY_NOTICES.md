@@ -27,6 +27,16 @@ preserved in the Python installation and in each installed distribution's
 Transitive dependencies and their exact versions are listed in `uv.lock` and
 in each release SBOM.
 
+## Optional YOLO training and local inference
+
+The `yolo` optional dependency group uses Ultralytics to fine-tune and run
+YOLO26 classifiers and a YOLO26 pose localizer. Ultralytics is offered under
+AGPL-3.0 and a separate enterprise license; it is not installed in the default
+runtime dependency group and is not relicensed by this project's MIT license.
+Anyone distributing a build that includes Ultralytics must evaluate and satisfy
+the applicable Ultralytics license terms. See
+<https://www.ultralytics.com/license>.
+
 ## Lit frontend libraries
 
 The compiled frontend contains Lit, lit-html, lit-element, and

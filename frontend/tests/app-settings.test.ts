@@ -162,6 +162,27 @@ describe('settings safety interactions', () => {
     expect(app.validationError(2)).toBe('');
   });
 
+  it('configures local YOLO without an API key, endpoint, or image-sharing consent', () => {
+    const settings = cloneDefaultSettings();
+    settings.ai.apiKeyConfigured = true;
+    const app = harness(settings);
+
+    renderSettings(app.renderVisionSection(true));
+    buttonNamed('Local YOLO').click();
+
+    expect(app.draft.ai.provider).toBe('yolo');
+    expect(app.draft.ai.model).toBe('ml/artifacts/yolo-baby-current');
+    expect(app.draft.ai.baseUrl).toBeNull();
+    expect(app.draft.ai.cloudImageConsent).toBe(false);
+    document.body.replaceChildren();
+    renderSettings(app.renderVisionSection(true));
+    expect(document.body.textContent).toContain('Snapshots are never uploaded');
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+    expect(document.querySelector('.consent-box')).toBeNull();
+    expect(app.validationError(2)).toBe('');
+    expect(settingsToPayload(app.draft).ai.provider).toBe('yolo');
+  });
+
   it('does not silently bind a stored API key to a different compatible endpoint', () => {
     const settings = cloneDefaultSettings();
     settings.ai.provider = 'local';

@@ -232,6 +232,105 @@ function formatElapsedClock(startedAt: string, now: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+const VISION_METADATA_ALIASES: Record<string, string> = {
+  babyPresent: 'baby_present',
+  inCrib: 'in_crib',
+  sleepSurface: 'sleep_surface',
+  faceVisible: 'face_visible',
+  headSide: 'head_side',
+  bodyPosition: 'body_position',
+  clothingItems: 'clothing_items',
+  mouthOpen: 'mouth_open',
+};
+
+function frameVisionMetadata(frame: FrameRecord): Record<string, unknown> {
+  const label = frame.label;
+  if (!label) return {};
+  const metadata: Record<string, unknown> = {
+    baby_present: label.babyPresent,
+    state: label.state,
+    confidence: label.confidence,
+    description: label.description,
+    tags: label.tags,
+    in_crib: label.inCrib,
+    sleep_surface: label.sleepSurface,
+    face_visible: label.faceVisible,
+    head_side: label.headSide,
+    body_position: label.bodyPosition,
+    clothing_items: label.clothingItems,
+    pacifier: label.pacifier,
+    mouth_open: label.mouthOpen,
+  };
+  Object.entries(label.raw ?? {}).forEach(([key, value]) => {
+    metadata[VISION_METADATA_ALIASES[key] ?? key] = value;
+  });
+  return metadata;
+}
+
+function visionMetadataLabel(key: string, language: Language): string {
+  const labels: Record<string, [string, string]> = {
+    baby_present: ['Bebé presente', 'Baby present'],
+    state: ['Estado', 'State'],
+    confidence: ['Confianza', 'Confidence'],
+    description: ['Descripción', 'Description'],
+    tags: ['Etiquetas', 'Tags'],
+    in_crib: ['Dentro de la cuna', 'In crib'],
+    sleep_surface: ['Zona de sueño', 'Sleep surface'],
+    face_visible: ['Cara visible', 'Face visible'],
+    head_side: ['Orientación de la cabeza', 'Head side'],
+    body_position: ['Posición del cuerpo', 'Body position'],
+    clothing_items: ['Ropa detectada', 'Detected clothing'],
+    pacifier: ['Chupete', 'Pacifier'],
+    mouth_open: ['Boca abierta', 'Mouth open'],
+  };
+  const known = labels[key];
+  if (known) return known[language === 'es' ? 0 : 1];
+  const humanized = key.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+}
+
+function visionMetadataValue(key: string, value: unknown, language: Language): string {
+  if (value == null || value === '' || value === 'unknown') return language === 'es' ? 'Sin determinar' : 'Unknown';
+  if (key === 'confidence' && typeof value === 'number') {
+    const formatter = new Intl.NumberFormat(language === 'es' ? 'es-ES' : 'en-GB', {
+      maximumFractionDigits: 6,
+    });
+    return `${formatter.format(value * 100)}% · ${formatter.format(value)}`;
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return '—';
+    return value.map((item) => visionMetadataValue('', item, language)).join(', ');
+  }
+  if (typeof value === 'boolean') return value
+    ? (language === 'es' ? 'Sí' : 'Yes')
+    : (language === 'es' ? 'No' : 'No');
+  if (typeof value === 'number') return new Intl.NumberFormat(language === 'es' ? 'es-ES' : 'en-GB', {
+    maximumFractionDigits: 6,
+  }).format(value);
+  if (typeof value === 'object') return JSON.stringify(value);
+  const labels: Record<string, [string, string]> = {
+    awake: ['Despierto', 'Awake'],
+    asleep: ['Dormido', 'Asleep'],
+    uncertain: ['Incierto', 'Uncertain'],
+    yes: ['Sí', 'Yes'],
+    no: ['No', 'No'],
+    left: ['Izquierda', 'Left'],
+    right: ['Derecha', 'Right'],
+    back: ['Boca arriba', 'On back'],
+    face_down: ['Boca abajo', 'Face down'],
+    crib: ['Cuna', 'Crib'],
+    family_bed: ['Cama familiar', 'Family bed'],
+    other: ['Otro lugar', 'Other place'],
+    diaper_only: ['Solo pañal', 'Diaper only'],
+    short_sleeve_onesie: ['Body de manga corta', 'Short-sleeve onesie'],
+    long_sleeve_onesie: ['Body de manga larga', 'Long-sleeve onesie'],
+    sleep_sack: ['Saco de dormir', 'Sleep sack'],
+    blanket: ['Manta', 'Blanket'],
+  };
+  const raw = String(value);
+  return labels[raw]?.[language === 'es' ? 0 : 1] ?? raw.replaceAll('_', ' ');
+}
+
 @customElement('baby-monitor-app')
 export class BabyMonitorApp extends LitElement {
   createRenderRoot(): HTMLElement {
@@ -261,6 +360,7 @@ export class BabyMonitorApp extends LitElement {
   @state() private sleepEvents: SleepEvent[] = [];
   @state() private cryEvents: CryEvent[] = [];
   @state() private frames: FrameRecord[] = [];
+  @state() private selectedFrame: FrameRecord | null = null;
   @state() private historyPages = emptyHistoryPages();
   @state() private refreshingData = false;
   @state() private liveView = false;
@@ -327,6 +427,7 @@ export class BabyMonitorApp extends LitElement {
   private frameReviewRequest = 0;
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
+      if (this.selectedFrame) { this.selectedFrame = null; return; }
       if (this.birthDatePickerOpen) { this.birthDatePickerOpen = false; return; }
       if (this.temporalPicker) { this.temporalPicker = null; return; }
       if (this.selectedPrediction) { this.selectedPrediction = null; return; }
@@ -1218,8 +1319,8 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private aiEndpointChanged(): boolean {
-    if (!this.settings.ai.apiKeyConfigured || this.draft.ai.provider === 'disabled') return false;
-    const current = this.settings.ai.provider === 'disabled'
+    if (!this.settings.ai.apiKeyConfigured || this.draft.ai.provider === 'disabled' || this.draft.ai.provider === 'yolo') return false;
+    const current = this.settings.ai.provider === 'disabled' || this.settings.ai.provider === 'yolo'
       ? null
       : `${this.settings.ai.provider}:${normalizeHttpBaseUrl(this.settings.ai.baseUrl) ?? ''}`;
     const candidate = `${this.draft.ai.provider}:${this.draft.ai.provider === 'local' ? normalizeHttpBaseUrl(this.draft.ai.baseUrl) ?? '' : ''}`;
@@ -1285,7 +1386,7 @@ export class BabyMonitorApp extends LitElement {
         && (!storedApiKey || endpointChanged)) {
         return this.t('requiredApiKey');
       }
-      if (settings.ai.provider !== 'disabled' && !settings.ai.cloudImageConsent) {
+      if (settings.ai.provider !== 'disabled' && settings.ai.provider !== 'yolo' && !settings.ai.cloudImageConsent) {
         return this.t('requiredConsent');
       }
     }
@@ -2836,9 +2937,138 @@ export class BabyMonitorApp extends LitElement {
   private renderFrame(frame: FrameRecord): TemplateResult {
     return html`
       <article class="frame-card">
-        <div class="frame-image">${frame.imageAvailable ? html`<img loading="lazy" src=${frame.imageUrl} alt=${this.t('frameAlt', { time: formatClock(frame.capturedAt, this.language) })}>` : html`<span>${icon('camera', 26)}</span>`}</div>
-        <div class="frame-copy"><span>${formatDateTime(frame.capturedAt, this.language)} · ${this.t('location')}: ${frame.locationId}</span><strong>${frame.label?.description || this.t('noVisionLabel')}</strong>${frame.label ? html`<small>${this.t('confidence', { value: Math.round(frame.label.confidence * 100) })}</small>` : nothing}</div>
+        <button
+          type="button"
+          class="frame-card-trigger"
+          aria-haspopup="dialog"
+          aria-label=${this.language === 'es'
+            ? `Ver todos los metadatos de la captura del ${formatDateTime(frame.capturedAt, this.language)}`
+            : `View all metadata for the ${formatDateTime(frame.capturedAt, this.language)} capture`}
+          @click=${() => { this.selectedFrame = frame; }}
+        >
+          <div class="frame-image">
+            ${frame.imageAvailable ? html`<img loading="lazy" src=${frame.imageUrl} alt=${this.t('frameAlt', { time: formatClock(frame.capturedAt, this.language) })}>` : html`<span>${icon('camera', 26)}</span>`}
+            <span class="frame-open-hint" aria-hidden="true">${icon('eye', 15)}</span>
+          </div>
+          <div class="frame-copy"><span>${formatDateTime(frame.capturedAt, this.language)} · ${this.t('location')}: ${frame.locationId}</span><strong>${frame.label?.description || this.t('noVisionLabel')}</strong>${frame.label ? html`<small>${this.t('confidence', { value: Math.round(frame.label.confidence * 100) })}</small>` : nothing}</div>
+        </button>
       </article>
+    `;
+  }
+
+  private renderFrameDetail(): TemplateResult | typeof nothing {
+    const frame = this.selectedFrame;
+    if (!frame) return nothing;
+    const metadata = frameVisionMetadata(frame);
+    const metadataRows = Object.entries(metadata).map(([key, value]) => {
+      const rendered = visionMetadataValue(key, value, this.language);
+      return {
+        key,
+        label: visionMetadataLabel(key, this.language),
+        value: rendered,
+        wide: ['description', 'tags', 'clothing_items'].includes(key) || rendered.length > 54,
+      };
+    });
+    const rawPayload = frame.label?.raw && Object.keys(frame.label.raw).length
+      ? frame.label.raw
+      : metadata;
+    const modelIdentity = [frame.provider, frame.model].filter(Boolean).join(' · ');
+    const observation = frame.label?.description
+      || (frame.label
+        ? frame.label.babyPresent
+          ? visionMetadataValue('state', frame.label.state, this.language)
+          : (this.language === 'es' ? 'No se ve al bebé' : 'Baby not visible')
+        : this.t('noVisionLabel'));
+    return html`
+      <div class="frame-detail-backdrop" @click=${(event: Event) => {
+        if (event.target === event.currentTarget) this.selectedFrame = null;
+      }}>
+        <section class="frame-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="frame-detail-title">
+          <button
+            type="button"
+            class="dialog-close frame-detail-close"
+            aria-label=${this.t('dismiss')}
+            @click=${() => { this.selectedFrame = null; }}
+          >&times;</button>
+          <div class="frame-detail-scroll">
+            <header class="frame-detail-heading">
+              <span>${icon('sparkle', 16)} ${this.language === 'es' ? 'Inspección del modelo' : 'Model inspection'}</span>
+              <h2 id="frame-detail-title">${this.language === 'es' ? 'Detalle de la captura' : 'Capture details'}</h2>
+              <p>${formatDateTime(frame.capturedAt, this.language)} · ${this.t('location')}: ${frame.locationId}</p>
+            </header>
+
+            <figure class="frame-detail-figure">
+              ${frame.imageAvailable
+                ? html`<img src=${frame.imageUrl} alt=${this.t('frameAlt', { time: formatClock(frame.capturedAt, this.language) })}>`
+                : html`<div class="frame-detail-missing">${icon('camera', 30)}<span>${this.language === 'es' ? 'La imagen ya no está disponible' : 'The image is no longer available'}</span></div>`}
+              <figcaption class=${frame.label ? 'frame-detail-observation' : 'frame-detail-observation empty'}>
+                <span>${icon(frame.label ? 'sparkle' : 'camera', 17)}</span>
+                <div>
+                  <small>${frame.label ? (this.language === 'es' ? 'Lectura del modelo' : 'Model reading') : (this.language === 'es' ? 'Sin análisis' : 'No analysis')}</small>
+                  <strong>${observation}</strong>
+                </div>
+                ${frame.label ? html`<em>${this.t('confidence', { value: Math.round(frame.label.confidence * 100) })}</em>` : nothing}
+              </figcaption>
+            </figure>
+
+            <section class="frame-detail-section">
+              <div class="frame-detail-section-heading">
+                <div><span>${icon('lock', 15)}</span><h3>${this.language === 'es' ? 'Origen del análisis' : 'Analysis source'}</h3></div>
+                <small>${this.language === 'es' ? 'Para identificar qué produjo esta lectura' : 'Identifies what produced this reading'}</small>
+              </div>
+              <div class="frame-detail-provenance">
+                <div><span>${this.language === 'es' ? 'Proveedor' : 'Provider'}</span><strong>${frame.provider || '—'}</strong></div>
+                <div><span>${this.language === 'es' ? 'Modelo' : 'Model'}</span><strong>${frame.model || '—'}</strong></div>
+              </div>
+            </section>
+
+            <section class="frame-detail-section">
+              <div class="frame-detail-section-heading">
+                <div><span>${icon('eye', 15)}</span><h3>${this.language === 'es' ? 'Metadatos detectados' : 'Detected metadata'}</h3></div>
+                <small>${frame.label
+                  ? (this.language === 'es' ? `${metadataRows.length} campos · todos visibles` : `${metadataRows.length} fields · all visible`)
+                  : (this.language === 'es' ? 'No se guardó una etiqueta para esta captura' : 'No label was saved for this capture')}</small>
+              </div>
+              ${frame.label ? html`
+                <div class="frame-detail-metadata">
+                  ${metadataRows.map((row) => html`
+                    <div class=${row.wide ? 'wide' : ''} title=${row.key}>
+                      <span>${row.label}</span>
+                      <strong>${row.value}</strong>
+                      <code>${row.key}</code>
+                    </div>
+                  `)}
+                </div>
+              ` : html`
+                <div class="frame-detail-empty">${icon('sparkle', 22)}<p>${this.language === 'es'
+                  ? 'Esta captura existe, pero el modelo no dejó metadatos que revisar.'
+                  : 'This capture exists, but the model left no metadata to review.'}</p></div>
+              `}
+            </section>
+
+            ${frame.label ? html`
+              <details class="frame-detail-technical">
+                <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Ver valores originales (JSON)' : 'View original values (JSON)'}</span></summary>
+                <p>${this.language === 'es'
+                  ? 'Es la respuesta exacta guardada, útil para comprobar nombres y valores sin traducción.'
+                  : 'This is the exact saved response, useful for checking untranslated names and values.'}</p>
+                <pre>${JSON.stringify(rawPayload, null, 2)}</pre>
+              </details>
+            ` : nothing}
+
+            <details class="frame-detail-technical capture">
+              <summary>${icon('chevron', 15)}<span>${this.language === 'es' ? 'Datos técnicos de la captura' : 'Capture technical data'}</span></summary>
+              <div class="frame-detail-capture-grid">
+                <div><span>ID</span><strong>${frame.id}</strong></div>
+                <div><span>${this.language === 'es' ? 'Cámara' : 'Camera'}</span><strong>${frame.cameraEntityId || '—'}</strong></div>
+                <div><span>${this.language === 'es' ? 'Formato' : 'Format'}</span><strong>${frame.mimeType}</strong></div>
+                <div><span>${this.language === 'es' ? 'Tamaño' : 'Size'}</span><strong>${formatBytes(frame.sizeBytes, this.language)}</strong></div>
+              </div>
+            </details>
+            ${modelIdentity ? html`<p class="frame-detail-footnote">${icon('sparkle', 13)} ${modelIdentity}</p>` : nothing}
+          </div>
+        </section>
+      </div>
     `;
   }
 
@@ -3235,13 +3465,19 @@ export class BabyMonitorApp extends LitElement {
   }
 
   private renderVisionSection(compact = false): TemplateResult {
-    const providerNames: Record<VisionProvider, TranslationKey> = { disabled: 'aiOff', gemini: 'gemini', openai: 'openai', local: 'localCompatible' };
+    const providerNames: Record<VisionProvider, TranslationKey> = {
+      disabled: 'aiOff',
+      gemini: 'gemini',
+      openai: 'openai',
+      local: 'localCompatible',
+      yolo: 'yoloLocal',
+    };
     const consentDestination = this.draft.ai.provider === 'local' && this.draft.ai.baseUrl
       ? this.draft.ai.baseUrl
       : this.t(providerNames[this.draft.ai.provider]);
     const content = html`
       <div class="field"><span>${this.t('aiProvider')}</span>${this.renderChoiceCards([
-        ['disabled', 'aiOff', 'moon'], ['gemini', 'gemini', 'sparkle'], ['openai', 'openai', 'sparkle'], ['local', 'localCompatible', 'lock'],
+        ['disabled', 'aiOff', 'moon'], ['gemini', 'gemini', 'sparkle'], ['openai', 'openai', 'sparkle'], ['local', 'localCompatible', 'lock'], ['yolo', 'yoloLocal', 'lock'],
       ], this.draft.ai.provider, (value) => {
         this.updateDraft((draft) => {
           const provider = value as VisionProvider;
@@ -3250,26 +3486,38 @@ export class BabyMonitorApp extends LitElement {
           if (provider !== 'local') draft.ai.baseUrl = null;
           if (provider !== previousProvider) {
             draft.ai.cloudImageConsent = false;
-            draft.ai.model = provider === 'gemini' ? 'gemini-3.1-flash-lite' : provider === 'openai' ? 'gpt-5.6-luna' : provider === 'local' ? 'qwen2.5vl:3b' : null;
+            draft.ai.model = provider === 'gemini'
+              ? 'gemini-3.1-flash-lite'
+              : provider === 'openai'
+                ? 'gpt-5.6-luna'
+                : provider === 'local'
+                  ? 'qwen2.5vl:3b'
+                  : provider === 'yolo'
+                    ? 'ml/artifacts/yolo-baby-current'
+                    : null;
           }
         });
       })}</div>
       ${this.draft.ai.provider !== 'disabled' ? html`
-        <div class="field-grid two">
-          <label class="field"><span>${this.t('model')}</span><input .value=${this.draft.ai.model ?? ''} placeholder=${this.t('modelPlaceholder')} @input=${(event: Event) => this.updateDraft((draft) => { draft.ai.model = inputValue(event) || null; })}></label>
-          <label class="field"><span>${this.t('imageDetail')}</span>${this.renderChoiceRow([
+        <div class=${this.draft.ai.provider === 'yolo' ? 'field-grid' : 'field-grid two'}>
+          <label class="field"><span>${this.t(this.draft.ai.provider === 'yolo' ? 'modelDirectory' : 'model')}</span><input .value=${this.draft.ai.model ?? ''} placeholder=${this.t(this.draft.ai.provider === 'yolo' ? 'yoloModelPlaceholder' : 'modelPlaceholder')} @input=${(event: Event) => this.updateDraft((draft) => { draft.ai.model = inputValue(event) || null; })}>${this.draft.ai.provider === 'yolo' ? html`<small>${this.t('yoloModelHint')}</small>` : nothing}</label>
+          ${this.draft.ai.provider !== 'yolo' ? html`<label class="field"><span>${this.t('imageDetail')}</span>${this.renderChoiceRow([
             ['low', 'detailLow'], ['auto', 'detailAuto'], ['high', 'detailHigh'],
-          ], this.draft.ai.detail, (value) => this.updateDraft((draft) => { draft.ai.detail = value as AppSettings['ai']['detail']; }))}</label>
+          ], this.draft.ai.detail, (value) => this.updateDraft((draft) => { draft.ai.detail = value as AppSettings['ai']['detail']; }))}</label>` : nothing}
         </div>
         ${this.draft.ai.provider === 'local' ? html`<label class="field"><span>${this.t('baseUrl')}</span><input type="url" .value=${this.draft.ai.baseUrl ?? ''} placeholder=${this.t('baseUrlPlaceholder')} @input=${(event: Event) => this.updateDraft((draft) => { const nextUrl = inputValue(event) || null; if (normalizeHttpBaseUrl(nextUrl) !== normalizeHttpBaseUrl(draft.ai.baseUrl)) draft.ai.cloudImageConsent = false; draft.ai.baseUrl = nextUrl; })}><small>${this.t('localProvider')}</small></label>` : nothing}
-        <label class="field"><span>${this.t('apiKey')} ${this.draft.ai.provider === 'local' ? html`<em>${this.t('optional')}</em>` : nothing}</span><input type="password" autocomplete="new-password" .value=${this.draft.ai.apiKey ?? ''} placeholder=${this.t('apiKeyPlaceholder')} @input=${(event: Event) => this.setSecretValue('ai_api_key', inputValue(event))}>${this.renderSecretNote(this.draft.ai.apiKeyConfigured, 'ai_api_key')}</label>
-        ${this.aiEndpointChanged() && !this.draft.ai.apiKey?.trim() && !this.pendingSecretClears.includes('ai_api_key') ? html`
-          <div class="credential-warning" role="status">${icon('lock', 16)}<span>${this.t('aiCredentialChanged')}</span></div>
-        ` : nothing}
-        <label class="consent-box"><input type="checkbox" .checked=${this.draft.ai.cloudImageConsent} @change=${(event: Event) => this.updateDraft((draft) => { draft.ai.cloudImageConsent = inputChecked(event); })}><span><strong>${this.t('cloudConsent', { provider: consentDestination })}</strong><small>${this.t(this.draft.ai.provider === 'local' ? 'compatibleConsentHint' : 'cloudConsentHint')}</small></span></label>
+        ${this.draft.ai.provider === 'yolo' ? html`
+          <div class="credential-warning" role="status">${icon('lock', 16)}<span>${this.t('yoloLocalHint')}</span></div>
+        ` : html`
+          <label class="field"><span>${this.t('apiKey')} ${this.draft.ai.provider === 'local' ? html`<em>${this.t('optional')}</em>` : nothing}</span><input type="password" autocomplete="new-password" .value=${this.draft.ai.apiKey ?? ''} placeholder=${this.t('apiKeyPlaceholder')} @input=${(event: Event) => this.setSecretValue('ai_api_key', inputValue(event))}>${this.renderSecretNote(this.draft.ai.apiKeyConfigured, 'ai_api_key')}</label>
+          ${this.aiEndpointChanged() && !this.draft.ai.apiKey?.trim() && !this.pendingSecretClears.includes('ai_api_key') ? html`
+            <div class="credential-warning" role="status">${icon('lock', 16)}<span>${this.t('aiCredentialChanged')}</span></div>
+          ` : nothing}
+          <label class="consent-box"><input type="checkbox" .checked=${this.draft.ai.cloudImageConsent} @change=${(event: Event) => this.updateDraft((draft) => { draft.ai.cloudImageConsent = inputChecked(event); })}><span><strong>${this.t('cloudConsent', { provider: consentDestination })}</strong><small>${this.t(this.draft.ai.provider === 'local' ? 'compatibleConsentHint' : 'cloudConsentHint')}</small></span></label>
+        `}
         ${this.renderTestButton('vision')}
       ` : nothing}
-      ${this.draft.ai.provider === 'disabled' && this.draft.ai.apiKeyConfigured ? html`
+      ${(this.draft.ai.provider === 'disabled' || this.draft.ai.provider === 'yolo') && this.draft.ai.apiKeyConfigured ? html`
         <div class="stored-secret-control"><strong>${this.t('inactiveSecret')}</strong>${this.renderSecretNote(true, 'ai_api_key')}</div>
       ` : nothing}
     `;
@@ -3402,6 +3650,7 @@ export class BabyMonitorApp extends LitElement {
         ${this.renderActiveSleepOverlay()}
         ${this.renderSleepEditor()}
         ${this.renderPredictionDialog()}
+        ${this.renderFrameDetail()}
         ${this.renderTemporalPicker()}
       `}
       <div class="toast-region" aria-live="polite" aria-atomic="true">${this.toast ? html`<div class=${`toast ${this.toast.tone}`}>${this.toast.tone === 'success' ? icon('check', 17) : this.toast.tone === 'error' ? '!' : icon('heart', 17)}<span>${this.toast.message}</span><button aria-label=${this.t('dismiss')} @click=${() => { this.toast = null; }}>&times;</button></div>` : nothing}</div>

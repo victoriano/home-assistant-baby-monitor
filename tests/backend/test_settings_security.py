@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from baby_monitor.main import create_app
 from fastapi.testclient import TestClient
 
@@ -211,6 +212,48 @@ def test_local_ai_endpoint_also_requires_image_sharing_consent(
         response = client.put("/api/v1/settings", json=ui_settings_payload)
         assert response.status_code == 422
         assert "sending images to any AI endpoint" in response.text
+
+
+def test_yolo_model_stays_local_without_api_key_or_cloud_consent(
+    tmp_path: Path,
+    ui_settings_payload: dict,
+) -> None:
+    ui_settings_payload["ai"].update(
+        {
+            "provider": "yolo",
+            "model": str(tmp_path / "private-yolo-model"),
+            "base_url": None,
+            "cloud_image_consent": False,
+        }
+    )
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    with TestClient(app) as client:
+        response = client.put("/api/v1/settings", json=ui_settings_payload)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ai"]["provider"] == "yolo"
+
+
+def test_yolo_requires_a_model_directory(
+    tmp_path: Path,
+    ui_settings_payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BABY_MONITOR_YOLO_MODEL_DIR", raising=False)
+    ui_settings_payload["ai"].update(
+        {
+            "provider": "yolo",
+            "model": None,
+            "base_url": None,
+            "cloud_image_consent": False,
+        }
+    )
+    app = create_app(data_dir=tmp_path, runtime="test", start_workers=False)
+    with TestClient(app) as client:
+        response = client.put("/api/v1/settings", json=ui_settings_payload)
+
+    assert response.status_code == 422
+    assert "local model directory" in response.text
 
 
 def test_validation_errors_never_echo_secret_input(tmp_path: Path, ui_settings_payload: dict) -> None:

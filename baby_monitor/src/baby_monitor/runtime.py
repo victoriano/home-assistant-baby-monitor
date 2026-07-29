@@ -129,9 +129,16 @@ class RuntimeWorkers:
                     try:
                         state = await self.home_assistant.get_state(config.entity_id or "")
                         is_on = str(state.get("state", "off")).lower() in {"on", "true", "detected"}
-                        if previous_sensor_state is None or is_on != previous_sensor_state:
+                        if is_on and not self.cry_alerts.active:
                             await self.cry_alerts.set_state(
-                                "on" if is_on else "off",
+                                "on",
+                                observed_at=utc_now(),
+                                source="binary_sensor",
+                                metadata={"entity_id": config.entity_id},
+                            )
+                        elif not is_on and (previous_sensor_state is None or previous_sensor_state):
+                            await self.cry_alerts.set_state(
+                                "off",
                                 observed_at=utc_now(),
                                 source="binary_sensor",
                                 metadata={"entity_id": config.entity_id},
@@ -173,13 +180,13 @@ class RuntimeWorkers:
                     else:
                         positive_streak = 0
                     if not active and positive_streak >= config.positive_windows:
-                        active = True
-                        await self.cry_alerts.set_state(
+                        event = await self.cry_alerts.set_state(
                             "on",
                             observed_at=utc_now(),
                             source="audio",
                             metadata=metrics.as_dict(),
                         )
+                        active = event is not None
                     elif active and not metrics.positive and now - last_positive >= config.clear_after_seconds:
                         active = False
                         await self.cry_alerts.set_state(

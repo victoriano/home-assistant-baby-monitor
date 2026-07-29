@@ -177,10 +177,14 @@ class SettingsService:
 
         ai_secret = SecretName.AI_API_KEY.value
         current_endpoint = (
-            None if current.ai.provider == AIProviderName.DISABLED else (current.ai.provider, current.ai.base_url)
+            None
+            if current.ai.provider in {AIProviderName.DISABLED, AIProviderName.YOLO}
+            else (current.ai.provider, current.ai.base_url)
         )
         candidate_endpoint = (
-            None if candidate.ai.provider == AIProviderName.DISABLED else (candidate.ai.provider, candidate.ai.base_url)
+            None
+            if candidate.ai.provider in {AIProviderName.DISABLED, AIProviderName.YOLO}
+            else (candidate.ai.provider, candidate.ai.base_url)
         )
         if (
             current.ai.api_key_configured
@@ -227,3 +231,9 @@ class SettingsService:
             and not settings.ai.api_key_configured
         ):
             raise SettingsError("cloud AI provider requires an API key")
+        if (
+            settings.ai.provider == AIProviderName.YOLO
+            and not settings.ai.model
+            and not os.environ.get("BABY_MONITOR_YOLO_MODEL_DIR")
+        ):
+            raise SettingsError("YOLO provider requires a local model directory")

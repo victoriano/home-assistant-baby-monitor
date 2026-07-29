@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "baby-monitor-edge-ml"
+version = "0.1.0"
+description = "Private training and TensorFlow Lite Micro export pipeline for Baby Monitor"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "numpy>=2.0,<3",
+  "pillow>=11,<13",
+  "tensorflow==2.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "ruff>=0.11,<1",
+]
+yolo = [
+  "ultralytics==8.4.109",
+]
+
+[project.scripts]
+baby-monitor-edge = "baby_monitor_edge_ml.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/baby_monitor_edge_ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

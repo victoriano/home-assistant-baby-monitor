@@ -396,7 +396,9 @@ export function normalizeSettings(value: unknown): AppSettings {
       restorePreviousState: true,
     },
     ai: {
-      provider: provider === 'gemini' || provider === 'openai' || provider === 'local' ? provider : 'disabled',
+      provider: provider === 'gemini' || provider === 'openai' || provider === 'local' || provider === 'yolo'
+        ? provider
+        : 'disabled',
       model: asNullableString(ai.model),
       apiKeyConfigured: asBoolean(pick(ai, 'apiKeyConfigured', 'api_key_configured')),
       baseUrl: asNullableString(pick(ai, 'baseUrl', 'base_url')),
@@ -433,6 +435,7 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
       clothingItems: ['unknown'],
       pacifier: 'unknown',
       mouthOpen: 'unknown',
+      raw: { description: value },
     };
   }
   const data = asRecord(value);
@@ -465,6 +468,7 @@ function normalizeLabel(value: unknown, descriptionFallback = ''): VisionLabel |
     clothingItems: asStringArray(pick(data, 'clothingItems', 'clothing_items')),
     pacifier: ['yes', 'no'].includes(asString(data.pacifier)) ? asString(data.pacifier) as 'yes' | 'no' : 'unknown',
     mouthOpen: ['yes', 'no'].includes(asString(pick(data, 'mouthOpen', 'mouth_open'))) ? asString(pick(data, 'mouthOpen', 'mouth_open')) as 'yes' | 'no' : 'unknown',
+    raw: data,
   };
 }
 

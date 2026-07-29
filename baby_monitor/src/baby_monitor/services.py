@@ -156,14 +156,19 @@ class FrameService:
         config = self.settings.get().ai
         if config.provider == AIProviderName.DISABLED:
             raise ServiceError("image labeling is disabled")
-        if not config.cloud_image_consent:
+        if config.provider != AIProviderName.YOLO and not config.cloud_image_consent:
             raise ServiceError("image-sharing consent is required for the configured AI endpoint")
         provider = build_provider(
             config,
             self.settings.get_secret(SecretName.AI_API_KEY),
         )
         image = await asyncio.to_thread(path.read_bytes)
-        label = await provider.label(image, frame.mime_type, config.detail)
+        label = await provider.label(
+            image,
+            frame.mime_type,
+            config.detail,
+            location_id=frame.location_id,
+        )
         updated = self.database.set_frame_label(frame_id, label, provider.name, provider.model)
         if updated is None:
             raise ServiceError("frame no longer exists")
@@ -242,6 +247,7 @@ class CryAlertService:
     """Persists cry events and coordinates reversible Home Assistant alerts."""
 
     SCENE_ENTITY_ID = "scene.baby_monitor_cry_restore"
+    BABY_PRESENCE_LOOKBACK = timedelta(minutes=5)
 
     def __init__(
         self,
@@ -356,13 +362,23 @@ class CryAlertService:
                 self._schedule_restore(self.settings.get().lights.duration_seconds)
                 return current
 
+            settings = self.settings.get()
+            if source in {"audio", "binary_sensor"}:
+                labels = self.database.vision_labels_between(
+                    observed_at - self.BABY_PRESENCE_LOOKBACK,
+                    observed_at,
+                    location_id=settings.baby.location_id,
+                )
+                if not any(label.baby_present for _, label in labels):
+                    return None
+
             event = self.database.add_cry_event(
                 CryEventCreate(
                     detected_at=observed_at,
                     source=source,
                     confidence=confidence,
                     metadata=metadata or {},
-                    location_id=self.settings.get().baby.location_id,
+                    location_id=settings.baby.location_id,
                 )
             )
             # A slow light integration must not delay the caregiver alert (and

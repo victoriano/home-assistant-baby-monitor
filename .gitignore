@@ -39,6 +39,19 @@ data/
 !docs/screenshots/*.jpg
 *.log
 
+# Private TinyML datasets and locally trained models
+ml/artifacts/
+ml/datasets/
+ml/review/
+/yolo*.pt
+ml/yolo*.pt
+/runs/
+firmware/esp32-tflm/main/generated/*
+!firmware/esp32-tflm/main/generated/.gitkeep
+firmware/esp32-tflm/build/
+firmware/esp32-tflm/managed_components/
+firmware/esp32-tflm/sdkconfig
+
 # Editors and operating systems
 .DS_Store
 .idea/

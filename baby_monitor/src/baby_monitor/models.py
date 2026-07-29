@@ -85,6 +85,7 @@ class AIProviderName(StrEnum):
     GEMINI = "gemini"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    YOLO = "yolo"
     # Ollama exposes an OpenAI-compatible endpoint. The adapter is intentionally
     # generic enough for LM Studio and other compatible local servers too.
     LOCAL = "ollama"
@@ -209,7 +210,9 @@ class LightAlertConfig(StrictModel):
 
 class AIConfigBase(StrictModel):
     provider: AIProviderName = AIProviderName.DISABLED
-    model: str | None = Field(default=None, max_length=120)
+    # Cloud model IDs are short, while local YOLO artifacts can live under an
+    # absolute mounted-data path in Home Assistant.
+    model: str | None = Field(default=None, max_length=512)
     base_url: str | None = None
     cloud_image_consent: bool = False
     detail: Literal["low", "high", "auto"] = "low"
@@ -235,7 +238,7 @@ class AIConfigBase(StrictModel):
     def cloud_requires_consent(self) -> AIConfigBase:
         if self.provider != AIProviderName.OLLAMA and self.base_url is not None:
             raise ValueError("base_url is only valid for a local OpenAI-compatible provider")
-        if self.provider != AIProviderName.DISABLED and not self.cloud_image_consent:
+        if self.provider not in {AIProviderName.DISABLED, AIProviderName.YOLO} and not self.cloud_image_consent:
             raise ValueError("cloud_image_consent is required before sending images to any AI endpoint")
         return self
 

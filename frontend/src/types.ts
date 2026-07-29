@@ -2,7 +2,7 @@ export type Language = 'en' | 'es';
 export type AppPage = 'sleep' | 'data' | 'camera' | 'settings';
 export type CryMode = 'disabled' | 'binary_sensor' | 'audio';
 export type CrySensitivity = 'low' | 'balanced' | 'high';
-export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local';
+export type VisionProvider = 'disabled' | 'gemini' | 'openai' | 'local' | 'yolo';
 export type RetentionMode = 'forever' | 'days';
 export type NotificationEvent =
   | 'cry_started'
@@ -138,7 +138,7 @@ export interface SettingsPayload {
     restore_previous_state: true;
   };
   ai: {
-    provider: 'disabled' | 'gemini' | 'openai' | 'ollama';
+    provider: 'disabled' | 'gemini' | 'openai' | 'ollama' | 'yolo';
     model: string | null;
     base_url: string | null;
     cloud_image_consent: boolean;
@@ -191,6 +191,12 @@ export interface VisionLabel {
   clothingItems: string[];
   pacifier: 'yes' | 'no' | 'unknown';
   mouthOpen: 'yes' | 'no' | 'unknown';
+  /**
+   * Exact label payload returned by the backend. Keeping it alongside the
+   * normalized fields lets the review UI expose new model metadata without
+   * silently dropping fields it does not know about yet.
+   */
+  raw?: Record<string, unknown>;
 }
 
 export interface VisionStatisticSegment { key: string; label: string; minutes: number; percent: number; color: string }

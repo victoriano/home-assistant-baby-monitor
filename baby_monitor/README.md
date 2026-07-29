@@ -3,14 +3,16 @@
 Local-first sleep tracking and alerts for Home Assistant.
 
 - Select your own camera and one or more lights.
-- Trigger light alerts from a cry `binary_sensor` or an optional audio stream.
+- Trigger light alerts from a cry `binary_sensor` or an optional audio stream,
+  only when the baby was visible in a frame during the previous five minutes.
 - Keep detailed manual sleep history with editable naps, night sleep,
   awakenings, awake pauses, context, mood, comments, and nearby frames.
 - See locally calculated nap and night predictions for today and tomorrow.
 - Export and move verified history, CSV tables, and date-organized images from
   Settings without transferring house-specific credentials.
-- Optionally label private camera frames with Gemini, OpenAI, or a local
-  OpenAI-compatible service.
+- Optionally label private camera frames with Gemini, OpenAI, a local
+  OpenAI-compatible service, or a fine-tuned YOLO model that runs on the host
+  without uploading snapshots.
 - Configure everything from the admin-only Ingress interface.
 
 Camera, cry detection, and AI are optional. Images are never written into Home

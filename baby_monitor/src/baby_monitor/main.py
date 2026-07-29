@@ -777,7 +777,8 @@ def create_app(
             confidence=event.confidence,
             metadata=event.metadata,
         )
-        assert result is not None
+        if result is None:
+            raise HTTPException(409, "automatic cry ignored because the baby was not visible in the previous 5 minutes")
         if event.ended_at is not None:
             result = await cry_alerts.set_state("off", observed_at=event.ended_at, source=event.source)
             assert result is not None
