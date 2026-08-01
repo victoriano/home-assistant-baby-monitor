@@ -36,6 +36,7 @@ baby-monitor-migrate-legacy = "tools.migrate_legacy_sqlite:main"
 
 [project.optional-dependencies]
 dev = [
+  "pillow>=12,<13",
   "pytest>=8,<10",
   "pytest-asyncio>=0.24,<2",
   "pytest-cov>=6,<8",
