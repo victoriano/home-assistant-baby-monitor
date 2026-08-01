@@ -5,11 +5,14 @@ import sqlite3
 import struct
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from baby_monitor.database import Database, SleepOverlapError, StorageError
 from baby_monitor.media import (
     SAMPLE_RATE,
+    AudioWindowReader,
     MediaError,
     _ffconcat_source,
     _input_args,
@@ -326,6 +329,23 @@ def test_ffmpeg_environment_does_not_inherit_application_secrets(monkeypatch) ->
     child = _subprocess_env()
     assert "SUPERVISOR_TOKEN" not in child
     assert "BABY_MONITOR_ADMIN_TOKEN" not in child
+
+
+async def test_audio_reader_close_tolerates_an_already_exited_process() -> None:
+    reader = AudioWindowReader("rtsp://camera.example.test/live", 0.5)
+    process = SimpleNamespace(
+        returncode=None,
+        terminate=Mock(side_effect=ProcessLookupError),
+        wait=AsyncMock(return_value=0),
+        kill=Mock(),
+    )
+    reader._process = process
+
+    await reader.close()
+
+    assert reader._process is None
+    process.wait.assert_awaited_once()
+    process.kill.assert_not_called()
 
 
 @pytest.mark.parametrize(

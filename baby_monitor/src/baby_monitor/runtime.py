@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
@@ -12,6 +14,9 @@ from .models import CryMode, RetentionMode, SecretName, utc_now
 from .notifications import NotificationScheduler
 from .services import CryAlertService, FrameService
 from .settings import SettingsService
+
+logger = logging.getLogger(__name__)
+WORKER_RESTART_DELAY_SECONDS = 3.0
 
 
 class RuntimeWorkers:
@@ -36,12 +41,38 @@ class RuntimeWorkers:
     def start(self) -> None:
         if self._tasks:
             return
-        self._tasks = [
-            asyncio.create_task(self._retention_loop(), name="baby-monitor-retention"),
-            asyncio.create_task(self._capture_loop(), name="baby-monitor-capture"),
-            asyncio.create_task(self._cry_loop(), name="baby-monitor-cry"),
-            asyncio.create_task(self._notification_loop(), name="baby-monitor-notifications"),
+        worker_specs: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+            ("retention", self._retention_loop),
+            ("capture", self._capture_loop),
+            ("cry", self._cry_loop),
+            ("notifications", self._notification_loop),
         ]
+        self._tasks = [
+            asyncio.create_task(self._supervise(name, worker), name=f"baby-monitor-{name}")
+            for name, worker in worker_specs
+        ]
+
+    async def _supervise(self, name: str, worker: Callable[[], Awaitable[None]]) -> None:
+        while True:
+            try:
+                await worker()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # no worker failure may permanently disable monitoring
+                self.errors[name] = type(exc).__name__
+                logger.exception(
+                    "Background worker %s crashed; restarting in %.1f seconds",
+                    name,
+                    WORKER_RESTART_DELAY_SECONDS,
+                )
+            else:
+                self.errors[name] = "UnexpectedExit"
+                logger.error(
+                    "Background worker %s exited; restarting in %.1f seconds",
+                    name,
+                    WORKER_RESTART_DELAY_SECONDS,
+                )
+            await asyncio.sleep(WORKER_RESTART_DELAY_SECONDS)
 
     async def stop(self) -> None:
         for task in self._tasks:

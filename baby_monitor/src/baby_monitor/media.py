@@ -5,6 +5,7 @@ import math
 import os
 import sys
 from array import array
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
@@ -216,11 +217,15 @@ class AudioWindowReader:
         if self._process is None:
             return
         if self._process.returncode is None:
-            self._process.terminate()
+            # ffmpeg can exit between the returncode check and terminate().
+            # Waiting still reaps the child and keeps cleanup idempotent.
+            with suppress(ProcessLookupError):
+                self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), 3)
             except TimeoutError:
-                self._process.kill()
+                with suppress(ProcessLookupError):
+                    self._process.kill()
                 await self._process.wait()
         self._process = None
 
