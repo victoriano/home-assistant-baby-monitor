@@ -43,7 +43,7 @@ dev = [
   "ruff>=0.11,<1",
 ]
 yolo = [
-  "ultralytics==8.4.109",
+  "ultralytics==8.4.112",
 ]
 
 [project.urls]
