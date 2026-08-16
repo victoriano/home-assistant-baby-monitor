@@ -8,7 +8,7 @@ RUN npm run build
 
 FROM ghcr.io/astral-sh/uv:0.11.29@sha256:eb2843a1e56fd9e30c7276ce1a52cba86e64c7b385f5e3279a0e08e02dd058fc AS uv
 
-FROM python:3.14.6-slim-bookworm@sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9 AS python-dependencies
+FROM python:3.14.7-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52 AS python-dependencies
 
 ENV UV_NO_CACHE=1 \
     UV_NO_PROGRESS=1 \
@@ -31,7 +31,7 @@ RUN python -m venv /opt/venv \
         --requirement /tmp/requirements.lock \
     && rm /tmp/requirements.lock
 
-FROM python:3.14.6-slim-bookworm@sha256:4ff4b92a68355dbdb52584ab3391dff8d371a61d4e063468bfd0130e3189c6d9 AS runtime
+FROM python:3.14.7-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52 AS runtime
 
 ARG TARGETARCH
 ARG BUILD_ARCH=${TARGETARCH}
